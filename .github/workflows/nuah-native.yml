@@ -136,7 +136,9 @@ jobs:
           unzip -q .ci/commandline-tools.zip -d .ci/android-sdk/cmdline-tools
           mv .ci/android-sdk/cmdline-tools/cmdline-tools .ci/android-sdk/cmdline-tools/latest
           sdk=.ci/android-sdk/cmdline-tools/latest/bin/sdkmanager
+          set +o pipefail
           yes | "$sdk" --sdk_root="$GITHUB_WORKSPACE/.ci/android-sdk" --licenses
+          set -o pipefail
           "$sdk" --sdk_root="$GITHUB_WORKSPACE/.ci/android-sdk" \
             'system-images;android-36;google_apis;x86_64'
 
