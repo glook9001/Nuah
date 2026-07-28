@@ -170,10 +170,15 @@ target_compile_options(nuah_android_bionic PRIVATE -Wall -Wextra -Wpedantic -Wer
 target_link_libraries(nuah_android_bionic PRIVATE dl nuah_android_registry)
 
 add_library(nuah_android_dl SHARED nuah/android_shims/dl.cpp)
-set_target_properties(nuah_android_dl PROPERTIES OUTPUT_NAME dl LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+set_target_properties(
+  nuah_android_dl PROPERTIES
+  OUTPUT_NAME dl
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+  LINK_OPTIONS
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/dl.map;-Wl,-soname,libdl.so")
 target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-target_link_libraries(nuah_android_dl PRIVATE nuah_android_registry)
+target_link_libraries(nuah_android_dl PRIVATE dl nuah_android_registry)
 
 add_library(nuah_android_math SHARED nuah/android_shims/math.cpp)
 set_target_properties(
