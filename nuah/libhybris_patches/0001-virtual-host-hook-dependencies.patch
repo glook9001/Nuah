@@ -1,26 +1,7 @@
-From: Nuah Runtime <runtime@nuah.invalid>
-Subject: [PATCH] linker: model bionic hook-only dependencies in memory
-
-Nuah uses libhybris as a host ABI bridge, not as a way to ship an Android
-runtime. Android ELF files still list libc.so, libdl.so, and libm.so in
-DT_NEEDED, although their relocations are satisfied by libhybris host hooks.
-
-Teach the linker to represent only those three dependency names as linked,
-nodelete soinfo records. They contain no code, symbols, mapped ELF, bionic
-library, or Android runtime payload. Normal libraries continue through the
-usual file-backed loader.
-
----
- common/q/linker.cpp | 5 +++++
- common/q/linker.h   | 3 +++
- common/q/dlfcn.cpp  | 27 +++++++++++++++++++++++++++
- 3 files changed, 35 insertions(+)
-
-diff --git a/common/q/dlfcn.cpp b/common/q/dlfcn.cpp
-index 0bd4c22..d77f1af 100644
---- a/common/q/dlfcn.cpp
-+++ b/common/q/dlfcn.cpp
-@@ -360,6 +360,33 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
+diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
+--- a/hybris/common/q/dlfcn.cpp
++++ b/hybris/common/q/dlfcn.cpp
+@@ -359,6 +359,23 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
    return __libdl_info;
  }
  
@@ -31,9 +12,7 @@ index 0bd4c22..d77f1af 100644
 +    return nullptr;
 +  }
 +
-+  // The dependency record makes DT_NEEDED and version bookkeeping honest while
-+  // relocation remains delegated to libhybris' host hook resolver. Do not
-+  // attach an ELF image: shipping or mapping bionic would defeat this bridge.
++  // This record represents a dependency whose relocations use host hooks.
 +  soinfo* si = new soinfo(ns, name, nullptr, 0, RTLD_NOW);
 +  si->set_soname(name);
 +  si->set_linked();
@@ -46,11 +25,11 @@ index 0bd4c22..d77f1af 100644
  // hybris compat
  extern "C" {
  void* android_dlopen(const char* filename, int flag) {
-diff --git a/common/q/linker.cpp b/common/q/linker.cpp
-index 2d3e529..016d486 100644
---- a/common/q/linker.cpp
-+++ b/common/q/linker.cpp
+diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
+--- a/hybris/common/q/linker.cpp
++++ b/hybris/common/q/linker.cpp
 @@ -1588,6 +1588,11 @@ static bool find_library_internal(android_namespace_t* ns,
+   TRACE("[ \"%s\" find_loaded_library_by_soname failed (*candidate=%s@%p). Trying harder... ]",
          task->get_name(), candidate == nullptr ? "n/a" : candidate->get_realpath(), candidate);
  
 +  if (soinfo* host_hook_dependency = get_host_hook_dependency(ns, task->get_name())) {
@@ -61,15 +40,15 @@ index 2d3e529..016d486 100644
    if (load_library(ns, task, zip_archive_cache, load_tasks, rtld_flags, search_linked_namespaces)) {
      return true;
    }
-diff --git a/common/q/linker.h b/common/q/linker.h
-index 2b6b0e0..3f982e8 100644
---- a/common/q/linker.h
-+++ b/common/q/linker.h
-@@ -105,6 +105,9 @@ void soinfo_free(soinfo* si);
+diff --git a/hybris/common/q/linker.h b/hybris/common/q/linker.h
+--- a/hybris/common/q/linker.h
++++ b/hybris/common/q/linker.h
+@@ -106,6 +106,8 @@ void count_relocation(RelocationKind kind);
  
  soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si);
  
-+// Returns an in-memory dependency record for libraries backed by host hooks.
 +soinfo* get_host_hook_dependency(android_namespace_t* ns, const char* name);
 +
- bool is_rtld_flag_valid(uint32_t rtld_flags);
+ soinfo* find_containing_library(const void* p);
+ 
+ int open_executable(const char* path, off64_t* file_offset, std::string* realpath);
