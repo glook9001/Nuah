@@ -216,7 +216,13 @@ void clear_dynamic_value(std::vector<std::byte>& data, Elf64_Phdr dynamic,
   for (std::size_t i = 0; i < count; ++i) {
     auto* entry = reinterpret_cast<Elf64_Dyn*>(data.data() + dynamic.p_offset +
                                                i * sizeof(Elf64_Dyn));
-    if (entry->d_tag == tag) entry->d_un.d_ptr = 0;
+    if (entry->d_tag == tag) {
+      // Keep the dynamic array terminated only by its original DT_NULL;
+      // replace these optional GNU tags with an unknown OS-private tag so the
+      // loader does not retain a live entry whose address is zero.
+      entry->d_tag = DT_LOOS + 0x100;
+      entry->d_un.d_val = 0;
+    }
   }
 }
 
