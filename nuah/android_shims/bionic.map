@@ -64,6 +64,7 @@ LIBC {
     pthread_setspecific; pthread_sigmask;
     pthread_rwlock_init; pthread_rwlock_destroy; pthread_rwlock_rdlock;
     pthread_rwlock_wrlock; pthread_rwlock_unlock;
+    sem_init; sem_wait; sem_post; sem_destroy;
     __sF; __stack_chk_guard; stdin; stdout; stderr;
     daylight; timezone; tzname; environ; in6addr_any; in6addr_loopback;
     optarg; optind;

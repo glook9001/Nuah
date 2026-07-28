@@ -11,6 +11,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -43,12 +44,14 @@ struct CondEntry { void* android = nullptr; pthread_cond_t native{}; };
 struct OnceEntry { void* android = nullptr; pthread_once_t native = PTHREAD_ONCE_INIT; };
 struct AttrEntry { void* android = nullptr; pthread_attr_t native{}; };
 struct RwlockEntry { void* android = nullptr; pthread_rwlock_t native{}; };
+struct SemEntry { void* android = nullptr; sem_t native{}; };
 std::atomic_flag table_lock = ATOMIC_FLAG_INIT;
 MutexEntry mutexes[2048];
 CondEntry conditions[1024];
 OnceEntry onces[1024];
 AttrEntry attributes[256];
 RwlockEntry rwlocks[1024];
+SemEntry semaphores[512];
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
@@ -121,6 +124,12 @@ RwlockEntry* rwlock_for(void* object) {
     }
   }
   unlock_table();
+  return nullptr;
+}
+SemEntry* sem_for(void* object) {
+  for (auto& entry : semaphores) {
+    if (entry.android == object) return &entry;
+  }
   return nullptr;
 }
 }
@@ -682,5 +691,45 @@ int pthread_rwlock_unlock(pthread_rwlock_t* object) {
   return entry ? host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_unlock")(
                      &entry->native)
                : EINVAL;
+}
+int sem_init(sem_t* object, int shared, unsigned int value) {
+  lock_table();
+  auto* entry = sem_for(object);
+  if (!entry) {
+    for (auto& candidate : semaphores) {
+      if (!candidate.android) {
+        candidate.android = object;
+        entry = &candidate;
+        break;
+      }
+    }
+  }
+  const int result =
+      entry ? host<int (*)(sem_t*, int, unsigned int)>("sem_init")(
+                  &entry->native, shared, value)
+            : -1;
+  unlock_table();
+  if (!entry) errno = ENOMEM;
+  return result;
+}
+int sem_wait(sem_t* object) {
+  auto* entry = sem_for(object);
+  if (!entry) { errno = EINVAL; return -1; }
+  return host<int (*)(sem_t*)>("sem_wait")(&entry->native);
+}
+int sem_post(sem_t* object) {
+  auto* entry = sem_for(object);
+  if (!entry) { errno = EINVAL; return -1; }
+  return host<int (*)(sem_t*)>("sem_post")(&entry->native);
+}
+int sem_destroy(sem_t* object) {
+  lock_table();
+  auto* entry = sem_for(object);
+  const int result =
+      entry ? host<int (*)(sem_t*)>("sem_destroy")(&entry->native) : -1;
+  if (entry && result == 0) entry->android = nullptr;
+  unlock_table();
+  if (!entry) errno = EINVAL;
+  return result;
 }
 }  // extern "C"
