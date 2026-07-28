@@ -372,11 +372,13 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     }
     const auto android_dlopen = reinterpret_cast<void* (*)(const char*, int)>(
         ::dlsym(loader_library, "android_dlopen"));
+    const auto android_dlerror = reinterpret_cast<char* (*)()>(
+        ::dlsym(loader_library, "android_dlerror"));
     const auto android_dlclose = reinterpret_cast<int (*)(void*)>(
         ::dlsym(loader_library, "android_dlclose"));
     const auto android_dlsym = reinterpret_cast<void* (*)(void*, const char*)>(
         ::dlsym(loader_library, "android_dlsym"));
-    if (!android_dlopen || !android_dlclose || !android_dlsym) {
+    if (!android_dlopen || !android_dlerror || !android_dlclose || !android_dlsym) {
       ::dlclose(loader_library);
       throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
     }
@@ -384,7 +386,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     void* handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
       std::string message = "android_dlopen failed: ";
-      const char* error = ::dlerror();
+      const char* error = android_dlerror();
       message += error ? error : "unknown loader error";
       const auto needed = needed_libraries(apk_member.bytes);
       if (!needed.empty()) {
