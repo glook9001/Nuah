@@ -18,6 +18,9 @@
 extern "C" {
 std::FILE __sF[3]{};
 uintptr_t __stack_chk_guard = 0x9e3779b97f4a7c15ULL;
+std::FILE* nuah_stdin __asm__("stdin") = nullptr;
+std::FILE* nuah_stdout __asm__("stdout") = nullptr;
+std::FILE* nuah_stderr __asm__("stderr") = nullptr;
 }
 
 namespace {
@@ -106,6 +109,12 @@ RwlockEntry* rwlock_for(void* object) {
   unlock_table();
   return nullptr;
 }
+}
+
+__attribute__((constructor)) static void initialize_standard_streams() {
+  if (auto** value = host<std::FILE**>("stdin")) nuah_stdin = *value;
+  if (auto** value = host<std::FILE**>("stdout")) nuah_stdout = *value;
+  if (auto** value = host<std::FILE**>("stderr")) nuah_stderr = *value;
 }
 
 extern "C" {

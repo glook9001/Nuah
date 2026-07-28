@@ -93,6 +93,72 @@ NUAH_FORWARD uname
 NUAH_FORWARD utime
 NUAH_FORWARD utimes
 
+/* String/numeric and stdio calls use host-owned opaque FILE/DIR handles. */
+NUAH_FORWARD atof
+NUAH_FORWARD atoi
+NUAH_FORWARD atol
+NUAH_FORWARD atoll
+NUAH_FORWARD bsearch
+NUAH_FORWARD mbtowc
+NUAH_FORWARD memrchr
+NUAH_FORWARD qsort
+NUAH_FORWARD rand
+NUAH_FORWARD random
+NUAH_FORWARD snprintf
+NUAH_FORWARD srand
+NUAH_FORWARD sscanf
+NUAH_FORWARD strcspn
+NUAH_FORWARD strpbrk
+NUAH_FORWARD strspn
+NUAH_FORWARD strtod
+NUAH_FORWARD strtof
+NUAH_FORWARD strtol
+NUAH_FORWARD strtoll
+NUAH_FORWARD strtoul
+NUAH_FORWARD strtoull
+NUAH_FORWARD vasprintf
+NUAH_FORWARD vsnprintf
+NUAH_FORWARD vsscanf
+NUAH_FORWARD wcslen
+NUAH_FORWARD wmemchr
+NUAH_FORWARD wmemcmp
+
+NUAH_FORWARD clearerr
+NUAH_FORWARD closedir
+NUAH_FORWARD closelog
+NUAH_FORWARD fclose
+NUAH_FORWARD fdopen
+NUAH_FORWARD feof
+NUAH_FORWARD ferror
+NUAH_FORWARD fflush
+NUAH_FORWARD fgets
+NUAH_FORWARD fileno
+NUAH_FORWARD fopen
+NUAH_FORWARD fprintf
+NUAH_FORWARD fputc
+NUAH_FORWARD fputs
+NUAH_FORWARD fputwc
+NUAH_FORWARD fread
+NUAH_FORWARD fscanf
+NUAH_FORWARD fseek
+NUAH_FORWARD fseeko
+NUAH_FORWARD ftell
+NUAH_FORWARD ftello
+NUAH_FORWARD fwrite
+NUAH_FORWARD getc
+NUAH_FORWARD getwc
+NUAH_FORWARD openlog
+NUAH_FORWARD opendir
+NUAH_FORWARD printf
+NUAH_FORWARD puts
+NUAH_FORWARD readdir
+NUAH_FORWARD setvbuf
+NUAH_FORWARD syslog
+NUAH_FORWARD ungetc
+NUAH_FORWARD ungetwc
+NUAH_FORWARD vfprintf
+NUAH_FORWARD vprintf
+
 NUAH_FORWARD accept4, GLIBC_2.10
 NUAH_FORWARD epoll_create1, GLIBC_2.9
 NUAH_FORWARD eventfd, GLIBC_2.7

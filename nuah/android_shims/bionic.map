@@ -25,6 +25,15 @@ LIBC {
     sched_get_priority_max; sched_get_priority_min; sched_getparam;
     sched_getscheduler; sched_setscheduler; sched_yield; syscall; sysinfo;
     timerfd_create; timerfd_settime; uname; utime; utimes;
+    atof; atoi; atol; atoll; bsearch; mbtowc; memrchr; qsort; rand; random;
+    snprintf; srand; sscanf; strcspn; strpbrk; strspn; strtod; strtof;
+    strtol; strtoll; strtoul; strtoull; vasprintf; vsnprintf; vsscanf;
+    wcslen; wmemchr; wmemcmp;
+    clearerr; closedir; closelog; fclose; fdopen; feof; ferror; fflush;
+    fgets; fileno; fopen; fprintf; fputc; fputs; fputwc; fread; fscanf;
+    fseek; fseeko; ftell; ftello; fwrite; getc; getwc; openlog; opendir;
+    printf; puts; readdir; setvbuf; syslog; ungetc; ungetwc; vfprintf;
+    vprintf;
     __cxa_atexit; __cxa_finalize; __cxa_thread_atexit_impl; __register_atfork;
     pthread_once;
     __FD_CLR_chk; __FD_ISSET_chk; __FD_SET_chk; __assert2; __errno;
@@ -46,7 +55,7 @@ LIBC {
     pthread_setspecific; pthread_sigmask;
     pthread_rwlock_init; pthread_rwlock_destroy; pthread_rwlock_rdlock;
     pthread_rwlock_wrlock; pthread_rwlock_unlock;
-    __sF; __stack_chk_guard;
+    __sF; __stack_chk_guard; stdin; stdout; stderr;
 };
 LIBC_N { } LIBC;
 LIBC_O { } LIBC_N;
