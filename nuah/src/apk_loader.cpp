@@ -15,6 +15,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace nuah {
 namespace {
@@ -234,6 +235,24 @@ bool has_version_requirements(const std::vector<std::byte>& data) {
   return false;
 }
 
+const char* dependency_disposition(std::string_view soname) {
+  if (soname == "libandroid.so" || soname == "liblog.so" ||
+      soname == "libmediandk.so" || soname == "libOpenSLES.so" ||
+      soname == "libOpenMAXAL.so" || soname == "libvulkan.so" ||
+      soname == "libc.so" || soname == "libdl.so") return "implemented";
+  if (soname == "libEGL.so" || soname == "libGLESv2.so") return "translated";
+  return "unsupported";
+}
+
+std::string dependency_report(const std::vector<std::byte>& data) {
+  std::string report;
+  for (const auto& soname : needed_libraries(data)) {
+    if (!report.empty()) report += ", ";
+    report += soname + "=" + dependency_disposition(soname);
+  }
+  return report;
+}
+
 }  // namespace
 
 ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::string& member) {
@@ -291,7 +310,8 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
   if (has_version_requirements(apk_member.bytes)) {
     throw std::runtime_error(
         "Android ELF has GNU symbol-version requirements; refusing to enter "
-        "the host linker until Nuah's Android namespace translator is active");
+        "the host linker until Nuah's Android namespace translator is active "
+        "(dependencies: " + dependency_report(apk_member.bytes) + ")");
   }
   const auto& image_bytes = apk_member.bytes;
   const int fd = static_cast<int>(::syscall(SYS_memfd_create, "nuah-module", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC));
