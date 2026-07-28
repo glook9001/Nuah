@@ -108,7 +108,7 @@ target_compile_definitions(
 target_compile_options(nuah_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 if(NUAH_SDL3_ROOT)
   target_include_directories(nuah_core PRIVATE "${NUAH_SDL3_ROOT}/usr/include")
-  target_link_directories(nuah_core PRIVATE
+  target_link_directories(nuah_core PUBLIC
     "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
 endif()
 target_link_libraries(
