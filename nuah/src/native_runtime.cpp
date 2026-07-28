@@ -3,6 +3,7 @@
 #include "nuah/jni_contract.h"
 #include "nuah/jni_runtime.h"
 #include "nuah/input_bridge.h"
+#include "nuah/window_session.h"
 
 #include <dlfcn.h>
 
@@ -12,6 +13,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unistd.h>
 #include <vector>
 
 namespace nuah {
@@ -96,6 +99,41 @@ int run_native(const NativeLaunchOptions& options) {
             << jni_version << std::dec << "; registered natives="
             << nuah_jni_registered_count() << '\n';
   nuah_input_bind_jni_runtime(jni_runtime);
+  if (const char* interactive = std::getenv("NUAH_NATIVE_WINDOW_LOOP");
+      interactive && std::string_view(interactive) == "1") {
+    auto* window = nuah_window_session_create(options.width, options.height,
+                                               "Nuah Roblox");
+    if (!window) {
+      nuah_jni_runtime_destroy(jni_runtime);
+      throw std::runtime_error("cannot create Nuah native game window");
+    }
+    if (const char* initialize = std::getenv("NUAH_NATIVE_LIFECYCLE");
+        initialize && std::string_view(initialize) == "1") {
+      const auto handle = nuah_jni_runtime_initialize_game(
+          jni_runtime, "com.roblox.client", options.data_directory
+                                      ? options.data_directory->c_str()
+                                      : "");
+      if (handle != 0) {
+        nuah_jni_runtime_dispatch_lifecycle(jni_runtime, "onStartNative");
+        nuah_jni_runtime_dispatch_lifecycle(jni_runtime, "onResumeNative");
+      }
+    }
+    std::uint64_t frames = 0;
+    std::uint64_t max_frames = 0;
+    if (const char* limit = std::getenv("NUAH_NATIVE_MAX_FRAMES");
+        limit && *limit) max_frames = std::strtoull(limit, nullptr, 10);
+    while (!nuah_window_session_should_close(window) &&
+           (!max_frames || frames++ < max_frames)) {
+      nuah_window_session_pump(window);
+      nuah_input_pump();
+      ::usleep(16000);
+    }
+    nuah_jni_runtime_dispatch_lifecycle(jni_runtime, "onPauseNative");
+    nuah_jni_runtime_dispatch_lifecycle(jni_runtime, "onStopNative");
+    nuah_window_session_destroy(window);
+    nuah_jni_runtime_destroy(jni_runtime);
+    return 0;
+  }
   nuah_jni_runtime_destroy(jni_runtime);
   std::cerr << "nuah native: game lifecycle/window loop is not yet connected\n";
   return 78;

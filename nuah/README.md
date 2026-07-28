@@ -36,5 +36,11 @@ Roblox image from a sealed memfd and stops with an explicit JNI-runtime status
 until the demand-driven JavaVM/JNIEnv table is complete. `atl-run` remains a
 legacy diagnostic command and is never selected by the Services supervisor.
 
+For host-window/event-loop diagnostics, set `NUAH_NATIVE_WINDOW_LOOP=1`.
+`NUAH_NATIVE_LIFECYCLE=1` additionally attempts the observed GameActivity
+initialization callbacks; use `NUAH_NATIVE_MAX_FRAMES` to bound a diagnostic
+session. The normal supervisor keeps these opt-in until the remaining Android
+object and rendering contracts are implemented.
+
 `nuah sober-cache-status` checks the Sober cache source. `nuah
 adopt-sober-cache <directory>` copies that APK pair into Nuah-managed storage.
