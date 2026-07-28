@@ -183,7 +183,7 @@ set_target_properties(
   LINK_OPTIONS
     "-Wl,--no-as-needed;-Wl,-soname,libm.so;-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/math.map")
 target_compile_options(nuah_android_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(nuah_android_math PRIVATE dl m)
+target_link_libraries(nuah_android_math PRIVATE dl m nuah_android_registry)
 
 add_executable(nuah_android_abi_registry_test
   nuah/tests/android_abi_registry_test.cpp)

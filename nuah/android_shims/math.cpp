@@ -1,5 +1,7 @@
 #include <dlfcn.h>
 
+#include "nuah/android_abi_registry.h"
+
 namespace {
 template <typename Function>
 Function host(const char* name) {
@@ -88,4 +90,20 @@ extern "C" void sincos(double value, double* sine, double* cosine) {
 }
 extern "C" void sincosf(float value, float* sine, float* cosine) {
   host<void (*)(float, float*, float*)>("sincosf")(value, sine, cosine);
+}
+
+__attribute__((constructor)) static void register_math_abi() {
+  static constexpr const char* symbols[] = {
+      "acos",   "acosf",  "asin",   "asinf",  "atan",   "atanf",
+      "atan2",  "atan2f", "cbrt",   "cbrtf",  "cos",    "cosf",
+      "cosh",   "coshf",  "exp",    "exp2",   "exp2f",  "expf",
+      "expm1",  "fmod",   "fmodf",  "frexp",  "frexpf", "ldexp",
+      "ldexpf", "log",    "log10",  "log10f", "log2",   "log2f",
+      "logf",   "modf",   "modff",  "pow",    "powf",   "round",
+      "sin",    "sincos", "sincosf", "sinf",  "sinh",   "sinhf",
+      "sqrt",   "sqrtf",  "tan",    "tanf",   "tanh",   "tanhf"};
+  for (const char* symbol : symbols) {
+    nuah_android_api_register("libm.so", symbol,
+                              NUAH_ANDROID_API_TRANSLATED);
+  }
 }
