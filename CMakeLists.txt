@@ -185,6 +185,10 @@ add_test(NAME nuah-android-abi-registry
 
 add_executable(nuah_native_contract_test nuah/tests/native_contract_test.cpp)
 target_include_directories(nuah_native_contract_test PRIVATE nuah/include)
+if(NUAH_SDL3_ROOT)
+  target_include_directories(nuah_native_contract_test PRIVATE
+    "${NUAH_SDL3_ROOT}/usr/include")
+endif()
 target_compile_options(nuah_native_contract_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(nuah_native_contract_test PRIVATE nuah_core)
 add_test(NAME nuah-native-contract COMMAND nuah_native_contract_test)
