@@ -45,6 +45,8 @@ typedef struct NuahJniRuntime NuahJniRuntime;
 
 void nuah_input_set_sink(NuahInputSink sink, void* user_data);
 void nuah_input_bind_jni_runtime(NuahJniRuntime* runtime);
+int nuah_input_quit_requested(void);
+void nuah_input_reset_quit(void);
 int nuah_input_pump(void);
 
 #ifdef __cplusplus

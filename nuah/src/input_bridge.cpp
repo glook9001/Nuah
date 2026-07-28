@@ -8,6 +8,7 @@
 namespace {
 std::atomic<NuahInputSink> sink{nullptr};
 std::atomic<void*> sink_data{nullptr};
+std::atomic<bool> quit_requested{false};
 
 void emit(const NuahInputEvent& event) {
   const auto callback = sink.load(std::memory_order_acquire);
@@ -48,6 +49,10 @@ extern "C" int nuah_input_pump(void) {
     NuahInputEvent translated{};
     translated.timestamp_ns = event.common.timestamp;
     switch (event.type) {
+      case SDL_EVENT_QUIT:
+      case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        quit_requested.store(true, std::memory_order_release);
+        break;
       case SDL_EVENT_KEY_DOWN:
       case SDL_EVENT_KEY_UP:
         translated.type = NUAH_INPUT_KEY;
@@ -93,4 +98,12 @@ extern "C" int nuah_input_pump(void) {
     }
   }
   return count;
+}
+
+extern "C" int nuah_input_quit_requested(void) {
+  return quit_requested.load(std::memory_order_acquire) ? 1 : 0;
+}
+
+extern "C" void nuah_input_reset_quit(void) {
+  quit_requested.store(false, std::memory_order_release);
 }

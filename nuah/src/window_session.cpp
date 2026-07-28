@@ -1,4 +1,5 @@
 #include "nuah/window_session.h"
+#include "nuah/input_bridge.h"
 
 #include <SDL3/SDL.h>
 
@@ -15,6 +16,7 @@ extern "C" NuahWindowSession* nuah_window_session_create(
     int width, int height, const char* title) {
   if (width <= 0 || height <= 0) return nullptr;
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) return nullptr;
+  nuah_input_reset_quit();
   auto* session = new NuahWindowSession;
   session->surface_token = "nuah-surface";
   session->host = SDL_CreateWindow(
@@ -46,7 +48,9 @@ extern "C" void nuah_window_session_destroy(NuahWindowSession* session) {
 
 extern "C" int nuah_window_session_should_close(
     const NuahWindowSession* session) {
-  return !session || session->close_requested ? 1 : 0;
+  return !session || session->close_requested || nuah_input_quit_requested()
+             ? 1
+             : 0;
 }
 
 extern "C" void nuah_window_session_pump(NuahWindowSession* session) {
