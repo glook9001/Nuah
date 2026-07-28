@@ -270,9 +270,9 @@ linker plugin. A no-dependency ELF smoke test must pass through
 ART and does not require an ART/APEX bundle. The old `art_standalone` source
 tree and ART workflow are intentionally removed.
 
-The runtime artifact contains Nuah, the libhybris bundle, Nuah's narrow
-Android providers, and configuration. The Roblox APK remains a separately
-acquired client payload.
+The runtime artifact contains Nuah, the matching `libhybris-common.so` and
+linker plugins, Nuah's narrow Android providers, and configuration. The
+Roblox APK remains a separately acquired client payload.
 
 ## Implementation milestones
 
