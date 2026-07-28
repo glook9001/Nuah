@@ -1,7 +1,7 @@
 diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
 --- a/hybris/common/q/dlfcn.cpp
 +++ b/hybris/common/q/dlfcn.cpp
-@@ -359,6 +359,28 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
+@@ -359,6 +359,29 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
    return __libdl_info;
  }
  
@@ -20,6 +20,7 @@ diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
 +  }
 +  soinfo* si = new soinfo(ns, name, nullptr, 0, RTLD_NOW);
 +  si->set_soname(name);
++  si->set_host_hook_dependency();
 +  si->set_linked();
 +  si->set_nodelete();
 +  si->generate_handle();
@@ -76,7 +77,21 @@ diff --git a/hybris/common/q/linker.h b/hybris/common/q/linker.h
 diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.cpp
 --- a/hybris/common/q/linker_soinfo.cpp
 +++ b/hybris/common/q/linker_soinfo.cpp
-@@ -291,6 +291,11 @@ bool soinfo::gnu_lookup(SymbolName& symbol_name,
+@@ -180,6 +180,13 @@ size_t soinfo::get_verdef_cnt() const {
+ bool soinfo::find_symbol_by_name(SymbolName& symbol_name,
+                                  const version_info* vi,
+                                  const ElfW(Sym)** symbol) const {
++  if (is_host_hook_dependency()) {
++    // The host callback is consulted before ELF lookup. This dependency has
++    // no Android ELF table, so report a successful miss and continue search.
++    *symbol = nullptr;
++    return true;
++  }
++
+   uint32_t symbol_index;
+   bool success =
+       is_gnu_hash() ?
+@@ -291,6 +298,11 @@ bool soinfo::gnu_lookup(SymbolName& symbol_name,
  bool soinfo::elf_lookup(SymbolName& symbol_name,
                          const version_info* vi,
                          uint32_t* symbol_index) const {
@@ -88,3 +103,20 @@ diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.c
    uint32_t hash = symbol_name.elf_hash();
  
    TRACE_TYPE(LOOKUP, "SEARCH %s in %s@%p h=%x(elf) %zd",
+
+diff --git a/hybris/common/q/linker_soinfo.h b/hybris/common/q/linker_soinfo.h
+--- a/hybris/common/q/linker_soinfo.h
++++ b/hybris/common/q/linker_soinfo.h
+@@ -44,4 +44,5 @@
+ #define FLAG_GNU_HASH         0x00000040 // uses gnu hash
+ #define FLAG_MAPPED_BY_CALLER 0x00000080 // the map is reserved by the caller
+                                          // and should not be unmapped
++#define FLAG_HOST_HOOK_DEPENDENCY 0x00000020 // symbols resolve through libhybris hooks
+ #define FLAG_IMAGE_LINKED     0x00000100 // Is image linked - this is a guard on link_image.
+@@ -268,4 +269,6 @@ struct soinfo {
+   void set_linked();
+   void set_linker_flag();
+   void set_main_executable();
++  bool is_host_hook_dependency() const { return (flags_ & FLAG_HOST_HOOK_DEPENDENCY) != 0; }
++  void set_host_hook_dependency() { flags_ |= FLAG_HOST_HOOK_DEPENDENCY; }
+   void set_nodelete();
