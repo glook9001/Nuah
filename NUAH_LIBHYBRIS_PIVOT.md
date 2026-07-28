@@ -46,11 +46,13 @@ Android `libc.so`, `libdl.so`, `libm.so`, APEX, or system image; libhybris'
 hooks bridge those Android imports to the host ABI.
 
 The pinned libhybris source carries one small Nuah patch. Its Q-era linker
-models the three bionic names above as in-memory, hook-only dependency records
-when they appear in `DT_NEEDED`. This is necessary because upstream otherwise
-requires files for every dependency before it reaches its hook resolver. The
-records contain no ELF image, code, symbols, bionic library, or Android
-payload; normal Android-facing libraries remain real, narrow Nuah providers.
+models the bionic and Android-facing names required by Roblox as in-memory,
+hook-only dependency records when they appear in `DT_NEEDED`. This is
+necessary because upstream otherwise requires files for every dependency
+before it reaches its hook resolver. Nuah loads its narrow providers with the
+normal host loader and registers their symbols through libhybris' hook
+callback; the Android linker never maps those host ELF files. The records
+contain no ELF image, code, symbols, bionic library, or Android payload.
 
 ## Implementation order
 

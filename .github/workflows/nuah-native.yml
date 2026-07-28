@@ -118,8 +118,6 @@ jobs:
           LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
             hybris-probe/hybris_loader_probe \
             "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-probe.so"
-          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
-            hybris-probe/hybris_loader_probe libc.so
 
   build:
     needs: hybris-x86_64-build

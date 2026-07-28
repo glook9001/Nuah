@@ -13,6 +13,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace nuah {
 namespace {
@@ -48,6 +49,51 @@ void configure_hybris_environment(const char* library) {
   set_hybris_path_if_unset(
       "HYBRIS_LINKER_DIR",
       (common.parent_path() / "libhybris" / "linker").string());
+}
+
+std::vector<void*> host_provider_handles;
+
+void* resolve_host_provider_symbol(const char* symbol, const char*) {
+  if (!symbol) return nullptr;
+  for (auto it = host_provider_handles.rbegin(); it != host_provider_handles.rend(); ++it) {
+    if (void* resolved = ::dlsym(*it, symbol)) return resolved;
+  }
+  return nullptr;
+}
+
+void load_host_provider(const std::filesystem::path& path) {
+  void* handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+  if (handle) {
+    host_provider_handles.push_back(handle);
+    return;
+  }
+  const char* error = ::dlerror();
+  throw std::runtime_error("cannot load Nuah host provider " + path.string() + ": " +
+                           (error ? error : "unknown error"));
+}
+
+void configure_host_provider_hooks(void* hybris) {
+  static bool configured = false;
+  if (configured) return;
+  const auto android = runtime_directory() / "android";
+  for (const auto* name : {"liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so",
+                           "libOpenSLES.so", "libOpenMAXAL.so"}) {
+    load_host_provider(android / name);
+  }
+  for (const auto* name : {"libEGL.so.1", "libGLESv2.so.2"}) {
+    void* handle = ::dlopen(name, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+      const char* error = ::dlerror();
+      throw std::runtime_error(std::string("cannot load host graphics provider ") + name + ": " +
+                               (error ? error : "unknown error"));
+    }
+    host_provider_handles.push_back(handle);
+  }
+  const auto set_hook_callback = reinterpret_cast<void (*)(void* (*)(const char*, const char*))>(
+      ::dlsym(hybris, "hybris_set_hook_callback"));
+  if (!set_hook_callback) throw std::runtime_error("libhybris lacks hook callback support");
+  set_hook_callback(resolve_host_provider_symbol);
+  configured = true;
 }
 
 std::uint16_t u16(const std::vector<std::byte>& b, std::size_t off) {
@@ -329,6 +375,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       ::dlclose(loader_library);
       throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
     }
+    configure_host_provider_hooks(loader_library);
     void* handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
       std::string message = "android_dlopen failed: ";
@@ -338,7 +385,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       if (!needed.empty()) {
         message += " (Android image needs";
         for (const auto& library : needed) message += " " + library;
-        message += "; matching libhybris/bionic runtime is required)";
+        message += "; libhybris host hooks could not resolve the image)";
       }
       if (loader_library) ::dlclose(loader_library);
       throw std::runtime_error(message);

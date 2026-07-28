@@ -1,14 +1,21 @@
 diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
 --- a/hybris/common/q/dlfcn.cpp
 +++ b/hybris/common/q/dlfcn.cpp
-@@ -359,6 +359,23 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
+@@ -359,6 +359,30 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
    return __libdl_info;
  }
  
 +soinfo* get_host_hook_dependency(android_namespace_t* ns, const char* name) {
 +  if (strcmp(name, "libc.so") != 0 &&
 +      strcmp(name, "libdl.so") != 0 &&
-+      strcmp(name, "libm.so") != 0) {
++      strcmp(name, "libm.so") != 0 &&
++      strcmp(name, "libOpenMAXAL.so") != 0 &&
++      strcmp(name, "libmediandk.so") != 0 &&
++      strcmp(name, "libOpenSLES.so") != 0 &&
++      strcmp(name, "libGLESv2.so") != 0 &&
++      strcmp(name, "libEGL.so") != 0 &&
++      strcmp(name, "libandroid.so") != 0 &&
++      strcmp(name, "liblog.so") != 0) {
 +    return nullptr;
 +  }
 +
