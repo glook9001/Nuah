@@ -54,13 +54,68 @@ void configure_hybris_environment(const char* library) {
 std::vector<void*> host_provider_handles;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 
+[[noreturn]] void android_fortify_fail() { std::abort(); }
+
 std::size_t android_strlen_chk(const char* text, std::size_t capacity) {
-  if (!text) std::abort();
+  if (!text) android_fortify_fail();
   const auto length = ::strnlen(text, capacity);
   // Match bionic's contract: a string that does not fit its advertised
   // object size is a fortify violation, never a silently truncated result.
-  if (length == capacity) std::abort();
+  if (length == capacity) android_fortify_fail();
   return length;
+}
+
+void* android_memcpy_chk(void* destination, const void* source, std::size_t count,
+                         std::size_t destination_capacity) {
+  if (count > destination_capacity) android_fortify_fail();
+  return std::memcpy(destination, source, count);
+}
+
+void* android_memmove_chk(void* destination, const void* source, std::size_t count,
+                          std::size_t destination_capacity) {
+  if (count > destination_capacity) android_fortify_fail();
+  return std::memmove(destination, source, count);
+}
+
+void* android_memset_chk(void* destination, int value, std::size_t count,
+                         std::size_t destination_capacity) {
+  if (count > destination_capacity) android_fortify_fail();
+  return std::memset(destination, value, count);
+}
+
+char* android_strcpy_chk(char* destination, const char* source, std::size_t destination_capacity) {
+  if (!source) android_fortify_fail();
+  const auto length = ::strnlen(source, destination_capacity);
+  if (length >= destination_capacity) android_fortify_fail();
+  return std::strcpy(destination, source);
+}
+
+char* android_strncpy_chk(char* destination, const char* source, std::size_t count,
+                          std::size_t destination_capacity) {
+  if (count > destination_capacity) android_fortify_fail();
+  return std::strncpy(destination, source, count);
+}
+
+char* android_strncpy_chk2(char* destination, const char* source, std::size_t count,
+                           std::size_t destination_capacity, std::size_t source_capacity) {
+  (void)source_capacity;
+  if (count > destination_capacity) android_fortify_fail();
+  return std::strncpy(destination, source, count);
+}
+
+char* android_strcat_chk(char* destination, const char* source, std::size_t destination_capacity) {
+  const auto length = android_strlen_chk(destination, destination_capacity);
+  const auto remaining = destination_capacity - length;
+  if (android_strlen_chk(source, remaining) >= remaining) android_fortify_fail();
+  return std::strcat(destination, source);
+}
+
+char* android_strncat_chk(char* destination, const char* source, std::size_t count,
+                           std::size_t destination_capacity) {
+  const auto length = android_strlen_chk(destination, destination_capacity);
+  const auto remaining = destination_capacity - length;
+  if (count >= remaining && ::strnlen(source, count) == count) android_fortify_fail();
+  return std::strncat(destination, source, count);
 }
 
 void* resolve_host_provider_symbol(const char* symbol, const char*) {
@@ -72,6 +127,14 @@ void* resolve_host_provider_symbol(const char* symbol, const char*) {
   if (std::strcmp(symbol, "__strlen_chk") == 0) {
     return reinterpret_cast<void*>(android_strlen_chk);
   }
+  if (std::strcmp(symbol, "__memcpy_chk") == 0) return reinterpret_cast<void*>(android_memcpy_chk);
+  if (std::strcmp(symbol, "__memmove_chk") == 0) return reinterpret_cast<void*>(android_memmove_chk);
+  if (std::strcmp(symbol, "__memset_chk") == 0) return reinterpret_cast<void*>(android_memset_chk);
+  if (std::strcmp(symbol, "__strcpy_chk") == 0) return reinterpret_cast<void*>(android_strcpy_chk);
+  if (std::strcmp(symbol, "__strncpy_chk") == 0) return reinterpret_cast<void*>(android_strncpy_chk);
+  if (std::strcmp(symbol, "__strncpy_chk2") == 0) return reinterpret_cast<void*>(android_strncpy_chk2);
+  if (std::strcmp(symbol, "__strcat_chk") == 0) return reinterpret_cast<void*>(android_strcat_chk);
+  if (std::strcmp(symbol, "__strncat_chk") == 0) return reinterpret_cast<void*>(android_strncat_chk);
   for (auto it = host_provider_handles.rbegin(); it != host_provider_handles.rend(); ++it) {
     if (void* resolved = ::dlsym(*it, symbol)) return resolved;
   }
