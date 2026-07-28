@@ -61,7 +61,9 @@ int memcmp(const void* left, const void* right, size_t length) {
   return host<int (*)(const void*, const void*, size_t)>("memcmp")(
       left, right, length);
 }
-const void* memchr(const void* data, int value, size_t length) {
+extern "C" const void* nuah_memchr(const void* data, int value, size_t length)
+    __asm__("memchr");
+const void* nuah_memchr(const void* data, int value, size_t length) {
   return host<const void* (*)(const void*, int, size_t)>("memchr")(
       data, value, length);
 }
@@ -92,13 +94,19 @@ char* strncat(char* destination, const char* source, size_t length) {
   return host<char* (*)(char*, const char*, size_t)>("strncat")(
       destination, source, length);
 }
-const char* strchr(const char* text, int value) {
+extern "C" const char* nuah_strchr(const char* text, int value)
+    __asm__("strchr");
+const char* nuah_strchr(const char* text, int value) {
   return host<const char* (*)(const char*, int)>("strchr")(text, value);
 }
-const char* strrchr(const char* text, int value) {
+extern "C" const char* nuah_strrchr(const char* text, int value)
+    __asm__("strrchr");
+const char* nuah_strrchr(const char* text, int value) {
   return host<const char* (*)(const char*, int)>("strrchr")(text, value);
 }
-const char* strstr(const char* text, const char* needle) {
+extern "C" const char* nuah_strstr(const char* text, const char* needle)
+    __asm__("strstr");
+const char* nuah_strstr(const char* text, const char* needle) {
   return host<const char* (*)(const char*, const char*)>("strstr")(
       text, needle);
 }
