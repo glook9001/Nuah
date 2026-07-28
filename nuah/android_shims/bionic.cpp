@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sys/mman.h>
@@ -21,6 +22,12 @@ uintptr_t __stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 std::FILE* nuah_stdin __asm__("stdin") = nullptr;
 std::FILE* nuah_stdout __asm__("stdout") = nullptr;
 std::FILE* nuah_stderr __asm__("stderr") = nullptr;
+int nuah_daylight __asm__("daylight") = 0;
+long nuah_timezone __asm__("timezone") = 0;
+char* nuah_tzname[2] __asm__("tzname") = {nullptr, nullptr};
+char** nuah_environ __asm__("environ") = nullptr;
+in6_addr nuah_in6addr_any __asm__("in6addr_any"){};
+in6_addr nuah_in6addr_loopback __asm__("in6addr_loopback"){};
 }
 
 namespace {
@@ -111,10 +118,27 @@ RwlockEntry* rwlock_for(void* object) {
 }
 }
 
+void synchronize_timezone_data() {
+  if (auto* value = host<int*>("daylight")) nuah_daylight = *value;
+  if (auto* value = host<long*>("timezone")) nuah_timezone = *value;
+  if (auto** value = host<char**>("tzname")) {
+    nuah_tzname[0] = value[0];
+    nuah_tzname[1] = value[1];
+  }
+}
+
 __attribute__((constructor)) static void initialize_standard_streams() {
   if (auto** value = host<std::FILE**>("stdin")) nuah_stdin = *value;
   if (auto** value = host<std::FILE**>("stdout")) nuah_stdout = *value;
   if (auto** value = host<std::FILE**>("stderr")) nuah_stderr = *value;
+  if (auto*** value = host<char***>("environ")) nuah_environ = *value;
+  if (auto* value = host<in6_addr*>("in6addr_any")) {
+    nuah_in6addr_any = *value;
+  }
+  if (auto* value = host<in6_addr*>("in6addr_loopback")) {
+    nuah_in6addr_loopback = *value;
+  }
+  synchronize_timezone_data();
 }
 
 extern "C" {
@@ -219,6 +243,11 @@ int strncasecmp(const char* left, const char* right, size_t length) {
 }
 char* strerror(int error) {
   return host<char* (*)(int)>("strerror")(error);
+}
+extern "C" void nuah_tzset() __asm__("tzset");
+void nuah_tzset() {
+  host<void (*)()>("tzset")();
+  synchronize_timezone_data();
 }
 int close(int fd) {
   return host<int (*)(int)>("close")(fd);

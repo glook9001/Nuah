@@ -26,7 +26,12 @@ NUAH_FORWARD gettimeofday
 NUAH_FORWARD nanosleep
 NUAH_FORWARD time
 NUAH_FORWARD usleep
-NUAH_FORWARD tzset
+NUAH_FORWARD gmtime
+NUAH_FORWARD gmtime_r
+NUAH_FORWARD localtime
+NUAH_FORWARD localtime_r
+NUAH_FORWARD mktime
+NUAH_FORWARD strftime
 
 NUAH_FORWARD getegid
 NUAH_FORWARD geteuid
