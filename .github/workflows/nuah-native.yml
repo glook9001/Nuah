@@ -174,7 +174,12 @@ jobs:
         run: cmake --build build-ci --parallel
 
       - name: Run native ABI tests
-        run: ctest --test-dir build-ci --output-on-failure
+        run: |
+          ctest --test-dir build-ci --output-on-failure
+          if readelf --dyn-syms --wide build-ci/android/*.so | grep -E '__[A-Za-z0-9_]+_chk'; then
+            echo 'Android-facing provider imports a fortified libc ABI symbol.' >&2
+            exit 1
+          fi
 
       - name: Publish native runtime artifacts
         uses: actions/upload-artifact@v4

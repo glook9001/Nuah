@@ -73,7 +73,7 @@ endif()
 
 add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
 target_include_directories(nuah_host_bridge PUBLIC nuah/include)
-target_compile_options(nuah_host_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_host_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 
 add_library(nuah_android_registry SHARED nuah/android_shims/registry.cpp)
 set_target_properties(
@@ -81,7 +81,7 @@ set_target_properties(
   OUTPUT_NAME nuah_android_registry
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
 target_include_directories(nuah_android_registry PUBLIC nuah/include)
-target_compile_options(nuah_android_registry PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_android_registry PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 set_target_properties(nuah_android_registry PROPERTIES BUILD_RPATH "$ORIGIN")
 
 add_library(nuah_atl_overlay SHARED nuah/atl_overlay/compat.cpp)
@@ -120,11 +120,11 @@ add_dependencies(nuah_core nuah_atl_overlay)
 
 add_library(nuah_android_log SHARED nuah/android_shims/log.cpp)
 set_target_properties(nuah_android_log PROPERTIES OUTPUT_NAME log LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
-target_compile_options(nuah_android_log PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_android_log PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 
 add_library(nuah_android_platform SHARED nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_platform PROPERTIES OUTPUT_NAME android LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
-target_compile_options(nuah_android_platform PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_android_platform PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_include_directories(nuah_android_platform PRIVATE nuah/include)
 target_link_libraries(nuah_android_platform PRIVATE nuah_host_bridge nuah_android_registry)
 set_target_properties(nuah_android_platform PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
@@ -136,7 +136,7 @@ set_target_properties(
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
   BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 target_include_directories(nuah_android_vulkan PRIVATE nuah/include)
-target_compile_options(nuah_android_vulkan PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_android_vulkan PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 if(NUAH_SDL3_ROOT)
   target_include_directories(nuah_android_vulkan PRIVATE
     "${NUAH_SDL3_ROOT}/usr/include")
@@ -148,19 +148,19 @@ target_link_libraries(
   nuah_android_registry)
 add_library(nuah_android_media SHARED nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_media PROPERTIES OUTPUT_NAME mediandk LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
-target_compile_options(nuah_android_media PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_android_media PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_include_directories(nuah_android_media PRIVATE nuah/include)
 target_link_libraries(nuah_android_media PRIVATE nuah_host_bridge nuah_android_registry)
 set_target_properties(nuah_android_media PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 add_library(nuah_android_opensles SHARED nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_opensles PROPERTIES OUTPUT_NAME OpenSLES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
-target_compile_options(nuah_android_opensles PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_android_opensles PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_include_directories(nuah_android_opensles PRIVATE nuah/include)
 target_link_libraries(nuah_android_opensles PRIVATE nuah_host_bridge nuah_android_registry)
 set_target_properties(nuah_android_opensles PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 add_library(nuah_android_openmaxal SHARED nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_openmaxal PROPERTIES OUTPUT_NAME OpenMAXAL LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
-target_compile_options(nuah_android_openmaxal PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(nuah_android_openmaxal PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_include_directories(nuah_android_openmaxal PRIVATE nuah/include)
 target_link_libraries(nuah_android_openmaxal PRIVATE nuah_host_bridge nuah_android_registry)
 set_target_properties(nuah_android_openmaxal PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
