@@ -16,9 +16,11 @@ uintptr_t __stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 namespace {
 struct MutexEntry { void* android = nullptr; pthread_mutex_t native{}; };
 struct CondEntry { void* android = nullptr; pthread_cond_t native{}; };
+struct OnceEntry { void* android = nullptr; pthread_once_t native = PTHREAD_ONCE_INIT; };
 std::atomic_flag table_lock = ATOMIC_FLAG_INIT;
 MutexEntry mutexes[2048];
 CondEntry conditions[1024];
+OnceEntry onces[1024];
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
@@ -38,6 +40,16 @@ CondEntry* cond_for(void* object) {
   for (auto& entry : conditions) if (!entry.android) {
     entry.android = object;
     host<int (*)(pthread_cond_t*, const pthread_condattr_t*)>("pthread_cond_init")(&entry.native, nullptr);
+    unlock_table(); return &entry;
+  }
+  unlock_table(); return nullptr;
+}
+OnceEntry* once_for(void* object) {
+  lock_table();
+  for (auto& entry : onces) if (entry.android == object) { unlock_table(); return &entry; }
+  for (auto& entry : onces) if (!entry.android) {
+    entry.android = object;
+    entry.native = PTHREAD_ONCE_INIT;
     unlock_table(); return &entry;
   }
   unlock_table(); return nullptr;
@@ -127,6 +139,12 @@ int __register_atfork(void (*prepare)(void), void (*parent)(void),
                       void (*child)(void), void* dso) {
   return host<int (*)(void (*)(void), void (*)(void), void (*)(void), void*)>(
       "__register_atfork")(prepare, parent, child, dso);
+}
+int pthread_once(pthread_once_t* object, void (*function)(void)) {
+  auto* entry = once_for(object);
+  return entry ? host<int (*)(pthread_once_t*, void (*)(void))>("pthread_once")(
+                    &entry->native, function)
+               : ENOMEM;
 }
 int __cxa_atexit(void (*function)(void*), void* argument, void* dso) {
   return host<int (*)(void (*)(void*), void*, void*)>("__cxa_atexit")(
