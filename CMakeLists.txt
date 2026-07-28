@@ -184,7 +184,7 @@ set_target_properties(
 target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(nuah_android_dl PRIVATE _GNU_SOURCE)
 
-target_link_libraries(nuah_android_dl PRIVATE dl nuah_android_registry)
+target_link_libraries(nuah_android_dl PRIVATE nuah_android_registry)
 
 add_library(nuah_android_math SHARED nuah/android_shims/math.cpp)
 set_target_properties(
