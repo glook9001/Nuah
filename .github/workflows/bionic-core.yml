@@ -82,19 +82,34 @@ jobs:
           fi
           "$RUNNER_TEMP/lpunpack/lpunpack" "$super_partition" "$work/logical"
           runtime_partition=
+          runtime_apex_path=
           while IFS= read -r candidate; do
-            probe=$(debugfs -R 'stat /apex/com.android.runtime.apex' "$candidate" 2>&1 || true)
-            if grep -q 'Inode:' <<<"$probe"; then
-              runtime_partition="$candidate"
-              break
-            fi
+            # /apex is the path after Android has mounted the APEX.  The
+            # unpacked system partition stores the same package under
+            # /system/apex instead.
+            for apex_path in /apex/com.android.runtime.apex /system/apex/com.android.runtime.apex; do
+              probe=$(debugfs -R "stat $apex_path" "$candidate" 2>&1 || true)
+              if grep -q 'Inode:' <<<"$probe"; then
+                runtime_partition="$candidate"
+                runtime_apex_path="$apex_path"
+                break 2
+              fi
+            done
           done < <(find "$work/logical" -maxdepth 1 -type f -name '*.img' | sort)
           if [ -z "$runtime_partition" ]; then
-            echo 'error: no logical image contains /apex/com.android.runtime.apex' >&2
-            find "$work/logical" -maxdepth 1 -type f -printf '%f\n' >&2
+            echo 'error: no logical image contains the runtime APEX at /apex or /system/apex' >&2
+            echo 'logical images and relevant directories:' >&2
+            while IFS= read -r candidate; do
+              echo "--- $(basename "$candidate") ---" >&2
+              for path in / /apex /system /system/apex /lib64 /lib64/bionic /system/lib64 /system/lib64/bionic; do
+                echo "[$path]" >&2
+                debugfs -R "ls -l $path" "$candidate" 2>&1 >&2 || true
+              done
+            done < <(find "$work/logical" -maxdepth 1 -type f -name '*.img' | sort)
             exit 1
           fi
-          debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
+          echo "runtime APEX found in $(basename "$runtime_partition"):$runtime_apex_path"
+          debugfs -R "dump -p $runtime_apex_path $work/runtime.apex" \
             "$runtime_partition"
           if ! test -s "$work/runtime.apex"; then
             echo 'error: logical system image has no com.android.runtime APEX' >&2
