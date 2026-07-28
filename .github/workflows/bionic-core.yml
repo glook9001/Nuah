@@ -50,20 +50,20 @@ jobs:
           else
             cp "$image" "$work/system.raw.img"
           fi
-          loop_device=$(sudo losetup --find --show --partscan "$work/system.raw.img")
-          trap 'sudo losetup --detach "$loop_device"' EXIT
-          system_partition=
-          for candidate in "${loop_device}"p*; do
-            test -b "$candidate" || continue
-            if sudo debugfs -R 'stat /apex' "$candidate" 2>/dev/null | grep -q 'Inode:'; then
-              system_partition="$candidate"
+          mount_point="$work/system"
+          mkdir -p "$mount_point"
+          system_offset=
+          while read -r start; do
+            sudo mount -o ro,loop,offset="$((start * 512))" "$work/system.raw.img" "$mount_point" 2>/dev/null || continue
+            if test -f "$mount_point/apex/com.android.runtime.apex"; then
+              cp "$mount_point/apex/com.android.runtime.apex" "$work/runtime.apex"
+              system_offset="$start"
+              sudo umount "$mount_point"
               break
             fi
-          done
-          test -n "$system_partition"
-          sudo debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
-            "$system_partition" >/dev/null
-          sudo chown "$USER":"$USER" "$work/runtime.apex"
+            sudo umount "$mount_point"
+          done < <(sfdisk --json "$work/system.raw.img" | jq -r '.partitiontable.partitions[].start')
+          test -n "$system_offset"
           unzip -q "$work/runtime.apex" -d "$work/apex"
           for library in libc.so libdl.so libm.so linker64; do
             debugfs -R "dump -p /lib64/bionic/$library $work/$library" \
