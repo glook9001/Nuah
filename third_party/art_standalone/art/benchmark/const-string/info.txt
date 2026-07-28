@@ -1,1 +1,0 @@
-Benchmarks for repeating const-string instructions in a loop.

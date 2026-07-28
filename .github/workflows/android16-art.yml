@@ -194,10 +194,13 @@ jobs:
           mkdir -p .ci/host-art .ci/android16-runtime
           tar -xzf .ci/host-art-download/android16-host-art.tar.gz \
             -C .ci/host-art
-          # androidfw remains the one host dependency outside master-art.
-          make -C third_party/art_standalone -j"$(nproc)" libandroidfw
+          # The prebuilt host-ART bundle must carry the matching androidfw
+          # library and header. Nuah no longer vendors the legacy
+          # art_standalone tree as a fallback.
+          test -f .ci/host-art/libandroidfw.so
+          test -f .ci/host-art/include/androidfw/androidfw_c_api.h
           bash third_party/aosp_android16/prepare_host_runtime.sh \
-            .ci/host-art .ci/android16-runtime third_party/art_standalone
+            .ci/host-art .ci/android16-runtime .ci/host-art
       - name: Build ATL against Android 16 host ART
         shell: bash
         run: |
