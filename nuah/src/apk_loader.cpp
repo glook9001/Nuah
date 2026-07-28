@@ -275,6 +275,8 @@ void strip_android_version_requirements(std::vector<std::byte>& data) {
   clear_dynamic_value(data, *dynamic, DT_VERNEED);
   clear_dynamic_value(data, *dynamic, DT_VERNEEDNUM);
   clear_dynamic_value(data, *dynamic, DT_VERSYM);
+  clear_dynamic_value(data, *dynamic, DT_VERDEF);
+  clear_dynamic_value(data, *dynamic, DT_VERDEFNUM);
 }
 }  // namespace
 
@@ -334,7 +336,8 @@ LoadedModule& LoadedModule::operator=(LoadedModule&& other) noexcept {
 LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member) {
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
-  if (has_version_requirements(apk_member.bytes)) {
+  const bool versioned = has_version_requirements(apk_member.bytes);
+  if (versioned) {
     const char* unsafe = ::getenv("NUAH_NATIVE_UNSAFE_ELF");
     if (!unsafe || std::string(unsafe) != "1") {
       throw std::runtime_error(
@@ -344,6 +347,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     }
   }
   auto image_bytes = apk_member.bytes;
+  if (versioned) normalize_android_elf(image_bytes);
   const int fd = static_cast<int>(::syscall(SYS_memfd_create, "nuah-module", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC));
   if (fd < 0) throw std::runtime_error("memfd_create failed");
   try {
