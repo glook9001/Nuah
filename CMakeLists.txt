@@ -105,7 +105,8 @@ target_compile_definitions(
   NUAH_ATL_OVERLAY_PATH="$<TARGET_FILE:nuah_atl_overlay>")
 target_compile_options(nuah_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(
-  nuah_core PUBLIC dl ZLIB::ZLIB PkgConfig::NUAH_GIO)
+  nuah_core PUBLIC dl ZLIB::ZLIB PkgConfig::NUAH_GIO
+  PkgConfig::NUAH_PLATFORM)
 add_dependencies(nuah_core nuah_atl_overlay)
 
 add_library(nuah_android_log SHARED nuah/android_shims/log.cpp)
