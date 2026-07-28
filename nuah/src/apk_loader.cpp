@@ -20,6 +20,15 @@ constexpr std::uint32_t kEndOfCentralDirectory = 0x06054b50;
 constexpr std::uint32_t kCentralDirectory = 0x02014b50;
 constexpr std::uint32_t kLocalFile = 0x04034b50;
 
+std::filesystem::path runtime_directory() {
+  std::array<char, 4096> path{};
+  const auto size = ::readlink("/proc/self/exe", path.data(), path.size() - 1);
+  if (size <= 0 || static_cast<std::size_t>(size) >= path.size() - 1) {
+    throw std::runtime_error("cannot locate Nuah runtime directory");
+  }
+  return std::filesystem::path(std::string(path.data(), size)).parent_path();
+}
+
 void set_hybris_path_if_unset(const char* name, const std::string& value) {
   const char* existing = ::getenv(name);
   if (existing && *existing) return;
@@ -29,7 +38,7 @@ void set_hybris_path_if_unset(const char* name, const std::string& value) {
 }
 
 void configure_hybris_environment(const char* library) {
-  std::string libraries = NUAH_ANDROID_PROVIDER_DIR;
+  std::string libraries = (runtime_directory() / "android").string();
   if (const char* bionic = ::getenv("NUAH_BIONIC_LIBRARY_DIR"); bionic && *bionic) {
     libraries += ':';
     libraries += bionic;
@@ -301,10 +310,12 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     if (::close(fd) != 0) throw std::runtime_error("temporary ELF close failed");
     fd = -1;
     void* loader_library = nullptr;
-    const char* library = ::getenv("NUAH_HYBRIS_LIBRARY");
-    configure_hybris_environment(library);
-    loader_library = ::dlopen(library && *library ? library : "libhybris-common.so",
-                              RTLD_NOW | RTLD_LOCAL);
+    const char* configured_library = ::getenv("NUAH_HYBRIS_LIBRARY");
+    const std::string library = configured_library && *configured_library
+        ? configured_library
+        : (runtime_directory() / "hybris" / "lib" / "libhybris-common.so").string();
+    configure_hybris_environment(library.c_str());
+    loader_library = ::dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!loader_library) {
       const char* error = ::dlerror();
       throw std::runtime_error("cannot load libhybris common library: " +

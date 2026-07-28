@@ -179,10 +179,10 @@ restricted search path containing the game image and Nuah's providers. Nuah
 never compiles or ships synthetic replacements for `libc.so`, `libdl.so`, or
 `libm.so`.
 
-At launch Nuah derives `HYBRIS_LINKER_DIR` from `NUAH_HYBRIS_LIBRARY` and sets
-`HYBRIS_LD_LIBRARY_PATH` to its provider directory. `NUAH_BIONIC_LIBRARY_DIR`
-adds the pinned bionic runtime directory. Explicit libhybris environment
-values remain overrides for diagnostics.
+At launch Nuah finds the bundled loader, linker plugins, and provider directory
+relative to its executable. `NUAH_HYBRIS_LIBRARY` overrides the common-loader
+path; `NUAH_BIONIC_LIBRARY_DIR` adds the pinned bionic runtime directory.
+Explicit libhybris environment values remain overrides for diagnostics.
 
 Every Nuah-provider symbol must be classified as `implemented`, `translated`,
 or `unsupported`. Unsupported calls fail loudly with the symbol name; they
