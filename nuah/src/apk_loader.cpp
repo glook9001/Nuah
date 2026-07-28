@@ -240,7 +240,8 @@ const char* dependency_disposition(std::string_view soname) {
       soname == "libmediandk.so" || soname == "libOpenSLES.so" ||
       soname == "libOpenMAXAL.so" || soname == "libvulkan.so" ||
       soname == "libc.so" || soname == "libdl.so") return "implemented";
-  if (soname == "libEGL.so" || soname == "libGLESv2.so") return "translated";
+  if (soname == "libEGL.so" || soname == "libGLESv2.so" ||
+      soname == "libm.so") return "translated";
   return "unsupported";
 }
 

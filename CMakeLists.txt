@@ -175,6 +175,16 @@ target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 target_link_libraries(nuah_android_dl PRIVATE nuah_android_registry)
 
+add_library(nuah_android_math SHARED nuah/android_shims/math.cpp)
+set_target_properties(
+  nuah_android_math PROPERTIES
+  OUTPUT_NAME m
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+  LINK_OPTIONS
+    "-Wl,--no-as-needed;-Wl,-soname,libm.so;-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/math.map")
+target_compile_options(nuah_android_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(nuah_android_math PRIVATE dl m)
+
 add_executable(nuah_android_abi_registry_test
   nuah/tests/android_abi_registry_test.cpp)
 target_include_directories(nuah_android_abi_registry_test PRIVATE nuah/include)

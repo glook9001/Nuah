@@ -1,0 +1,9 @@
+LIBC {
+  global:
+    acos; acosf; asin; asinf; atan; atanf; atan2; atan2f;
+    cbrt; cbrtf; cos; cosf; cosh; coshf; exp; exp2; exp2f; expf;
+    expm1; fmod; fmodf; frexp; frexpf; ldexp; ldexpf; log; log10;
+    log10f; log2; log2f; logf; modf; modff; pow; powf; round; sin;
+    sincos; sincosf; sinf; sinh; sinhf; sqrt; sqrtf; tan; tanf; tanh;
+    tanhf;
+};
