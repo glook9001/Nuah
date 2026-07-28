@@ -38,12 +38,10 @@ void set_hybris_path_if_unset(const char* name, const std::string& value) {
 }
 
 void configure_hybris_environment(const char* library) {
-  std::string libraries = (runtime_directory() / "android").string();
-  if (const char* bionic = ::getenv("NUAH_BIONIC_LIBRARY_DIR"); bionic && *bionic) {
-    libraries += ':';
-    libraries += bionic;
-  }
-  set_hybris_path_if_unset("HYBRIS_LD_LIBRARY_PATH", libraries);
+  // Only Nuah's narrow Android-facing providers belong on the linker path.
+  // In particular, do not accept a bionic/APEX directory here: libhybris must
+  // resolve the libc/libdl/libm ABI boundary through its host hooks.
+  set_hybris_path_if_unset("HYBRIS_LD_LIBRARY_PATH", (runtime_directory() / "android").string());
   if (!library || !*library || ::getenv("HYBRIS_LINKER_DIR")) return;
   const std::filesystem::path common(library);
   if (!common.has_parent_path()) return;
