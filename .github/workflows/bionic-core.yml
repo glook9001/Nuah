@@ -52,23 +52,44 @@ jobs:
           fi
           partition_table=$(sfdisk --json "$work/system.raw.img")
           printf '%s\n' "$partition_table" | jq -r '.partitiontable.partitions[] | [.start, .size, (.name // "unnamed")] | @tsv'
-          runtime_partition=
+          super_partition=
           while IFS=$'\t' read -r start size name; do
             echo "checking GPT partition $name (start=$start sectors, size=$size sectors)"
             dd if="$work/system.raw.img" of="$work/candidate.ext4.img" bs=512 \
               skip="$start" count="$size" status=none
-            if debugfs -R 'stat /apex/com.android.runtime.apex' "$work/candidate.ext4.img" >/dev/null 2>&1; then
-              runtime_partition="$work/candidate.ext4.img"
+            if [ "$name" = super ]; then
+              super_partition="$work/candidate.ext4.img"
               break
             fi
           done < <(printf '%s\n' "$partition_table" | jq -r '.partitiontable.partitions[] | [.start, .size, (.name // "unnamed")] | @tsv' | sort -nr -k2)
-          test -n "$runtime_partition"
-          debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
-            "$runtime_partition" >/dev/null
-          unzip -q "$work/runtime.apex" -d "$work/apex"
+          if [ -z "$super_partition" ]; then
+            echo 'error: API image GPT has no dynamic super partition' >&2
+            exit 1
+          fi
+          lpunpack "$super_partition" "$work/logical"
+          runtime_partition=$(find "$work/logical" -maxdepth 1 -type f -name 'system*.img' -print -quit)
+          if [ -z "$runtime_partition" ]; then
+            echo 'error: dynamic super image has no logical system image' >&2
+            find "$work/logical" -maxdepth 1 -type f -printf '%f\n' >&2
+            exit 1
+          fi
+          if ! debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
+              "$runtime_partition"; then
+            echo 'error: logical system image has no com.android.runtime APEX' >&2
+            debugfs -R 'ls -l /apex' "$runtime_partition" >&2 || true
+            exit 1
+          fi
+          if ! unzip -q "$work/runtime.apex" -d "$work/apex"; then
+            echo 'error: extracted runtime APEX is not a readable ZIP/APEX archive' >&2
+            exit 1
+          fi
           for library in libc.so libdl.so libm.so linker64; do
-            debugfs -R "dump -p /lib64/bionic/$library $work/$library" \
-              "$work/apex/apex_payload.img" >/dev/null
+            if ! debugfs -R "dump -p /lib64/bionic/$library $work/$library" \
+                "$work/apex/apex_payload.img"; then
+              echo "error: runtime APEX is missing /lib64/bionic/$library" >&2
+              debugfs -R 'ls -l /lib64/bionic' "$work/apex/apex_payload.img" >&2 || true
+              exit 1
+            fi
           done
           install -m 0644 "$work/libc.so" bionic-core/lib64/libc.so
           install -m 0644 "$work/libdl.so" bionic-core/lib64/libdl.so
