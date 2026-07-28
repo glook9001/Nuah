@@ -174,10 +174,11 @@ libOpenMAXAL.so    optional media compatibility
 ```
 
 The libhybris bundle is built and versioned as one x86_64 unit: its common
-library and linker plugin. It has one restricted search path containing the
-game image and Nuah's providers. Nuah never compiles or ships synthetic
-replacements for `libc.so`, `libdl.so`, or `libm.so`, nor Android runtime
-libraries, APEX files, or a system image.
+library, linker plugin, and a checksum-verified extracted API-36 x86_64 bionic
+core (`linker`, `libc.so`, `libdl.so`, and `libm.so`). It has one restricted
+search path containing the game image and Nuah's providers. The bionic core is
+extracted by a dedicated CI job from a pinned image; Nuah never ships an APEX,
+system image, ART, or an Android root filesystem.
 
 At launch Nuah finds the bundled loader, linker plugins, and provider directory
 relative to its executable. `NUAH_HYBRIS_LIBRARY` overrides the common-loader

@@ -41,9 +41,11 @@ host-facing pieces to its Wayland/Vulkan implementation.  It also continues
 to own JNI, GameActivity lifecycle, input, the WebKit service, and crash
 supervision.  Libhybris does not implement any of those.
 
-The bundle must be sourced and versioned as one unit.  Nuah never imports an
-Android `libc.so`, `libdl.so`, `libm.so`, APEX, or system image; libhybris'
-hooks bridge those Android imports to the host ABI.
+The bundle is sourced and versioned as one unit. Nuah imports a pinned,
+extracted API-36 x86_64 **bionic core** (`linker`, `libc.so`, `libdl.so`, and
+`libm.so`) only after a dedicated CI probe proves that the matching libhybris
+plugin can load it. The release contains those extracted ELF files, not an
+APEX, system image, ART, or an Android root filesystem.
 
 The pinned libhybris source carries one small Nuah patch. Its Q-era linker
 models the bionic and Android-facing names required by Roblox as in-memory,
@@ -56,19 +58,20 @@ contain no ELF image, code, symbols, bionic library, or Android payload.
 
 ## Implementation order
 
-1. Pin libhybris and exercise its x86_64 linker route with a trivial DSO.
-   Upstream documentation warns that 64-bit support is incomplete and the
-   pinned plugin is Android-Q-era, not API 36. Nuah must establish API-36
-   compatibility in the host-side hooks/linker path before claiming support;
-   it must not silently fall back to `dlmopen` or import Android runtime
-   files.
-2. Add `HybrisLoader` beside the existing `ApkLoader`.  It calls
+1. In a manual CI packaging job, download a pinned Android API-36 x86_64 image,
+   extract only the matching bionic core, and record SHA-256 checksums. The
+   image is build-time input only and is never published or mounted at runtime.
+2. Pin libhybris and prove the extracted core with a tiny Android ELF. Upstream
+   documents x86_64 support as incomplete, so a failed probe blocks promotion;
+   Nuah must not silently fall back to `dlmopen`.
+3. Add `HybrisLoader` beside the existing `ApkLoader`.  It calls
    `android_dlopen`/`android_dlsym`; it does not call `dlmopen`.
-3. Generate the restricted Android linker namespace at launch and expose
+4. Generate the restricted Android linker namespace at launch and expose
    only the versioned bundle plus Nuah's Android provider directory.
-4. Retire the synthetic bionic, dl, and math providers from the Nuah build.
-   Libhybris is the sole Android loader/bionic boundary.
-5. Drive the real game through `JNI_OnLoad`, GameActivity lifecycle, host
+5. Retire Nuah's per-symbol bionic and fortify callbacks after the probe and
+   real Roblox load pass. Bionic owns its libc ABI; Nuah keeps only desktop
+   platform providers.
+6. Drive the real game through `JNI_OnLoad`, GameActivity lifecycle, host
    window/input, and Vulkan.  Keyboard correctness is verified by WASD,
    `1`–`9`, mouse buttons/motion, and wheel events in a running room.
 
@@ -84,9 +87,10 @@ contain no ELF image, code, symbols, bionic library, or Android payload.
 
 ## Gates before making this the default backend
 
-1. x86_64 libhybris linker-plugin smoke test succeeds with a representative
-   API-36-targeted DSO using host hooks only (no bionic/APEX payload).
-2. `libroblox.so` loads without Nuah's synthetic libc/libdl/libm providers.
+1. CI extracts a checksum-verified API-36 x86_64 bionic core and the probe
+   loads through the matching libhybris plugin.
+2. `libroblox.so` loads using that bionic core, without Nuah per-symbol libc
+   or fortify providers.
 3. `JNI_OnLoad` executes and reports concrete missing JNI contracts, rather
    than a loader error.
 4. The existing native window receives keyboard, mouse, and wheel input.
