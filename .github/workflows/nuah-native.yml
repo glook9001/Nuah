@@ -115,69 +115,6 @@ jobs:
             hybris-probe/hybris_loader_probe \
             "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-probe.so"
 
-  android-bionic-api36-bundle:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Android image extraction tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y android-sdk-libsparse-utils e2fsprogs unzip
-
-      - name: Install the official API-36 x86_64 system image
-        run: |
-          set -euo pipefail
-          mkdir -p .ci/android-sdk/cmdline-tools
-          curl --fail --location --retry 5 --retry-all-errors \
-            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
-            -o .ci/commandline-tools.zip
-          unzip -q .ci/commandline-tools.zip -d .ci/android-sdk/cmdline-tools
-          mv .ci/android-sdk/cmdline-tools/cmdline-tools .ci/android-sdk/cmdline-tools/latest
-          sdk=.ci/android-sdk/cmdline-tools/latest/bin/sdkmanager
-          set +o pipefail
-          yes | "$sdk" --sdk_root="$GITHUB_WORKSPACE/.ci/android-sdk" --licenses
-          set -o pipefail
-          "$sdk" --sdk_root="$GITHUB_WORKSPACE/.ci/android-sdk" \
-            'system-images;android-36;google_apis;x86_64'
-
-      - name: Extract the narrow com.android.runtime bionic bundle
-        run: |
-          set -euo pipefail
-          image=.ci/android-sdk/system-images/android-36/google_apis/x86_64/system.img
-          test -f "$image"
-          mkdir -p bionic-api36
-          found=0
-          while read -r partition start; do
-            offset=$((start * 512))
-            if debugfs -o "offset=$offset" \
-                -R 'stat apex/com.android.runtime.apex' "$image" >/dev/null 2>&1; then
-              debugfs -o "offset=$offset" \
-                -R 'dump -p apex/com.android.runtime.apex .ci/runtime.apex' "$image"
-              found=1
-              break
-            fi
-          done < <(partx --raw --noheadings --output NR,START "$image")
-          test "$found" = 1
-          unzip -q .ci/runtime.apex apex_payload.img -d .ci/runtime-apex
-          debugfs -R 'dump -p lib64/bionic/linker64 bionic-api36/linker64' \
-            .ci/runtime-apex/apex_payload.img
-          debugfs -R 'dump -p lib64/bionic/libc.so bionic-api36/libc.so' \
-            .ci/runtime-apex/apex_payload.img
-          debugfs -R 'dump -p lib64/bionic/libdl.so bionic-api36/libdl.so' \
-            .ci/runtime-apex/apex_payload.img
-          debugfs -R 'dump -p lib64/bionic/libm.so bionic-api36/libm.so' \
-            .ci/runtime-apex/apex_payload.img
-          file bionic-api36/linker64 bionic-api36/libc.so bionic-api36/libdl.so bionic-api36/libm.so
-
-      - name: Publish the API-36 bionic runtime subset
-        uses: actions/upload-artifact@v4
-        with:
-          name: nuah-bionic-api36-x86_64
-          path: bionic-api36
-          if-no-files-found: error
-
   build:
     needs: hybris-x86_64-build
     runs-on: ubuntu-24.04
