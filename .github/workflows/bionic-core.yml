@@ -50,8 +50,20 @@ jobs:
           else
             cp "$image" "$work/system.raw.img"
           fi
-          debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
-            "$work/system.raw.img" >/dev/null
+          loop_device=$(sudo losetup --find --show --partscan "$work/system.raw.img")
+          trap 'sudo losetup --detach "$loop_device"' EXIT
+          system_partition=
+          for candidate in "${loop_device}"p*; do
+            test -b "$candidate" || continue
+            if sudo debugfs -R 'stat /apex' "$candidate" 2>/dev/null | grep -q 'Inode:'; then
+              system_partition="$candidate"
+              break
+            fi
+          done
+          test -n "$system_partition"
+          sudo debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
+            "$system_partition" >/dev/null
+          sudo chown "$USER":"$USER" "$work/runtime.apex"
           unzip -q "$work/runtime.apex" -d "$work/apex"
           for library in libc.so libdl.so libm.so linker64; do
             debugfs -R "dump -p /lib64/bionic/$library $work/$library" \
