@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -171,6 +172,10 @@ int close(int fd) {
 ssize_t read(int fd, void* data, size_t count) {
   return host<ssize_t (*)(int, void*, size_t)>("read")(fd, data, count);
 }
+ssize_t __read_chk(int fd, void* data, size_t count, size_t data_size) {
+  if (count > data_size) std::abort();
+  return read(fd, data, count);
+}
 ssize_t write(int fd, const void* data, size_t count) {
   return host<ssize_t (*)(int, const void*, size_t)>("write")(fd, data, count);
 }
@@ -266,8 +271,66 @@ ssize_t readlink(const char* path, char* destination, size_t length) {
   return host<ssize_t (*)(const char*, char*, size_t)>("readlink")(
       path, destination, length);
 }
+ssize_t __readlink_chk(const char* path, char* destination, size_t length,
+                       size_t destination_size) {
+  if (length > destination_size) std::abort();
+  return readlink(path, destination, length);
+}
 int unlink(const char* path) {
   return host<int (*)(const char*)>("unlink")(path);
+}
+int __poll_chk(pollfd* descriptors, nfds_t count, int timeout,
+               size_t descriptors_size) {
+  if (count > descriptors_size / sizeof(*descriptors)) std::abort();
+  return host<int (*)(pollfd*, nfds_t, int)>("poll")(
+      descriptors, count, timeout);
+}
+size_t __fread_chk(void* destination, size_t size, size_t count,
+                   std::FILE* stream, size_t destination_size) {
+  if (size != 0 && count > destination_size / size) std::abort();
+  return host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread")(
+      destination, size, count, stream);
+}
+char* __strncpy_chk(char* destination, const char* source, size_t count,
+                    size_t destination_size) {
+  if (count > destination_size) std::abort();
+  return strncpy(destination, source, count);
+}
+int __vsnprintf_chk(char* destination, size_t size, int, size_t destination_size,
+                    const char* format, va_list arguments) {
+  if (size > destination_size) std::abort();
+  return host<int (*)(char*, size_t, const char*, va_list)>("vsnprintf")(
+      destination, size, format, arguments);
+}
+int __vsprintf_chk(char* destination, int, size_t destination_size,
+                   const char* format, va_list arguments) {
+  const int result =
+      host<int (*)(char*, size_t, const char*, va_list)>("vsnprintf")(
+          destination, destination_size, format, arguments);
+  if (result < 0 || static_cast<size_t>(result) >= destination_size) {
+    std::abort();
+  }
+  return result;
+}
+void __assert(const char* file, int line, const char* expression) {
+  std::fprintf(stderr, "[bionic] assertion %s:%d: %s\n",
+               file ? file : "?", line, expression ? expression : "?");
+  std::abort();
+}
+[[noreturn]] void __stack_chk_fail() {
+  std::fprintf(stderr, "[bionic] stack corruption detected\n");
+  std::abort();
+}
+extern "C" size_t nuah_ctype_get_mb_cur_max()
+    __asm__("__ctype_get_mb_cur_max");
+size_t nuah_ctype_get_mb_cur_max() {
+  return host<size_t (*)()>("__ctype_get_mb_cur_max")();
+}
+extern "C" cmsghdr* nuah_cmsg_nxthdr(msghdr* message, cmsghdr* current)
+    __asm__("__cmsg_nxthdr");
+cmsghdr* nuah_cmsg_nxthdr(msghdr* message, cmsghdr* current) {
+  return host<cmsghdr* (*)(msghdr*, cmsghdr*)>("__cmsg_nxthdr")(
+      message, current);
 }
 void __cxa_finalize(void* dso) {
   host<void (*)(void*)>("__cxa_finalize")(dso);

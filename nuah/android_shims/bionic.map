@@ -4,9 +4,12 @@ LIBC {
     __memset_chk; __memcpy_chk; __memmove_chk; __strcpy_chk; __strcat_chk;
     strncmp; strcpy; strncpy; strcat; strncat; strchr; strrchr; strstr;
     strcasecmp; strncasecmp; strerror;
-    close; read; write; pread; pwrite; writev; open; __open_2; access;
+    close; read; __read_chk; write; pread; pwrite; writev; open; __open_2;
+    access;
     fchmod; fchown; fcntl; fstat; lstat; stat; fsync; ftruncate; lseek;
-    mkdir; mmap; mprotect; munmap; readlink; unlink;
+    mkdir; mmap; mprotect; munmap; readlink; __readlink_chk; unlink;
+    __poll_chk; __fread_chk; __strncpy_chk; __vsnprintf_chk; __vsprintf_chk;
+    __assert; __stack_chk_fail; __ctype_get_mb_cur_max; __cmsg_nxthdr;
     __cxa_atexit; __cxa_finalize; __cxa_thread_atexit_impl; __register_atfork;
     pthread_once;
     __FD_CLR_chk; __FD_ISSET_chk; __FD_SET_chk; __assert2; __errno;
