@@ -9,6 +9,7 @@
 #include <zlib.h>
 
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <optional>
@@ -206,6 +207,33 @@ std::vector<std::string> needed_libraries(const std::vector<std::byte>& data) {
   return result;
 }
 
+bool has_version_requirements(const std::vector<std::byte>& data) {
+  validate_elf(data);
+  Elf64_Ehdr header{};
+  std::memcpy(&header, data.data(), sizeof(header));
+  if (header.e_phoff > data.size() || header.e_phnum >
+      (data.size() - header.e_phoff) / sizeof(Elf64_Phdr)) {
+    throw std::runtime_error("ELF program headers are outside the image");
+  }
+  for (std::uint16_t i = 0; i < header.e_phnum; ++i) {
+    Elf64_Phdr ph{};
+    std::memcpy(&ph, data.data() + header.e_phoff + i * sizeof(ph), sizeof(ph));
+    if (ph.p_type != PT_DYNAMIC) continue;
+    if (ph.p_offset > data.size() || ph.p_filesz > data.size() - ph.p_offset ||
+        ph.p_filesz % sizeof(Elf64_Dyn)) {
+      throw std::runtime_error("ELF dynamic section is outside the image");
+    }
+    const auto* entries = reinterpret_cast<const Elf64_Dyn*>(data.data() + ph.p_offset);
+    const auto count = ph.p_filesz / sizeof(Elf64_Dyn);
+    for (std::size_t j = 0; j < count && entries[j].d_tag != DT_NULL; ++j) {
+      if (entries[j].d_tag == DT_VERNEED || entries[j].d_tag == DT_VERNEEDNUM ||
+          entries[j].d_tag == DT_VERSYM) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 void clear_dynamic_value(std::vector<std::byte>& data, Elf64_Phdr dynamic,
                          Elf64_Sxword tag) {
   if (dynamic.p_offset > data.size() || dynamic.p_filesz >
@@ -306,6 +334,15 @@ LoadedModule& LoadedModule::operator=(LoadedModule&& other) noexcept {
 LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member) {
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
+  if (has_version_requirements(apk_member.bytes)) {
+    const char* unsafe = ::getenv("NUAH_NATIVE_UNSAFE_ELF");
+    if (!unsafe || std::string(unsafe) != "1") {
+      throw std::runtime_error(
+          "Android ELF has GNU symbol-version requirements; refusing to "
+          "enter the host linker until Nuah's Android namespace translator "
+          "is active (set NUAH_NATIVE_UNSAFE_ELF=1 only for diagnostics)");
+    }
+  }
   auto image_bytes = apk_member.bytes;
   const int fd = static_cast<int>(::syscall(SYS_memfd_create, "nuah-module", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC));
   if (fd < 0) throw std::runtime_error("memfd_create failed");
