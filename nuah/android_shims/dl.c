@@ -1,6 +1,6 @@
 #include <dlfcn.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <stddef.h>
 
 #include "nuah/android_abi_registry.h"
 
@@ -15,11 +15,25 @@ asm(".symver host_dlclose,dlclose@GLIBC_2.2.5");
 asm(".symver host_dlerror,dlerror@GLIBC_2.2.5");
 asm(".symver host_dlvsym,dlvsym@GLIBC_2.2.5");
 
+static uintptr_t parse_hex(const char* text) {
+  uintptr_t value = 0;
+  if (!text) return 0;
+  for (; *text; ++text) {
+    unsigned int digit;
+    if (*text >= '0' && *text <= '9') digit = (unsigned int)(*text - '0');
+    else if (*text >= 'a' && *text <= 'f') digit = (unsigned int)(*text - 'a' + 10);
+    else if (*text >= 'A' && *text <= 'F') digit = (unsigned int)(*text - 'A' + 10);
+    else break;
+    value = (value << 4) | digit;
+  }
+  return value;
+}
+
 int dladdr(const void* address, Dl_info* info) {
   const char* base_text = getenv("NUAH_IMAGE_BASE");
   const char* size_text = getenv("NUAH_IMAGE_SIZE");
-  const uintptr_t base = base_text ? strtoull(base_text, NULL, 16) : 0;
-  const uintptr_t size = size_text ? strtoull(size_text, NULL, 16) : 0;
+  const uintptr_t base = parse_hex(base_text);
+  const uintptr_t size = parse_hex(size_text);
   const uintptr_t value = (uintptr_t)address;
   if (!base || !size || value < base || value >= base + size) return 0;
   info->dli_fname = "libroblox.so";
