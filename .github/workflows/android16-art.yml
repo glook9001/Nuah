@@ -2,13 +2,9 @@ name: Android 16 ATL runtime build
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'CMakeLists.txt'
-      - 'nuah/**'
-      - 'third_party/android_translation_layer/**'
-      - 'third_party/aosp_android16/**'
-      - '.github/workflows/android16-art.yml'
+
+# Push-triggered CI is enabled after the verified host-ART bundle is uploaded
+# and NUAH_ART_BUNDLE_URL/NUAH_ART_BUNDLE_SHA256 are configured.
 
 concurrency:
   group: android16-atl-${{ github.ref }}
