@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <atomic>
 #include <pthread.h>
