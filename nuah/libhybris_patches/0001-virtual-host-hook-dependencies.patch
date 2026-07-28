@@ -33,6 +33,22 @@ diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
 diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
 --- a/hybris/common/q/linker.cpp
 +++ b/hybris/common/q/linker.cpp
+@@ -2214,6 +2214,15 @@ void* do_dlopen(const char* name, int flags,
+   soinfo* const caller = find_containing_library(caller_addr);
+   android_namespace_t* ns = get_caller_namespace(caller);
+ 
++  // Android applications also dlopen these framework libraries directly.
++  // Return the same symbol-hook-backed virtual handle used for DT_NEEDED,
++  // instead of falling through to an on-disk Android provider.
++  if (name != nullptr && extinfo == nullptr) {
++    if (soinfo* host_hook_dependency = get_host_hook_dependency(ns, name)) {
++      return host_hook_dependency->to_handle();
++    }
++  }
++
+   LD_LOG(kLogDlopen,
+          "dlopen(name=\"%s\", flags=0x%x, extinfo=%s, caller=\"%s\", caller_ns=%s@%p, targetSdkVersion=%i) ...",
+          name,
 @@ -1588,6 +1588,11 @@ static bool find_library_internal(android_namespace_t* ns,
    TRACE("[ \"%s\" find_loaded_library_by_soname failed (*candidate=%s@%p). Trying harder... ]",
          task->get_name(), candidate == nullptr ? "n/a" : candidate->get_realpath(), candidate);
