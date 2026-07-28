@@ -174,7 +174,7 @@ set_target_properties(nuah_android_dl PROPERTIES OUTPUT_NAME dl LIBRARY_OUTPUT_D
 target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 foreach(alias IN ITEMS m EGL GLESv2)
-  add_library(nuah_android_${alias} SHARED nuah/android_shims/host_alias.cpp)
+  add_library(nuah_android_${alias} SHARED nuah/android_shims/host_alias.c)
   set_target_properties(
     nuah_android_${alias} PROPERTIES
     OUTPUT_NAME "${alias}"
