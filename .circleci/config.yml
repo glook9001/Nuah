@@ -78,10 +78,11 @@ jobs:
           name: Build Android 16 ART host runtime
           no_output_timeout: 60m
           command: |
-            set -euo pipefail
+            set -eo pipefail
             ccache -M 10G
             cd .ci/aosp-master-art
             source build/envsetup.sh
+            set -u
             banchan com.android.art x86_64
             m apps_only dist
             m dalvikvm64 libart libnativebridge
