@@ -5,8 +5,13 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <atomic>
+#include <cstdarg>
+#include <fcntl.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 extern "C" {
@@ -159,6 +164,110 @@ int strncasecmp(const char* left, const char* right, size_t length) {
 }
 char* strerror(int error) {
   return host<char* (*)(int)>("strerror")(error);
+}
+int close(int fd) {
+  return host<int (*)(int)>("close")(fd);
+}
+ssize_t read(int fd, void* data, size_t count) {
+  return host<ssize_t (*)(int, void*, size_t)>("read")(fd, data, count);
+}
+ssize_t write(int fd, const void* data, size_t count) {
+  return host<ssize_t (*)(int, const void*, size_t)>("write")(fd, data, count);
+}
+ssize_t pread(int fd, void* data, size_t count, off_t offset) {
+  return host<ssize_t (*)(int, void*, size_t, off_t)>("pread")(
+      fd, data, count, offset);
+}
+ssize_t pwrite(int fd, const void* data, size_t count, off_t offset) {
+  return host<ssize_t (*)(int, const void*, size_t, off_t)>("pwrite")(
+      fd, data, count, offset);
+}
+ssize_t writev(int fd, const iovec* vectors, int count) {
+  return host<ssize_t (*)(int, const iovec*, int)>("writev")(
+      fd, vectors, count);
+}
+int open(const char* path, int flags, ...) {
+  mode_t mode = 0;
+  if ((flags & O_CREAT) != 0
+#ifdef O_TMPFILE
+      || (flags & O_TMPFILE) == O_TMPFILE
+#endif
+  ) {
+    va_list arguments;
+    va_start(arguments, flags);
+    mode = static_cast<mode_t>(va_arg(arguments, int));
+    va_end(arguments);
+  }
+  return host<int (*)(const char*, int, mode_t)>("open")(path, flags, mode);
+}
+int __open_2(const char* path, int flags) {
+  return host<int (*)(const char*, int)>("__open_2")(path, flags);
+}
+int access(const char* path, int mode) {
+  return host<int (*)(const char*, int)>("access")(path, mode);
+}
+int fchmod(int fd, mode_t mode) {
+  return host<int (*)(int, mode_t)>("fchmod")(fd, mode);
+}
+int fchown(int fd, uid_t owner, gid_t group) {
+  return host<int (*)(int, uid_t, gid_t)>("fchown")(fd, owner, group);
+}
+int fcntl(int fd, int command, ...) {
+  uintptr_t argument = 0;
+  switch (command) {
+    case F_GETFD:
+    case F_GETFL:
+    case F_GETOWN:
+      break;
+    default: {
+      va_list arguments;
+      va_start(arguments, command);
+      argument = va_arg(arguments, uintptr_t);
+      va_end(arguments);
+      break;
+    }
+  }
+  return host<int (*)(int, int, uintptr_t)>("fcntl")(fd, command, argument);
+}
+int fstat(int fd, struct stat* value) {
+  return host<int (*)(int, struct stat*)>("fstat")(fd, value);
+}
+int lstat(const char* path, struct stat* value) {
+  return host<int (*)(const char*, struct stat*)>("lstat")(path, value);
+}
+int stat(const char* path, struct stat* value) {
+  return host<int (*)(const char*, struct stat*)>("stat")(path, value);
+}
+int fsync(int fd) {
+  return host<int (*)(int)>("fsync")(fd);
+}
+int ftruncate(int fd, off_t length) {
+  return host<int (*)(int, off_t)>("ftruncate")(fd, length);
+}
+off_t lseek(int fd, off_t offset, int origin) {
+  return host<off_t (*)(int, off_t, int)>("lseek")(fd, offset, origin);
+}
+int mkdir(const char* path, mode_t mode) {
+  return host<int (*)(const char*, mode_t)>("mkdir")(path, mode);
+}
+void* mmap(void* address, size_t length, int protection, int flags, int fd,
+           off_t offset) {
+  return host<void* (*)(void*, size_t, int, int, int, off_t)>("mmap")(
+      address, length, protection, flags, fd, offset);
+}
+int mprotect(void* address, size_t length, int protection) {
+  return host<int (*)(void*, size_t, int)>("mprotect")(
+      address, length, protection);
+}
+int munmap(void* address, size_t length) {
+  return host<int (*)(void*, size_t)>("munmap")(address, length);
+}
+ssize_t readlink(const char* path, char* destination, size_t length) {
+  return host<ssize_t (*)(const char*, char*, size_t)>("readlink")(
+      path, destination, length);
+}
+int unlink(const char* path) {
+  return host<int (*)(const char*)>("unlink")(path);
 }
 void __cxa_finalize(void* dso) {
   host<void (*)(void*)>("__cxa_finalize")(dso);
