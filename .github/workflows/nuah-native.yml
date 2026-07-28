@@ -5,6 +5,8 @@ on:
     paths:
       - 'CMakeLists.txt'
       - 'nuah/**'
+      - 'third_party/libhybris.lock'
+      - 'NUAH_LIBHYBRIS_PIVOT.md'
       - '.github/workflows/nuah-native.yml'
   workflow_dispatch:
 
@@ -13,6 +15,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  hybris-source-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inspect pinned libhybris loader source
+        run: |
+          set -euo pipefail
+          . third_party/libhybris.lock
+          test "$required_arch" = x86-64
+          test "$required_android_api" = 36
+          git clone --filter=blob:none --no-checkout "$repository" hybris-source
+          git -C hybris-source checkout --detach "$revision"
+          test "$(git -C hybris-source rev-parse HEAD)" = "$revision"
+          test -f hybris-source/hybris/configure.ac
+          test -f hybris-source/hybris/common/q/linker.cpp
+          grep -F 'xx86-64' hybris-source/hybris/configure.ac
+          grep -F "android_dlopen" hybris-source/hybris/common/hooks.c
+
+      - name: Enforce the x86_64 support gate
+        run: |
+          set -euo pipefail
+          if grep -qi 'only supports 32 bit' hybris-source/hybris/README; then
+            echo 'Pinned upstream libhybris explicitly rejects 64-bit support.' >&2
+            echo 'Nuah requires an x86_64-capable fork/port before this pivot can build.' >&2
+            exit 1
+          fi
+          echo 'Source no longer rejects 64-bit support; API-36 smoke build is next.'
+
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 45

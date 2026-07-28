@@ -1,0 +1,7 @@
+# Loader-pivot source provenance.  This is not a vendored dependency.
+# GitHub Actions checks this revision before an x86_64 linker-plugin build is
+# permitted.  A release bundle records the exact matching bionic revision.
+repository=https://github.com/libhybris/libhybris.git
+revision=7079712a42ea2754adf747e70c6cc75764c8596e
+required_arch=x86-64
+required_android_api=36
