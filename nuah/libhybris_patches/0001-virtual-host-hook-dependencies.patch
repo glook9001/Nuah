@@ -91,7 +91,7 @@ diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.c
    uint32_t symbol_index;
    bool success =
        is_gnu_hash() ?
-@@ -291,6 +298,11 @@ bool soinfo::gnu_lookup(SymbolName& symbol_name,
+@@ -291,6 +291,11 @@ bool soinfo::gnu_lookup(SymbolName& symbol_name,
  bool soinfo::elf_lookup(SymbolName& symbol_name,
                          const version_info* vi,
                          uint32_t* symbol_index) const {
