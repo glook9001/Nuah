@@ -57,9 +57,8 @@ boundary, not an interchangeable collection of `.so` files.
    `android_dlopen`/`android_dlsym`; it does not call `dlmopen`.
 3. Generate the restricted Android linker namespace at launch and expose
    only the versioned bundle plus Nuah's Android provider directory.
-4. Retire the synthetic bionic, dl, and math providers from this backend.
-   Keep them only for the direct diagnostic backend until the hybris loader
-   passes `JNI_OnLoad`.
+4. Retire the synthetic bionic, dl, and math providers from the Nuah build.
+   Libhybris is the sole Android loader/bionic boundary.
 5. Drive the real game through `JNI_OnLoad`, GameActivity lifecycle, host
    window/input, and Vulkan.  Keyboard correctness is verified by WASD,
    `1`–`9`, mouse buttons/motion, and wheel events in a running room.

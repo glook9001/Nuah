@@ -7,8 +7,6 @@
 
 namespace nuah {
 
-enum class LoaderBackend { Direct, Hybris };
-
 struct ApkMember {
   std::string name;
   std::vector<std::byte> bytes;
@@ -29,7 +27,7 @@ class LoadedModule {
   std::size_t size() const { return size_; }
 
  private:
-  friend LoadedModule load_apk_library(const std::filesystem::path&, const std::string&, LoaderBackend);
+  friend LoadedModule load_apk_library(const std::filesystem::path&, const std::string&);
   std::filesystem::path path_;
   void* handle_ = nullptr;
   void* loader_library_ = nullptr;
@@ -44,7 +42,6 @@ std::vector<ApkMember> read_apk_members_with_prefix(
 std::vector<std::string> elf_needed_libraries(
     const std::vector<std::byte>& elf_bytes);
 LoadedModule load_apk_library(const std::filesystem::path& apk,
-                              const std::string& member,
-                              LoaderBackend backend = LoaderBackend::Direct);
+                              const std::string& member);
 
 }  // namespace nuah

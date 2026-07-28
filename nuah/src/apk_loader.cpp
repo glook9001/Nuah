@@ -2,7 +2,6 @@
 
 #include <elf.h>
 #include <dlfcn.h>
-#include <link.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -14,7 +13,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 
 namespace nuah {
 namespace {
@@ -207,53 +205,6 @@ std::vector<std::string> needed_libraries(const std::vector<std::byte>& data) {
   return result;
 }
 
-bool has_version_requirements(const std::vector<std::byte>& data) {
-  validate_elf(data);
-  Elf64_Ehdr header{};
-  std::memcpy(&header, data.data(), sizeof(header));
-  if (header.e_phoff > data.size() || header.e_phnum >
-      (data.size() - header.e_phoff) / sizeof(Elf64_Phdr)) {
-    throw std::runtime_error("ELF program headers are outside the image");
-  }
-  for (std::uint16_t i = 0; i < header.e_phnum; ++i) {
-    Elf64_Phdr ph{};
-    std::memcpy(&ph, data.data() + header.e_phoff + i * sizeof(ph), sizeof(ph));
-    if (ph.p_type != PT_DYNAMIC) continue;
-    if (ph.p_offset > data.size() || ph.p_filesz > data.size() - ph.p_offset ||
-        ph.p_filesz % sizeof(Elf64_Dyn)) {
-      throw std::runtime_error("ELF dynamic section is outside the image");
-    }
-    const auto* entries = reinterpret_cast<const Elf64_Dyn*>(data.data() + ph.p_offset);
-    const auto count = ph.p_filesz / sizeof(Elf64_Dyn);
-    for (std::size_t j = 0; j < count && entries[j].d_tag != DT_NULL; ++j) {
-      if (entries[j].d_tag == DT_VERNEED || entries[j].d_tag == DT_VERNEEDNUM ||
-          entries[j].d_tag == DT_VERSYM) return true;
-    }
-    return false;
-  }
-  return false;
-}
-
-const char* dependency_disposition(std::string_view soname) {
-  if (soname == "libandroid.so" || soname == "liblog.so" ||
-      soname == "libmediandk.so" || soname == "libOpenSLES.so" ||
-      soname == "libOpenMAXAL.so" || soname == "libvulkan.so" ||
-      soname == "libc.so") return "implemented";
-  if (soname == "libdl.so") return "forwarded";
-  if (soname == "libEGL.so" || soname == "libGLESv2.so" ||
-      soname == "libm.so") return "translated";
-  return "unsupported";
-}
-
-std::string dependency_report(const std::vector<std::byte>& data) {
-  std::string report;
-  for (const auto& soname : needed_libraries(data)) {
-    if (!report.empty()) report += ", ";
-    report += soname + "=" + dependency_disposition(soname);
-  }
-  return report;
-}
-
 }  // namespace
 
 ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::string& member) {
@@ -313,23 +264,9 @@ void* LoadedModule::symbol(const char* name) const {
   return handle_ && symbol_ ? symbol_(handle_, name) : nullptr;
 }
 
-LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member,
-                              LoaderBackend backend) {
+LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member) {
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
-  if (backend == LoaderBackend::Direct && has_version_requirements(apk_member.bytes)) {
-    const char* probe = ::getenv("NUAH_NATIVE_TRY_TRANSLATION");
-    if (probe && std::string(probe) == "1") {
-      std::fprintf(stderr,
-                   "nuah: trying registered Android version providers "
-                   "(diagnostic mode)\n");
-    } else {
-    throw std::runtime_error(
-        "Android ELF has GNU symbol-version requirements; refusing to enter "
-        "the host linker until Nuah's Android namespace translator is active "
-        "(dependencies: " + dependency_report(apk_member.bytes) + ")");
-    }
-  }
   const auto& image_bytes = apk_member.bytes;
   char path_template[] = "/tmp/nuah-module-XXXXXX";
   int fd = ::mkstemp(path_template);
@@ -341,47 +278,39 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     if (::close(fd) != 0) throw std::runtime_error("temporary ELF close failed");
     fd = -1;
     void* loader_library = nullptr;
-    auto close = ::dlclose;
-    auto symbol = ::dlsym;
-    void* handle = nullptr;
-    if (backend == LoaderBackend::Hybris) {
-      const char* library = ::getenv("NUAH_HYBRIS_LIBRARY");
-      loader_library = ::dlopen(library && *library ? library : "libhybris-common.so",
-                                RTLD_NOW | RTLD_LOCAL);
-      if (!loader_library) {
-        throw std::runtime_error("cannot load libhybris common library: " +
-                                 std::string(::dlerror()));
-      }
-      const auto android_dlopen = reinterpret_cast<void* (*)(const char*, int)>(
-          ::dlsym(loader_library, "android_dlopen"));
-      const auto android_dlclose = reinterpret_cast<int (*)(void*)>(
-          ::dlsym(loader_library, "android_dlclose"));
-      const auto android_dlsym = reinterpret_cast<void* (*)(void*, const char*)>(
-          ::dlsym(loader_library, "android_dlsym"));
-      if (!android_dlopen || !android_dlclose || !android_dlsym) {
-        ::dlclose(loader_library);
-        throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
-      }
-      handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-      close = android_dlclose;
-      symbol = android_dlsym;
-    } else {
-      handle = ::dlmopen(LM_ID_NEWLM, path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    const char* library = ::getenv("NUAH_HYBRIS_LIBRARY");
+    loader_library = ::dlopen(library && *library ? library : "libhybris-common.so",
+                              RTLD_NOW | RTLD_LOCAL);
+    if (!loader_library) {
+      const char* error = ::dlerror();
+      throw std::runtime_error("cannot load libhybris common library: " +
+                               std::string(error ? error : "unknown error"));
     }
+    const auto android_dlopen = reinterpret_cast<void* (*)(const char*, int)>(
+        ::dlsym(loader_library, "android_dlopen"));
+    const auto android_dlclose = reinterpret_cast<int (*)(void*)>(
+        ::dlsym(loader_library, "android_dlclose"));
+    const auto android_dlsym = reinterpret_cast<void* (*)(void*, const char*)>(
+        ::dlsym(loader_library, "android_dlsym"));
+    if (!android_dlopen || !android_dlclose || !android_dlsym) {
+      ::dlclose(loader_library);
+      throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
+    }
+    void* handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
-      std::string message = backend == LoaderBackend::Hybris ? "android_dlopen failed: " : "dlmopen failed: ";
+      std::string message = "android_dlopen failed: ";
       const char* error = ::dlerror();
       message += error ? error : "unknown loader error";
       const auto needed = needed_libraries(apk_member.bytes);
       if (!needed.empty()) {
         message += " (Android image needs";
         for (const auto& library : needed) message += " " + library;
-        message += "; host soname/version translation is required)";
+        message += "; matching libhybris/bionic runtime is required)";
       }
       if (loader_library) ::dlclose(loader_library);
       throw std::runtime_error(message);
     }
-    LoadedModule result; result.path_ = path; result.handle_ = handle; result.loader_library_ = loader_library; result.close_ = close; result.symbol_ = symbol; result.size_ = image_bytes.size();
+    LoadedModule result; result.path_ = path; result.handle_ = handle; result.loader_library_ = loader_library; result.close_ = android_dlclose; result.symbol_ = android_dlsym; result.size_ = image_bytes.size();
     return result;
   } catch (...) {
     if (fd >= 0) ::close(fd);

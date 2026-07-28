@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(nuah VERSION 0.1.0 LANGUAGES C CXX ASM)
+project(nuah VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -104,7 +104,6 @@ add_library(nuah_core
 target_include_directories(nuah_core PUBLIC nuah/include)
 target_include_directories(nuah_core PUBLIC ${JNI_INCLUDE_DIRS})
 target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
-target_compile_definitions(nuah_core PRIVATE NUAH_ANDROID_LIBRARY_DIR="${CMAKE_BINARY_DIR}/android")
 target_compile_definitions(
   nuah_core PRIVATE
   NUAH_ATL_OVERLAY_PATH="$<TARGET_FILE:nuah_atl_overlay>")
@@ -165,43 +164,6 @@ target_compile_options(nuah_android_openmaxal PRIVATE -Wall -Wextra -Wpedantic -
 target_include_directories(nuah_android_openmaxal PRIVATE nuah/include)
 target_link_libraries(nuah_android_openmaxal PRIVATE nuah_host_bridge nuah_android_registry)
 set_target_properties(nuah_android_openmaxal PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
-
-add_library(nuah_android_bionic SHARED
-  nuah/android_shims/bionic.cpp
-  nuah/android_shims/bionic_forward.S)
-set_target_properties(
-  nuah_android_bionic PROPERTIES
-  OUTPUT_NAME c
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
-  LINK_OPTIONS
-    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/bionic.map;-Wl,-soname,libc.so")
-target_compile_options(nuah_android_bionic PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_compile_definitions(
-  nuah_android_bionic PRIVATE
-  NUAH_ANDROID_API_LEVEL=${NUAH_ANDROID_API_LEVEL})
-target_link_libraries(nuah_android_bionic PRIVATE dl nuah_android_registry)
-
-add_library(nuah_android_dl SHARED nuah/android_shims/dl.c)
-set_target_properties(
-  nuah_android_dl PROPERTIES
-  OUTPUT_NAME dl
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
-  LINK_OPTIONS
-    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/dl.map;-Wl,-soname,libdl.so")
-target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_compile_definitions(nuah_android_dl PRIVATE _GNU_SOURCE)
-
-target_link_libraries(nuah_android_dl PRIVATE nuah_android_registry)
-
-add_library(nuah_android_math SHARED nuah/android_shims/math.cpp)
-set_target_properties(
-  nuah_android_math PROPERTIES
-  OUTPUT_NAME m
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
-  LINK_OPTIONS
-    "-Wl,--no-as-needed;-Wl,-soname,libm.so;-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/math.map")
-target_compile_options(nuah_android_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(nuah_android_math PRIVATE dl m nuah_android_registry)
 
 add_executable(nuah_android_abi_registry_test
   nuah/tests/android_abi_registry_test.cpp)
