@@ -1,6 +1,6 @@
 LIBC {
   global:
-    __cxa_atexit; __cxa_finalize; __cxa_thread_atexit_impl;
+    __cxa_atexit; __cxa_finalize; __cxa_thread_atexit_impl; __register_atfork;
     __FD_CLR_chk; __FD_ISSET_chk; __FD_SET_chk; __assert2; __errno;
     __gnu_strerror_r; __strchr_chk; __strlen_chk; __strncpy_chk2;
     __system_property_get; __fwrite_chk; __write_chk; __sendto_chk;

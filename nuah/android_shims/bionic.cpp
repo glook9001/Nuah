@@ -48,6 +48,11 @@ extern "C" {
 void __cxa_finalize(void* dso) {
   host<void (*)(void*)>("__cxa_finalize")(dso);
 }
+int __register_atfork(void (*prepare)(void), void (*parent)(void),
+                      void (*child)(void), void* dso) {
+  return host<int (*)(void (*)(void), void (*)(void), void (*)(void), void*)>(
+      "__register_atfork")(prepare, parent, child, dso);
+}
 int __cxa_atexit(void (*function)(void*), void* argument, void* dso) {
   return host<int (*)(void (*)(void*), void*, void*)>("__cxa_atexit")(
       function, argument, dso);
