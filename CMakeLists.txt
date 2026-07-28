@@ -172,6 +172,17 @@ target_link_libraries(nuah_android_bionic PRIVATE dl nuah_android_registry)
 add_library(nuah_android_dl SHARED nuah/android_shims/dl.cpp)
 set_target_properties(nuah_android_dl PROPERTIES OUTPUT_NAME dl LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
 target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+foreach(alias IN ITEMS m EGL GLESv2)
+  add_library(nuah_android_${alias} SHARED nuah/android_shims/host_alias.cpp)
+  set_target_properties(
+    nuah_android_${alias} PROPERTIES
+    OUTPUT_NAME "${alias}"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+    LINK_OPTIONS "-Wl,--no-as-needed;-Wl,-soname,lib${alias}.so")
+  target_compile_options(nuah_android_${alias} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_link_libraries(nuah_android_${alias} PRIVATE "${alias}")
+endforeach()
 target_link_libraries(nuah_android_dl PRIVATE nuah_android_registry)
 
 add_executable(nuah_android_abi_registry_test

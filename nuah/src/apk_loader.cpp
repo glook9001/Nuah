@@ -205,6 +205,43 @@ std::vector<std::string> needed_libraries(const std::vector<std::byte>& data) {
   }
   return result;
 }
+
+void clear_dynamic_value(std::vector<std::byte>& data, Elf64_Phdr dynamic,
+                         Elf64_Sxword tag) {
+  if (dynamic.p_offset > data.size() || dynamic.p_filesz >
+      data.size() - dynamic.p_offset || dynamic.p_filesz % sizeof(Elf64_Dyn)) {
+    throw std::runtime_error("ELF dynamic section is outside the image");
+  }
+  const std::size_t count = dynamic.p_filesz / sizeof(Elf64_Dyn);
+  for (std::size_t i = 0; i < count; ++i) {
+    auto* entry = reinterpret_cast<Elf64_Dyn*>(data.data() + dynamic.p_offset +
+                                               i * sizeof(Elf64_Dyn));
+    if (entry->d_tag == tag) entry->d_un.d_ptr = 0;
+  }
+}
+
+void strip_android_version_requirements(std::vector<std::byte>& data) {
+  validate_elf(data);
+  Elf64_Ehdr header{};
+  std::memcpy(&header, data.data(), sizeof(header));
+  if (header.e_phoff > data.size() || header.e_phnum >
+      (data.size() - header.e_phoff) / sizeof(Elf64_Phdr)) {
+    throw std::runtime_error("ELF program headers are outside the image");
+  }
+  std::optional<Elf64_Phdr> dynamic;
+  for (std::uint16_t i = 0; i < header.e_phnum; ++i) {
+    Elf64_Phdr ph{};
+    std::memcpy(&ph, data.data() + header.e_phoff + i * sizeof(ph), sizeof(ph));
+    if (ph.p_type == PT_DYNAMIC) {
+      dynamic = ph;
+      break;
+    }
+  }
+  if (!dynamic) return;
+  clear_dynamic_value(data, *dynamic, DT_VERNEED);
+  clear_dynamic_value(data, *dynamic, DT_VERNEEDNUM);
+  clear_dynamic_value(data, *dynamic, DT_VERSYM);
+}
 }  // namespace
 
 ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::string& member) {
@@ -244,6 +281,10 @@ std::vector<std::string> elf_needed_libraries(
   return needed_libraries(elf_bytes);
 }
 
+void normalize_android_elf(std::vector<std::byte>& elf_bytes) {
+  strip_android_version_requirements(elf_bytes);
+}
+
 LoadedModule::~LoadedModule() {
   if (handle_) ::dlclose(handle_);
   if (fd_ >= 0) ::close(fd_);
@@ -259,11 +300,13 @@ LoadedModule& LoadedModule::operator=(LoadedModule&& other) noexcept {
 LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member) {
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
+  auto image_bytes = apk_member.bytes;
+  normalize_android_elf(image_bytes);
   const int fd = static_cast<int>(::syscall(SYS_memfd_create, "nuah-module", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC));
   if (fd < 0) throw std::runtime_error("memfd_create failed");
   try {
-    if (::ftruncate(fd, static_cast<off_t>(apk_member.bytes.size())) != 0) throw std::runtime_error("memfd truncate failed");
-    write_all(fd, apk_member.bytes);
+    if (::ftruncate(fd, static_cast<off_t>(image_bytes.size())) != 0) throw std::runtime_error("memfd truncate failed");
+    write_all(fd, image_bytes);
     if (::fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE) != 0) throw std::runtime_error("memfd seal failed");
     const std::string path = "/proc/self/fd/" + std::to_string(fd);
     void* handle = ::dlmopen(LM_ID_NEWLM, path.c_str(), RTLD_NOW | RTLD_LOCAL);
@@ -278,7 +321,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       }
       throw std::runtime_error(message);
     }
-    LoadedModule result; result.fd_ = fd; result.handle_ = handle; result.size_ = apk_member.bytes.size();
+    LoadedModule result; result.fd_ = fd; result.handle_ = handle; result.size_ = image_bytes.size();
     return result;
   } catch (...) { ::close(fd); throw; }
 }
