@@ -35,6 +35,8 @@ class LoadedModule {
 ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::string& member);
 std::vector<ApkMember> read_apk_members_with_prefix(
     const std::filesystem::path& apk, const std::string& prefix);
+std::vector<std::string> elf_needed_libraries(
+    const std::vector<std::byte>& elf_bytes);
 LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member);
 
 }  // namespace nuah

@@ -13,6 +13,7 @@
 #include <fstream>
 #include <optional>
 #include <stdexcept>
+#include <string>
 
 namespace nuah {
 namespace {
@@ -145,6 +146,65 @@ std::vector<std::byte> decode_member(const std::vector<std::byte>& data,
   if (method == 8) return inflate_raw(encoded, uncompressed_size);
   throw std::runtime_error("unsupported APK ZIP compression method");
 }
+
+std::vector<std::string> needed_libraries(const std::vector<std::byte>& data) {
+  validate_elf(data);
+  Elf64_Ehdr header{};
+  std::memcpy(&header, data.data(), sizeof(header));
+  if (header.e_phoff > data.size() || header.e_phnum >
+      (data.size() - header.e_phoff) / sizeof(Elf64_Phdr)) {
+    throw std::runtime_error("ELF program headers are outside the image");
+  }
+  const Elf64_Phdr* dynamic = nullptr;
+  for (std::uint16_t i = 0; i < header.e_phnum; ++i) {
+    Elf64_Phdr ph{};
+    std::memcpy(&ph, data.data() + header.e_phoff + i * sizeof(ph), sizeof(ph));
+    if (ph.p_type == PT_DYNAMIC) {
+      dynamic = reinterpret_cast<const Elf64_Phdr*>(data.data() +
+                                                     header.e_phoff + i * sizeof(ph));
+      break;
+    }
+  }
+  if (!dynamic) return {};
+  if (dynamic->p_offset > data.size() || dynamic->p_filesz >
+      data.size() - dynamic->p_offset || dynamic->p_filesz % sizeof(Elf64_Dyn)) {
+    throw std::runtime_error("ELF dynamic section is outside the image");
+  }
+  const auto* entries = reinterpret_cast<const Elf64_Dyn*>(
+      data.data() + dynamic->p_offset);
+  const std::size_t count = dynamic->p_filesz / sizeof(Elf64_Dyn);
+  Elf64_Xword strtab_address = 0;
+  std::vector<Elf64_Xword> needed_offsets;
+  for (std::size_t i = 0; i < count && entries[i].d_tag != DT_NULL; ++i) {
+    if (entries[i].d_tag == DT_STRTAB) strtab_address = entries[i].d_un.d_ptr;
+    if (entries[i].d_tag == DT_NEEDED) needed_offsets.push_back(entries[i].d_un.d_val);
+  }
+  if (!strtab_address) return {};
+  std::size_t strtab_offset = 0;
+  bool found = false;
+  for (std::uint16_t i = 0; i < header.e_phnum; ++i) {
+    Elf64_Phdr ph{};
+    std::memcpy(&ph, data.data() + header.e_phoff + i * sizeof(ph), sizeof(ph));
+    if (ph.p_type != PT_LOAD || strtab_address < ph.p_vaddr ||
+        strtab_address - ph.p_vaddr >= ph.p_filesz) continue;
+    strtab_offset = static_cast<std::size_t>(ph.p_offset +
+                                              (strtab_address - ph.p_vaddr));
+    found = strtab_offset < data.size();
+    break;
+  }
+  if (!found) throw std::runtime_error("ELF string table is outside the image");
+  std::vector<std::string> result;
+  for (const auto offset : needed_offsets) {
+    const auto at = strtab_offset + static_cast<std::size_t>(offset);
+    if (at >= data.size()) throw std::runtime_error("ELF dependency name is outside the image");
+    const auto* begin = reinterpret_cast<const char*>(data.data() + at);
+    const auto* end = reinterpret_cast<const char*>(data.data() + data.size());
+    const auto* nul = static_cast<const char*>(std::memchr(begin, '\0', end - begin));
+    if (!nul) throw std::runtime_error("unterminated ELF dependency name");
+    result.emplace_back(begin, nul);
+  }
+  return result;
+}
 }  // namespace
 
 ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::string& member) {
@@ -179,6 +239,11 @@ std::vector<ApkMember> read_apk_members_with_prefix(
   return result;
 }
 
+std::vector<std::string> elf_needed_libraries(
+    const std::vector<std::byte>& elf_bytes) {
+  return needed_libraries(elf_bytes);
+}
+
 LoadedModule::~LoadedModule() {
   if (handle_) ::dlclose(handle_);
   if (fd_ >= 0) ::close(fd_);
@@ -202,7 +267,17 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     if (::fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE) != 0) throw std::runtime_error("memfd seal failed");
     const std::string path = "/proc/self/fd/" + std::to_string(fd);
     void* handle = ::dlmopen(LM_ID_NEWLM, path.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!handle) throw std::runtime_error(std::string("dlmopen failed: ") + ::dlerror());
+    if (!handle) {
+      std::string message = "dlmopen failed: ";
+      message += ::dlerror();
+      const auto needed = needed_libraries(apk_member.bytes);
+      if (!needed.empty()) {
+        message += " (Android image needs";
+        for (const auto& library : needed) message += " " + library;
+        message += "; host soname/version translation is required)";
+      }
+      throw std::runtime_error(message);
+    }
     LoadedModule result; result.fd_ = fd; result.handle_ = handle; result.size_ = apk_member.bytes.size();
     return result;
   } catch (...) { ::close(fd); throw; }
