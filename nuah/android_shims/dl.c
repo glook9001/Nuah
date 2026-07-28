@@ -1,4 +1,5 @@
 #include <dlfcn.h>
+#include <link.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -10,11 +11,14 @@ extern void* host_dlsym(void*, const char*);
 extern int host_dlclose(void*);
 extern char* host_dlerror(void);
 extern void* host_dlvsym(void*, const char*, const char*);
+extern int host_dl_iterate_phdr(
+    int (*)(struct dl_phdr_info*, size_t, void*), void*);
 asm(".symver host_dlopen,dlopen@GLIBC_2.2.5");
 asm(".symver host_dlsym,dlsym@GLIBC_2.2.5");
 asm(".symver host_dlclose,dlclose@GLIBC_2.2.5");
 asm(".symver host_dlerror,dlerror@GLIBC_2.2.5");
 asm(".symver host_dlvsym,dlvsym@GLIBC_2.2.5");
+asm(".symver host_dl_iterate_phdr,dl_iterate_phdr@GLIBC_2.2.5");
 
 static uintptr_t parse_hex(const char* text) {
   uintptr_t value = 0;
@@ -53,10 +57,15 @@ char* dlerror(void) { return host_dlerror(); }
 void* dlvsym(void* handle, const char* name, const char* version) {
   return host_dlvsym(handle, name, version);
 }
+int dl_iterate_phdr(int (*callback)(struct dl_phdr_info*, size_t, void*),
+                    void* data) {
+  return host_dl_iterate_phdr(callback, data);
+}
 
 __attribute__((constructor)) static void register_dl_abi(void) {
   static const char* symbols[] = {
-      "dladdr", "dlclose", "dlerror", "dlopen", "dlsym", "dlvsym"};
+      "dladdr", "dlclose", "dlerror", "dlopen", "dlsym", "dlvsym",
+      "dl_iterate_phdr"};
   for (unsigned int i = 0; i < sizeof(symbols) / sizeof(symbols[0]); ++i) {
     nuah_android_api_register("libdl.so", symbols[i],
                               NUAH_ANDROID_API_FORWARDED);

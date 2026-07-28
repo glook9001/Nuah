@@ -52,6 +52,8 @@ NUAH_UNARY_FLOAT(cosf)
 NUAH_UNARY_FLOAT(coshf)
 NUAH_UNARY_FLOAT(expf)
 NUAH_UNARY_FLOAT(exp2f)
+NUAH_UNARY_FLOAT(erfcf)
+NUAH_UNARY_FLOAT(erff)
 NUAH_UNARY_FLOAT(logf)
 NUAH_UNARY_FLOAT(log10f)
 NUAH_UNARY_FLOAT(log2f)
@@ -66,6 +68,42 @@ NUAH_BINARY_DOUBLE(pow)
 NUAH_BINARY_FLOAT(atan2f)
 NUAH_BINARY_FLOAT(fmodf)
 NUAH_BINARY_FLOAT(powf)
+NUAH_BINARY_FLOAT(nextafterf)
+NUAH_BINARY_FLOAT(remainderf)
+
+extern "C" int finitef(float value) {
+  return host<int (*)(float)>("finitef")(value);
+}
+extern "C" long double fmal(long double left, long double right,
+                             long double addend) {
+  return host<long double (*)(long double, long double, long double)>("fmal")(
+      left, right, addend);
+}
+extern "C" int ilogb(double value) {
+  return host<int (*)(double)>("ilogb")(value);
+}
+extern "C" long long llround(double value) {
+  return host<long long (*)(double)>("llround")(value);
+}
+extern "C" long long llroundf(float value) {
+  return host<long long (*)(float)>("llroundf")(value);
+}
+extern "C" long lround(double value) {
+  return host<long (*)(double)>("lround")(value);
+}
+extern "C" long lroundf(float value) {
+  return host<long (*)(float)>("lroundf")(value);
+}
+extern "C" double nan(const char* tag) {
+  return host<double (*)(const char*)>("nan")(tag);
+}
+extern "C" long double powl(long double left, long double right) {
+  return host<long double (*)(long double, long double)>("powl")(left, right);
+}
+extern "C" float remquof(float left, float right, int* quotient) {
+  return host<float (*)(float, float, int*)>("remquof")(
+      left, right, quotient);
+}
 
 extern "C" double frexp(double value, int* exponent) {
   return host<double (*)(double, int*)>("frexp")(value, exponent);
@@ -97,11 +135,14 @@ __attribute__((constructor)) static void register_math_abi() {
       "acos",   "acosf",  "asin",   "asinf",  "atan",   "atanf",
       "atan2",  "atan2f", "cbrt",   "cbrtf",  "cos",    "cosf",
       "cosh",   "coshf",  "exp",    "exp2",   "exp2f",  "expf",
-      "expm1",  "fmod",   "fmodf",  "frexp",  "frexpf", "ldexp",
+      "expm1",  "erfcf",  "erff",   "finitef", "fmal",  "fmod",
+      "fmodf",  "frexp",  "frexpf", "ilogb",  "ldexp",
       "ldexpf", "log",    "log10",  "log10f", "log2",   "log2f",
-      "logf",   "modf",   "modff",  "pow",    "powf",   "round",
-      "sin",    "sincos", "sincosf", "sinf",  "sinh",   "sinhf",
-      "sqrt",   "sqrtf",  "tan",    "tanf",   "tanh",   "tanhf"};
+      "logf",   "llround", "llroundf", "lround", "lroundf", "modf",
+      "modff",  "nan",    "nextafterf", "pow", "powf", "powl",
+      "remainderf", "remquof", "round", "sin", "sincos", "sincosf",
+      "sinf",   "sinh",   "sinhf",  "sqrt",   "sqrtf",  "tan",
+      "tanf",   "tanh",   "tanhf"};
   for (const char* symbol : symbols) {
     nuah_android_api_register("libm.so", symbol,
                               NUAH_ANDROID_API_TRANSLATED);

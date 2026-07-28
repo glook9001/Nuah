@@ -127,6 +127,21 @@ NUAH_FORWARD vsscanf
 NUAH_FORWARD wcslen
 NUAH_FORWARD wmemchr
 NUAH_FORWARD wmemcmp
+NUAH_FORWARD btowc
+NUAH_FORWARD execv
+NUAH_FORWARD execve
+NUAH_FORWARD fork
+NUAH_FORWARD getcwd
+NUAH_FORWARD getenv
+NUAH_FORWARD gethostbyname
+NUAH_FORWARD isspace
+NUAH_FORWARD localeconv
+NUAH_FORWARD pread64
+NUAH_FORWARD statvfs
+NUAH_FORWARD tcgetattr
+NUAH_FORWARD tcsetattr
+NUAH_FORWARD tolower
+NUAH_FORWARD wctob
 
 NUAH_FORWARD clearerr
 NUAH_FORWARD closedir
@@ -175,5 +190,32 @@ NUAH_FORWARD sched_getcpu, GLIBC_2.6
 NUAH_FORWARD sendmmsg, GLIBC_2.14
 NUAH_FORWARD timerfd_create, GLIBC_2.8
 NUAH_FORWARD timerfd_settime, GLIBC_2.8
+NUAH_FORWARD arc4random_buf, GLIBC_2.36
+NUAH_FORWARD realpath, GLIBC_2.3
+
+/* Opaque locale handles originate in these host calls and stay host-owned. */
+NUAH_FORWARD freelocale, GLIBC_2.3
+NUAH_FORWARD iswalpha_l, GLIBC_2.3
+NUAH_FORWARD iswblank_l, GLIBC_2.3
+NUAH_FORWARD iswcntrl_l, GLIBC_2.3
+NUAH_FORWARD iswdigit_l, GLIBC_2.3
+NUAH_FORWARD iswlower_l, GLIBC_2.3
+NUAH_FORWARD iswprint_l, GLIBC_2.3
+NUAH_FORWARD iswpunct_l, GLIBC_2.3
+NUAH_FORWARD iswspace_l, GLIBC_2.3
+NUAH_FORWARD iswupper_l, GLIBC_2.3
+NUAH_FORWARD iswxdigit_l, GLIBC_2.3
+NUAH_FORWARD newlocale, GLIBC_2.3
+NUAH_FORWARD strcoll_l, GLIBC_2.3
+NUAH_FORWARD strftime_l, GLIBC_2.3
+NUAH_FORWARD strtold_l, GLIBC_2.3
+NUAH_FORWARD strtoll_l, GLIBC_2.3.3
+NUAH_FORWARD strtoull_l, GLIBC_2.3.3
+NUAH_FORWARD strxfrm_l, GLIBC_2.3
+NUAH_FORWARD towlower_l, GLIBC_2.3
+NUAH_FORWARD towupper_l, GLIBC_2.3
+NUAH_FORWARD uselocale, GLIBC_2.3
+NUAH_FORWARD wcscoll_l, GLIBC_2.3
+NUAH_FORWARD wcsxfrm_l, GLIBC_2.3
 
 .section .note.GNU-stack,"",@progbits

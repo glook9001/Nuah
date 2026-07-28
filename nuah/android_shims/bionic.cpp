@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <fcntl.h>
+#include <getopt.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -30,6 +31,8 @@ in6_addr nuah_in6addr_any __asm__("in6addr_any"){};
 in6_addr nuah_in6addr_loopback __asm__("in6addr_loopback"){};
 in6_addr nuah_in6addr_any_n{};
 in6_addr nuah_in6addr_loopback_n{};
+char* nuah_optarg __asm__("optarg") = nullptr;
+int nuah_optind __asm__("optind") = 1;
 asm(".symver nuah_in6addr_any_n,in6addr_any@LIBC_N");
 asm(".symver nuah_in6addr_loopback_n,in6addr_loopback@LIBC_N");
 }
@@ -254,6 +257,25 @@ extern "C" void nuah_tzset() __asm__("tzset");
 void nuah_tzset() {
   host<void (*)()>("tzset")();
   synchronize_timezone_data();
+}
+extern "C" int nuah_getopt_long(int argument_count, char* const arguments[],
+                                  const char* options,
+                                  const option* long_options, int* index)
+    __asm__("getopt_long");
+int nuah_getopt_long(int argument_count, char* const arguments[],
+                     const char* options, const option* long_options,
+                     int* index) {
+  auto** host_optarg = host<char**>("optarg");
+  auto* host_optind = host<int*>("optind");
+  if (host_optarg) *host_optarg = nuah_optarg;
+  if (host_optind) *host_optind = nuah_optind;
+  const int result =
+      host<int (*)(int, char* const[], const char*, const option*, int*)>(
+          "getopt_long")(argument_count, arguments, options, long_options,
+                         index);
+  if (host_optarg) nuah_optarg = *host_optarg;
+  if (host_optind) nuah_optind = *host_optind;
+  return result;
 }
 int close(int fd) {
   return host<int (*)(int)>("close")(fd);

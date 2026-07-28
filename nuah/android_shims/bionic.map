@@ -35,6 +35,14 @@ LIBC {
     fseek; fseeko; ftell; ftello; fwrite; getc; getwc; openlog; opendir;
     printf; puts; readdir; setvbuf; syslog; ungetc; ungetwc; vfprintf;
     vprintf;
+    btowc; execv; execve; fork; getcwd; getenv; gethostbyname; isspace;
+    localeconv; pread64; realpath; statvfs; tcgetattr; tcsetattr; tolower;
+    wctob; arc4random_buf;
+    freelocale; iswalpha_l; iswblank_l; iswcntrl_l; iswdigit_l; iswlower_l;
+    iswprint_l; iswpunct_l; iswspace_l; iswupper_l; iswxdigit_l;
+    newlocale; strcoll_l; strftime_l; strtold_l; strtoll_l; strtoull_l;
+    strxfrm_l; towlower_l; towupper_l; uselocale; wcscoll_l; wcsxfrm_l;
+    getopt_long;
     __cxa_atexit; __cxa_finalize; __cxa_thread_atexit_impl; __register_atfork;
     pthread_once;
     __FD_CLR_chk; __FD_ISSET_chk; __FD_SET_chk; __assert2; __errno;
@@ -58,6 +66,7 @@ LIBC {
     pthread_rwlock_wrlock; pthread_rwlock_unlock;
     __sF; __stack_chk_guard; stdin; stdout; stderr;
     daylight; timezone; tzname; environ; in6addr_any; in6addr_loopback;
+    optarg; optind;
 };
 LIBC_N {
   global:
