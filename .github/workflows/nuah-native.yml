@@ -45,6 +45,45 @@ jobs:
           fi
           echo 'Source no longer rejects 64-bit support; API-36 smoke build is next.'
 
+  hybris-x86_64-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the small libhybris build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config \
+            build-essential libglib2.0-dev
+
+      - name: Fetch the pinned libhybris source
+        run: |
+          set -euo pipefail
+          . third_party/libhybris.lock
+          git clone --filter=blob:none "$repository" hybris-source
+          git -C hybris-source checkout --detach "$revision"
+
+      - name: Build the x86_64 libhybris common loader
+        run: |
+          set -euo pipefail
+          cd hybris-source/hybris
+          autoreconf -vfi
+          ./configure \
+            --enable-arch=x86-64 \
+            --with-android-headers="$GITHUB_WORKSPACE/nuah/hybris_headers" \
+            --prefix="$GITHUB_WORKSPACE/hybris-prefix"
+          make -C common -j"$(nproc)"
+          make -C common install
+
+      - name: Publish the experimental libhybris loader
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuah-libhybris-x86_64
+          path: |
+            hybris-prefix/lib/libhybris-common.so*
+          if-no-files-found: error
+
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
