@@ -41,8 +41,10 @@ struct NuahInputEvent {
 };
 
 typedef void (*NuahInputSink)(const NuahInputEvent* event, void* user_data);
+typedef struct NuahJniRuntime NuahJniRuntime;
 
 void nuah_input_set_sink(NuahInputSink sink, void* user_data);
+void nuah_input_bind_jni_runtime(NuahJniRuntime* runtime);
 int nuah_input_pump(void);
 
 #ifdef __cplusplus

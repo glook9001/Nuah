@@ -1,4 +1,5 @@
 #include "nuah/input_bridge.h"
+#include "nuah/jni_runtime.h"
 
 #include <SDL3/SDL.h>
 
@@ -24,6 +25,20 @@ extern "C" int nuah_android_keycode_from_ascii(int ascii) {
 extern "C" void nuah_input_set_sink(NuahInputSink callback, void* user_data) {
   sink_data.store(user_data, std::memory_order_release);
   sink.store(callback, std::memory_order_release);
+}
+
+namespace {
+void jni_sink(const NuahInputEvent* event, void* user_data) {
+  if (!event || event->type != NUAH_INPUT_KEY) return;
+  nuah_jni_runtime_dispatch_key(
+      static_cast<NuahJniRuntime*>(user_data), event->android_keycode,
+      event->action, event->repeat, event->physical_scancode,
+      event->modifiers, event->timestamp_ns / 1000000ULL);
+}
+}
+
+extern "C" void nuah_input_bind_jni_runtime(NuahJniRuntime* runtime) {
+  nuah_input_set_sink(jni_sink, runtime);
 }
 
 extern "C" int nuah_input_pump(void) {

@@ -36,6 +36,17 @@ extern "C" NuahJniNativeFunction nuah_jni_find_native(
   return found == natives.end() ? nullptr : found->second;
 }
 
+extern "C" NuahJniNativeFunction nuah_jni_find_native_method(
+    const char* method_name, const char* signature) {
+  if (!method_name || !signature) return nullptr;
+  const std::string suffix = std::string("\n") + method_name + "\n" + signature;
+  std::scoped_lock lock(mutex);
+  for (const auto& [name, function] : natives) {
+    if (name.ends_with(suffix)) return function;
+  }
+  return nullptr;
+}
+
 extern "C" void nuah_jni_report_missing(const char* class_name,
                                            const char* member,
                                            const char* signature) {

@@ -2,6 +2,7 @@
 #include "nuah/apk_loader.hpp"
 #include "nuah/jni_contract.h"
 #include "nuah/jni_runtime.h"
+#include "nuah/input_bridge.h"
 
 #include <dlfcn.h>
 
@@ -94,6 +95,7 @@ int run_native(const NativeLaunchOptions& options) {
   std::cerr << "nuah native: JNI_OnLoad accepted version 0x" << std::hex
             << jni_version << std::dec << "; registered natives="
             << nuah_jni_registered_count() << '\n';
+  nuah_input_bind_jni_runtime(jni_runtime);
   nuah_jni_runtime_destroy(jni_runtime);
   std::cerr << "nuah native: game lifecycle/window loop is not yet connected\n";
   return 78;

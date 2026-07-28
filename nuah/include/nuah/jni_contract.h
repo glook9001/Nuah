@@ -16,6 +16,8 @@ int nuah_jni_register_native(const char* class_name, const char* method_name,
 NuahJniNativeFunction nuah_jni_find_native(const char* class_name,
                                            const char* method_name,
                                            const char* signature);
+NuahJniNativeFunction nuah_jni_find_native_method(const char* method_name,
+                                                  const char* signature);
 void nuah_jni_report_missing(const char* class_name, const char* member,
                              const char* signature);
 size_t nuah_jni_registered_count(void);

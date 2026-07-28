@@ -11,6 +11,11 @@ int delivered = 0;
 void input_marker(const NuahInputEvent* event, void*) {
   if (event && event->type == NUAH_INPUT_KEY && event->action == 1) ++delivered;
 }
+jboolean key_callback(JNIEnv* env, jobject, jlong, jobject event) {
+  jclass clazz = env->GetObjectClass(event);
+  jmethodID method = env->GetMethodID(clazz, "getKeyCode", "()I");
+  return env->CallIntMethod(event, method) == NUAH_KEY_W ? JNI_TRUE : JNI_FALSE;
+}
 
 int main() {
   assert(nuah_android_keycode_from_ascii('w') == NUAH_KEY_W);
@@ -37,6 +42,13 @@ int main() {
   if (!timestamp || env->CallStaticLongMethod(logging, timestamp) <= 0 ||
       env->ExceptionCheck() != JNI_FALSE ||
       env->RegisterNatives(logging, nullptr, 0) != JNI_ERR) return 1;
+  constexpr const char* key_signature = "(JLandroid/view/KeyEvent;)Z";
+  if (nuah_jni_register_native("com/google/androidgamesdk/GameActivity",
+                               "onKeyDownNative", key_signature,
+                               reinterpret_cast<NuahJniNativeFunction>(
+                                   key_callback)) != 0 ||
+      nuah_jni_runtime_dispatch_key(runtime, NUAH_KEY_W, 1, 0, 17, 0, 100) !=
+          1) return 1;
   nuah_jni_runtime_destroy(runtime);
   nuah_input_set_sink(input_marker, nullptr);
   if (!SDL_Init(SDL_INIT_EVENTS)) return 1;

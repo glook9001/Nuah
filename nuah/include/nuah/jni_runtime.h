@@ -12,6 +12,10 @@ NuahJniRuntime* nuah_jni_runtime_create(void);
 void nuah_jni_runtime_destroy(NuahJniRuntime* runtime);
 JavaVM* nuah_jni_runtime_vm(NuahJniRuntime* runtime);
 JNIEnv* nuah_jni_runtime_env(NuahJniRuntime* runtime);
+int nuah_jni_runtime_dispatch_key(NuahJniRuntime* runtime, int keycode,
+                                  int action, int repeat, int scancode,
+                                  unsigned int modifiers,
+                                  unsigned long long event_time_ms);
 
 #ifdef __cplusplus
 }
