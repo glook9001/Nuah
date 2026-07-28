@@ -22,7 +22,6 @@ int dladdr(const void* address, Dl_info* info) {
   const uintptr_t size = size_text ? strtoull(size_text, NULL, 16) : 0;
   const uintptr_t value = (uintptr_t)address;
   if (!base || !size || value < base || value >= base + size) return 0;
-  if (!info) return 0;
   info->dli_fname = "libroblox.so";
   info->dli_fbase = (void*)base;
   info->dli_sname = NULL;
