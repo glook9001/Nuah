@@ -111,6 +111,10 @@ jobs:
           key: circle-ccache-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
           paths:
             - ~/.cache/ccache
+      - persist_to_workspace:
+          root: .ci
+          paths:
+            - aosp-master-art/android16-host-art.tar.gz
       - store_artifacts:
           path: .ci/aosp-master-art/out/dist
           destination: com.android.art-x86_64
@@ -118,7 +122,93 @@ jobs:
           path: .ci/aosp-master-art/android16-host-art.tar.gz
           destination: android16-host-art-x86_64.tar.gz
 
+  android16-atl-adapter:
+    machine:
+      image: ubuntu-2404:current
+    # CircleCI Free plan maximum Linux VM class: 4 vCPUs / 15 GB RAM.
+    resource_class: large
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .ci
+      - run:
+          name: Install ATL adapter dependencies
+          command: |
+            sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+              -exec sed -i \
+                -e 's#https\?://[^ ]*archive\.ubuntu\.com/ubuntu#http://de.archive.ubuntu.com/ubuntu#g' \
+                -e 's#https\?://security\.ubuntu\.com/ubuntu#http://de.archive.ubuntu.com/ubuntu#g' {} +
+            printf 'Acquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y cmake ninja-build meson pkg-config default-jdk \
+              libegl-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+              libsdl3-dev libasound2-dev libavcodec-dev libcap-dev libdrm-dev \
+              libffi-dev libglib2.0-dev libgudev-1.0-dev libportal-dev \
+              libsqlite3-dev libvulkan-dev libopenxr-dev libunwind-dev \
+              libelf-dev libicu-dev libssl-dev libexpat1-dev liblz4-dev \
+              liblzma-dev zlib1g-dev autoconf automake libtool
+      - run:
+          name: Build ATL support libraries
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            mkdir -p .ci/deps
+            meson setup .ci/bionic-build third_party/bionic_translation \
+              --buildtype=release --prefix="$PWD/.ci/deps"
+            meson compile -C .ci/bionic-build
+            meson install -C .ci/bionic-build
+            cd third_party/wolfssl
+            autoreconf -i
+            ./configure --prefix="$CIRCLE_WORKING_DIRECTORY/.ci/deps" \
+              --enable-shared --disable-opensslall --disable-opensslextra \
+              --enable-aescbc-length-checks --enable-curve25519 \
+              --enable-ed25519 --enable-ed25519-stream --enable-oldtls \
+              --enable-base64encode --enable-tlsx --enable-scrypt \
+              --disable-examples --enable-crl --with-rsa --enable-certs \
+              --enable-sessioncerts --enable-jni
+            make -j"$(nproc)"
+            make install
+      - run:
+          name: Stage Android 16 host runtime
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            mkdir -p .ci/host-art .ci/android16-runtime
+            tar -xzf .ci/aosp-master-art/android16-host-art.tar.gz -C .ci/host-art
+            make -C third_party/art_standalone -j"$(nproc)" libandroidfw
+            bash third_party/aosp_android16/prepare_host_runtime.sh \
+              .ci/host-art .ci/android16-runtime third_party/art_standalone
+      - run:
+          name: Build Nuah ATL Android 16 runtime
+          no_output_timeout: 60m
+          command: |
+            set -euo pipefail
+            export PKG_CONFIG_PATH="$PWD/.ci/android16-runtime/pkgconfig:$PWD/.ci/deps/lib/pkgconfig:$PWD/.ci/deps/lib64/pkgconfig"
+            export LD_LIBRARY_PATH="$PWD/.ci/deps/lib:$PWD/.ci/deps/lib64:${LD_LIBRARY_PATH:-}"
+            bootclasspath=$(cat .ci/android16-runtime/bootclasspath.build.txt)
+            cmake -S . -B build-android16-ci -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DNUAH_ATL_BOOTCLASSPATH="$bootclasspath" \
+              -DNUAH_ATL_JAVA_HOME="${JAVA_HOME}"
+            cmake --build build-android16-ci --target nuah nuah-services
+            ctest --test-dir build-android16-ci --output-on-failure
+            mkdir -p .ci/android16-runtime/natives
+            cp build-android16-ci/atl-full/android-translation-layer .ci/android16-runtime/
+            cp build-android16-ci/atl-full/libtranslation_layer_main.so .ci/android16-runtime/natives/
+            cp build-android16-ci/atl-full/libandroid.so.0 .ci/android16-runtime/natives/
+            cp build-android16-ci/nuah build-android16-ci/nuah-services .ci/android16-runtime/
+            test -x .ci/android16-runtime/android-translation-layer
+            test -s .ci/android16-runtime/natives/libtranslation_layer_main.so
+            test -s .ci/android16-runtime/bootclasspath.txt
+            tar -czf android16-atl-runtime.tar.gz -C .ci android16-runtime
+      - store_artifacts:
+          path: android16-atl-runtime.tar.gz
+          destination: android16-atl-runtime-x86_64.tar.gz
+
 workflows:
   android16:
     jobs:
       - android16-art
+      - android16-atl-adapter:
+          requires:
+            - android16-art
