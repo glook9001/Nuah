@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(nuah VERSION 0.1.0 LANGUAGES CXX)
+project(nuah VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -174,7 +174,7 @@ set_target_properties(
 target_compile_options(nuah_android_bionic PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(nuah_android_bionic PRIVATE dl nuah_android_registry)
 
-add_library(nuah_android_dl SHARED nuah/android_shims/dl.cpp)
+add_library(nuah_android_dl SHARED nuah/android_shims/dl.c)
 set_target_properties(
   nuah_android_dl PROPERTIES
   OUTPUT_NAME dl
