@@ -14,7 +14,7 @@ Nuah APK extractor (temporary file during the pivot)
         |
 libhybris android_dlopen
         |
-API-36 Android linker + matching bionic libc/libdl/libm
+libhybris host ABI hooks and Android linker plugin
         |
 Nuah-owned libandroid/log/Vulkan/window/input/JNI services
         |
@@ -47,10 +47,12 @@ hooks bridge those Android imports to the host ABI.
 
 ## Implementation order
 
-1. Pin libhybris and exercise its x86_64 linker route with a trivial Android
-   API-36 DSO.  Upstream documentation warns that 64-bit support is
-   incomplete; Nuah improves the host-side hooks/linker path rather than
-   silently falling back to `dlmopen` or importing Android runtime files.
+1. Pin libhybris and exercise its x86_64 linker route with a trivial DSO.
+   Upstream documentation warns that 64-bit support is incomplete and the
+   pinned plugin is Android-Q-era, not API 36. Nuah must establish API-36
+   compatibility in the host-side hooks/linker path before claiming support;
+   it must not silently fall back to `dlmopen` or import Android runtime
+   files.
 2. Add `HybrisLoader` beside the existing `ApkLoader`.  It calls
    `android_dlopen`/`android_dlsym`; it does not call `dlmopen`.
 3. Generate the restricted Android linker namespace at launch and expose
@@ -73,8 +75,8 @@ hooks bridge those Android imports to the host ABI.
 
 ## Gates before making this the default backend
 
-1. x86_64 libhybris linker-plugin smoke test succeeds with an API-36 bionic
-   DSO.
+1. x86_64 libhybris linker-plugin smoke test succeeds with a representative
+   API-36-targeted DSO using host hooks only (no bionic/APEX payload).
 2. `libroblox.so` loads without Nuah's synthetic libc/libdl/libm providers.
 3. `JNI_OnLoad` executes and reports concrete missing JNI contracts, rather
    than a loader error.
