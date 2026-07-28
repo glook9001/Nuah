@@ -52,9 +52,14 @@ void configure_hybris_environment(const char* library) {
 }
 
 std::vector<void*> host_provider_handles;
+std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 
 void* resolve_host_provider_symbol(const char* symbol, const char*) {
   if (!symbol) return nullptr;
+  if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
+  if (std::strcmp(symbol, "__stack_chk_fail") == 0) {
+    return ::dlsym(RTLD_DEFAULT, symbol);
+  }
   for (auto it = host_provider_handles.rbegin(); it != host_provider_handles.rend(); ++it) {
     if (void* resolved = ::dlsym(*it, symbol)) return resolved;
   }

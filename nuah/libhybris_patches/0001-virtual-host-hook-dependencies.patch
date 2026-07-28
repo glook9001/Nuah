@@ -1,7 +1,7 @@
 diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
 --- a/hybris/common/q/dlfcn.cpp
 +++ b/hybris/common/q/dlfcn.cpp
-@@ -359,6 +359,30 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
+@@ -359,6 +359,28 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
    return __libdl_info;
  }
  
@@ -18,8 +18,6 @@ diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
 +      strcmp(name, "liblog.so") != 0) {
 +    return nullptr;
 +  }
-+
-+  // This record represents a dependency whose relocations use host hooks.
 +  soinfo* si = new soinfo(ns, name, nullptr, 0, RTLD_NOW);
 +  si->set_soname(name);
 +  si->set_linked();
@@ -59,3 +57,18 @@ diff --git a/hybris/common/q/linker.h b/hybris/common/q/linker.h
  soinfo* find_containing_library(const void* p);
  
  int open_executable(const char* path, off64_t* file_offset, std::string* realpath);
+diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.cpp
+--- a/hybris/common/q/linker_soinfo.cpp
++++ b/hybris/common/q/linker_soinfo.cpp
+@@ -291,6 +291,11 @@ bool soinfo::gnu_lookup(SymbolName& symbol_name,
+ bool soinfo::elf_lookup(SymbolName& symbol_name,
+                         const version_info* vi,
+                         uint32_t* symbol_index) const {
++  if (nbucket_ == 0 || bucket_ == nullptr || chain_ == nullptr ||
++      symtab_ == nullptr || strtab_ == nullptr) {
++    return false;
++  }
++
+   uint32_t hash = symbol_name.elf_hash();
+ 
+   TRACE_TYPE(LOOKUP, "SEARCH %s in %s@%p h=%x(elf) %zd",
