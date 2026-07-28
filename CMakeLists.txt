@@ -165,7 +165,12 @@ target_link_libraries(nuah_android_openmaxal PRIVATE nuah_host_bridge nuah_andro
 set_target_properties(nuah_android_openmaxal PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 
 add_library(nuah_android_bionic SHARED nuah/android_shims/bionic.cpp)
-set_target_properties(nuah_android_bionic PROPERTIES OUTPUT_NAME c LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+set_target_properties(
+  nuah_android_bionic PROPERTIES
+  OUTPUT_NAME c
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+  LINK_OPTIONS
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/bionic.map;-Wl,-soname,libc.so")
 target_compile_options(nuah_android_bionic PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(nuah_android_bionic PRIVATE dl nuah_android_registry)
 
