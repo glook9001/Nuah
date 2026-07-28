@@ -24,12 +24,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config \
             default-jdk libegl-dev libgtk-4-dev libadwaita-1-dev \
-            libwebkitgtk-6.0-dev libsdl3-dev libasound2-dev \
+            libwebkitgtk-6.0-dev libasound2-dev \
             libavcodec-dev libcap-dev libdrm-dev libffi-dev \
             libglib2.0-dev libgudev-1.0-dev libportal-dev libsqlite3-dev \
             libvulkan-dev libopenxr-dev libunwind-dev libelf-dev \
             libicu-dev libssl-dev libexpat1-dev liblz4-dev liblzma-dev \
             zlib1g-dev
+
+      - name: Provide SDL3 (not packaged on Ubuntu 24.04)
+        run: |
+          git clone --depth 1 --branch release-3.2.0 \
+            https://github.com/libsdl-org/SDL.git .ci/SDL3
+          cmake -S .ci/SDL3 -B .ci/SDL3-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build .ci/SDL3-build --parallel
+          sudo cmake --install .ci/SDL3-build
+          sudo ldconfig
 
       - name: Configure Nuah native runtime
         run: |
