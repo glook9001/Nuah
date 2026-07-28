@@ -24,7 +24,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config \
             default-jdk libegl-dev libgtk-4-dev libadwaita-1-dev \
-            libwebkitgtk-6.0-dev libasound2-dev \
+            libwebkitgtk-6.0-dev libasound2-dev libpipewire-0.3-dev \
+            libpulse-dev libsndio-dev libxss-dev libgbm-dev libdecor-0-dev \
             libavcodec-dev libcap-dev libdrm-dev libffi-dev \
             libglib2.0-dev libgudev-1.0-dev libportal-dev libsqlite3-dev \
             libvulkan-dev libopenxr-dev libunwind-dev libelf-dev \
