@@ -28,11 +28,13 @@ default (`NUAH_BUILD_ATL=OFF`) and is not the target runtime.
 cmake -S . -B build -G Ninja -DNUAH_BUILD_ATL=OFF
 cmake --build build --target nuah nuah-services
 ./build/nuah config
-./build/nuah atl-run --apk /path/to/base.apk --split /path/to/split_config.x86_64.apk --uri 'roblox://placeId=1818'
+./build/nuah native-run --apk /path/to/base.apk --split /path/to/split_config.x86_64.apk --uri 'roblox://placeId=1818'
 ```
 
-`atl-run` remains a transitional diagnostic command until the native
-Sober-style game runtime is complete.
+`native-run` is the supervisor's Sober-style handoff: it loads the x86_64
+Roblox image from a sealed memfd and stops with an explicit JNI-runtime status
+until the demand-driven JavaVM/JNIEnv table is complete. `atl-run` remains a
+legacy diagnostic command and is never selected by the Services supervisor.
 
 `nuah sober-cache-status` checks the Sober cache source. `nuah
 adopt-sober-cache <directory>` copies that APK pair into Nuah-managed storage.

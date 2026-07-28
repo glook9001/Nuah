@@ -122,11 +122,11 @@ int start_services(const char* argv0) {
       const auto split = cache.split_apk.string();
       const auto data = supervisor_data_directory();
       if (uri.empty()) {
-        ::execl(executable.c_str(), executable.c_str(), "atl-run", "--apk",
+            ::execl(executable.c_str(), executable.c_str(), "native-run", "--apk",
                 apk.c_str(), "--split", split.c_str(), "--data", data.c_str(),
                 static_cast<char*>(nullptr));
       } else {
-        ::execl(executable.c_str(), executable.c_str(), "atl-run", "--apk",
+        ::execl(executable.c_str(), executable.c_str(), "native-run", "--apk",
                 apk.c_str(), "--split", split.c_str(), "--data", data.c_str(),
                 "--uri", uri.c_str(), static_cast<char*>(nullptr));
       }
@@ -329,7 +329,8 @@ int start_services(const char* argv0) {
 
 int main(int argc, char** argv) {
   try {
-    if (argc >= 2 && std::string(argv[1]) == "atl-run") {
+    if (argc >= 2 && (std::string(argv[1]) == "atl-run" ||
+                      std::string(argv[1]) == "native-run")) {
       nuah::AtlLaunchOptions options;
       for (int i = 2; i < argc; ++i) {
         const std::string key = argv[i];
@@ -349,6 +350,9 @@ int main(int argc, char** argv) {
             "usage: nuah atl-run --apk <file.apk> [--activity <class>] "
             "[--split <config.apk>] [--uri <uri>] [--data <directory>] "
             "[--width <px>] [--height <px>]");
+      }
+      if (std::string(argv[1]) == "native-run") {
+        return nuah::run_native(options);
       }
       nuah::exec_atl(options);
     }

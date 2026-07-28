@@ -87,6 +87,7 @@ set_target_properties(
 
 add_library(nuah_core
   nuah/src/atl_backend.cpp
+  nuah/src/native_runtime.cpp
   nuah/src/apk_loader.cpp
   nuah/src/launch_uri.cpp
   nuah/src/sober_cache.cpp

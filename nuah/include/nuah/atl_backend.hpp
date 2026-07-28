@@ -17,6 +17,8 @@ struct AtlLaunchOptions {
   int height = 720;
 };
 
+using NativeLaunchOptions = AtlLaunchOptions;
+
 // Extracts native libraries from ABI split APKs into ATL's application lib
 // directory and returns the data-directory passed to ATL.
 std::filesystem::path prepare_atl_native_libraries(
@@ -35,5 +37,10 @@ bool forward_atl_cookie(const std::string& url, const std::string& value,
 // Replaces the current process with the full Android Translation Layer.
 // The ATL process owns ART, the Android API implementation, and Activity lifecycle.
 [[noreturn]] void exec_atl(const AtlLaunchOptions& options);
+
+// Loads the x86_64 Roblox image through Nuah's native Sober-style boundary.
+// This path never boots ART or an Android container. It currently stops at
+// the JNI handoff until the demand-driven JavaVM table is complete.
+int run_native(const NativeLaunchOptions& options);
 
 }  // namespace nuah
