@@ -147,10 +147,9 @@ jobs:
           set -euo pipefail
           image=.ci/android-sdk/system-images/android-36/google_apis/x86_64/system.img
           test -f "$image"
-          simg2img "$image" .ci/system.raw.img
           mkdir -p bionic-api36
           debugfs -R 'dump -p system/apex/com.android.runtime.apex .ci/runtime.apex' \
-            .ci/system.raw.img
+            "$image"
           unzip -q .ci/runtime.apex apex_payload.img -d .ci/runtime-apex
           debugfs -R 'dump -p lib64/bionic/linker64 bionic-api36/linker64' \
             .ci/runtime-apex/apex_payload.img
