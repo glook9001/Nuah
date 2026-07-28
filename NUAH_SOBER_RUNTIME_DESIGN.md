@@ -96,9 +96,9 @@ libandroid.so liblog.so libEGL.so libGLESv2.so libvulkan.so
 libmediandk.so libOpenSLES.so libOpenMAXAL.so libc.so libdl.so libm.so
 ```
 
-`libc.so`, `libdl.so`, and `libm.so` are supplied through the libhybris/bionic
-loader boundary, not reimplemented by Nuah on top of glibc. The other names
-are narrow Nuah providers, translated to host libraries where appropriate, or
+`libc.so`, `libdl.so`, and `libm.so` are handled by libhybris' host ABI hooks,
+not reimplemented by Nuah or supplied as Android binaries. The other names are
+narrow Nuah providers, translated to host libraries where appropriate, or
 explicitly reported unsupported. This is not an Android system image.
 
 ## Nuah process architecture
@@ -174,15 +174,14 @@ libOpenMAXAL.so    optional media compatibility
 ```
 
 The libhybris bundle is built and versioned as one x86_64 unit: its common
-library, linker plugin, and compatible bionic runtime libraries. It has one
-restricted search path containing the game image and Nuah's providers. Nuah
-never compiles or ships synthetic replacements for `libc.so`, `libdl.so`, or
-`libm.so`.
+library and linker plugin. It has one restricted search path containing the
+game image and Nuah's providers. Nuah never compiles or ships synthetic
+replacements for `libc.so`, `libdl.so`, or `libm.so`, nor Android runtime
+libraries, APEX files, or a system image.
 
 At launch Nuah finds the bundled loader, linker plugins, and provider directory
 relative to its executable. `NUAH_HYBRIS_LIBRARY` overrides the common-loader
-path; `NUAH_BIONIC_LIBRARY_DIR` adds the pinned bionic runtime directory.
-Explicit libhybris environment values remain overrides for diagnostics.
+path. Explicit libhybris environment values remain overrides for diagnostics.
 
 Every Nuah-provider symbol must be classified as `implemented`, `translated`,
 or `unsupported`. Unsupported calls fail loudly with the symbol name; they
@@ -271,15 +270,16 @@ ART and does not require an ART/APEX bundle. The old `art_standalone` source
 tree and ART workflow are intentionally removed.
 
 The runtime artifact contains Nuah, the matching `libhybris-common.so` and
-linker plugins, Nuah's narrow Android providers, and configuration. The
-Roblox APK remains a separately acquired client payload.
+linker plugins, Nuah's narrow Android providers, and configuration. It contains
+no Android bionic runtime/APEX payload. The Roblox APK remains a separately
+acquired client payload.
 
 
 ## Implementation milestones
 
 1. Build and package the pinned x86_64 libhybris loader and linker plugin.
 2. Prove `android_dlopen` with a no-dependency x86_64 ELF.
-3. Add the matching bionic runtime and Nuah provider directory; load
+3. Complete libhybris' x86_64 host-ABI hooks and provider aliases, then load
    `libroblox.so` through `android_dlopen` in CI.
 4. Implement JNI table/object contracts observed in the investigation.
 5. Implement native window, Android Vulkan-surface translation, and swapchain.
@@ -293,5 +293,6 @@ Nuah is considered Sober-aligned when it can launch the x86_64 Roblox client in
 one native Linux game process, create a host Wayland/Vulkan surface, deliver
 working keyboard/mouse/scroll input, preserve the WebKit session, and recover
 the browser after a game-process failure—without an Android container, VM, or
-virtual display. Libhybris and its narrow loader/bionic bundle are permitted;
-an Android framework or full Android system image is not.
+virtual display. Libhybris' host-side loader/hooks are permitted; Android
+runtime libraries, an Android framework, and a full Android system image are
+not.

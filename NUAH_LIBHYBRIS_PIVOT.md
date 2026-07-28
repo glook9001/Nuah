@@ -28,12 +28,10 @@ as a diagnostic baseline, not deleted.
 
 ## Bundle boundary
 
-The pivot bundle contains only loader/runtime pieces which must agree on a
-single Android ABI:
+The pivot bundle contains only host-side libhybris pieces which must agree on a
+single ABI:
 
 - libhybris common library and its x86_64 linker plugin;
-- Android API-36 linker support plus matching `libc.so`, `libdl.so`, and
-  `libm.so`;
 - a generated linker namespace configuration containing only Nuah's Android
   library directory and the game image directory.
 
@@ -43,16 +41,16 @@ host-facing pieces to its Wayland/Vulkan implementation.  It also continues
 to own JNI, GameActivity lifecycle, input, the WebKit service, and crash
 supervision.  Libhybris does not implement any of those.
 
-The bundle must be sourced and versioned as one unit.  Mixing a current
-`libc.so` with an older libhybris linker plugin is rejected: it is an ABI
-boundary, not an interchangeable collection of `.so` files.
+The bundle must be sourced and versioned as one unit.  Nuah never imports an
+Android `libc.so`, `libdl.so`, `libm.so`, APEX, or system image; libhybris'
+hooks bridge those Android imports to the host ABI.
 
 ## Implementation order
 
 1. Pin libhybris and exercise its x86_64 linker route with a trivial Android
    API-36 DSO.  Upstream documentation warns that 64-bit support is
-   incomplete; Nuah accepts that as an experimental compatibility risk and
-   records it in CI rather than silently falling back to `dlmopen`.
+   incomplete; Nuah improves the host-side hooks/linker path rather than
+   silently falling back to `dlmopen` or importing Android runtime files.
 2. Add `HybrisLoader` beside the existing `ApkLoader`.  It calls
    `android_dlopen`/`android_dlsym`; it does not call `dlmopen`.
 3. Generate the restricted Android linker namespace at launch and expose
