@@ -1,0 +1,171 @@
+cmake_minimum_required(VERSION 3.25)
+project(nuah VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+include(CTest)
+find_package(ZLIB REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(NUAH_UI REQUIRED IMPORTED_TARGET gtk4 libadwaita-1 webkitgtk-6.0)
+pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
+pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
+find_program(MESON_EXECUTABLE meson REQUIRED)
+find_program(NINJA_EXECUTABLE ninja REQUIRED)
+
+set(NUAH_ATL_FULL_SOURCE "${CMAKE_SOURCE_DIR}/third_party/android_translation_layer")
+set(NUAH_ATL_FULL_BUILD "${CMAKE_BINARY_DIR}/atl-full")
+set(NUAH_ATL_BOOTCLASSPATH "" CACHE STRING
+    "Android boot class path passed to the ATL Meson build")
+set(NUAH_ATL_JAVA_HOME "" CACHE PATH
+    "JDK home passed to ATL when jni.pc is unavailable")
+if(NOT NUAH_ATL_BOOTCLASSPATH)
+  message(FATAL_ERROR
+    "Nuah is Android 16-only: configure with -DNUAH_ATL_BOOTCLASSPATH=<split ART bootclasspath>")
+endif()
+
+set(NUAH_ATL_MESON_OPTIONS
+    --buildtype=release --prefix=/usr/local)
+if(NUAH_ATL_BOOTCLASSPATH)
+  list(APPEND NUAH_ATL_MESON_OPTIONS
+       "-Datl_bootclasspath=${NUAH_ATL_BOOTCLASSPATH}")
+endif()
+if(NUAH_ATL_JAVA_HOME)
+  list(APPEND NUAH_ATL_MESON_OPTIONS
+       "-Datl_java_home=${NUAH_ATL_JAVA_HOME}")
+endif()
+
+# Nuah uses ATL's in-process Android CookieManager action for the explicit
+# browser-session handoff.  Keep the ATL executable built from the pinned
+# source beside Nuah rather than accidentally falling back to a system copy
+# without that action.
+if(NOT EXISTS "${NUAH_ATL_FULL_SOURCE}/meson.build")
+  message(FATAL_ERROR "Pinned Android Translation Layer source is missing")
+endif()
+if(EXISTS "${NUAH_ATL_FULL_BUILD}/build.ninja")
+  set(NUAH_ATL_MESON_RECONFIGURE --reconfigure)
+else()
+  set(NUAH_ATL_MESON_RECONFIGURE)
+endif()
+execute_process(
+  COMMAND "${MESON_EXECUTABLE}" setup ${NUAH_ATL_MESON_RECONFIGURE}
+          "${NUAH_ATL_FULL_BUILD}" "${NUAH_ATL_FULL_SOURCE}"
+          ${NUAH_ATL_MESON_OPTIONS}
+  RESULT_VARIABLE NUAH_ATL_FULL_SETUP_RESULT
+  COMMAND_ECHO STDOUT)
+if(NOT NUAH_ATL_FULL_SETUP_RESULT EQUAL 0)
+  message(FATAL_ERROR "Could not configure pinned Android Translation Layer")
+endif()
+add_custom_target(nuah_atl_runtime
+  COMMAND "${MESON_EXECUTABLE}" compile -C "${NUAH_ATL_FULL_BUILD}" android-translation-layer
+  BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/android-translation-layer"
+  COMMENT "Building pinned Android Translation Layer runtime"
+  VERBATIM)
+
+# The executable does not require hax.jar at runtime, but the input ABI test
+# inspects the compiled Java API classes. Build that artifact as part of Nuah
+# so a clean checkout cannot silently skip the contract check.
+add_custom_target(nuah_atl_api_jar
+  COMMAND "${NINJA_EXECUTABLE}" -C "${NUAH_ATL_FULL_BUILD}" src/api-impl/hax.jar
+  BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/src/api-impl/hax.jar"
+  COMMENT "Building ATL Java API classes for ABI checks"
+  VERBATIM)
+
+add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
+target_include_directories(nuah_host_bridge PUBLIC nuah/include)
+target_compile_options(nuah_host_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_library(nuah_atl_overlay SHARED nuah/atl_overlay/compat.cpp)
+target_compile_options(nuah_atl_overlay PRIVATE -Wall -Wextra -Wpedantic -Werror)
+set_target_properties(
+  nuah_atl_overlay PROPERTIES
+  OUTPUT_NAME nuah_atl_overlay)
+
+add_library(nuah_core
+  nuah/src/atl_backend.cpp
+  nuah/src/apk_loader.cpp
+  nuah/src/launch_uri.cpp
+  nuah/src/sober_cache.cpp
+  nuah/src/protocol.cpp)
+target_include_directories(nuah_core PUBLIC nuah/include)
+target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
+target_compile_definitions(nuah_core PRIVATE NUAH_ANDROID_LIBRARY_DIR="${CMAKE_BINARY_DIR}/android")
+target_compile_definitions(
+  nuah_core PRIVATE
+  NUAH_ATL_OVERLAY_PATH="$<TARGET_FILE:nuah_atl_overlay>")
+target_compile_options(nuah_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(
+  nuah_core PUBLIC dl ZLIB::ZLIB PkgConfig::NUAH_GIO)
+add_dependencies(nuah_core nuah_atl_overlay)
+
+add_library(nuah_android_log SHARED nuah/android_shims/log.cpp)
+set_target_properties(nuah_android_log PROPERTIES OUTPUT_NAME log LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+target_compile_options(nuah_android_log PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_library(nuah_android_platform SHARED nuah/android_shims/platform.cpp)
+set_target_properties(nuah_android_platform PROPERTIES OUTPUT_NAME android LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+target_compile_options(nuah_android_platform PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_include_directories(nuah_android_platform PRIVATE nuah/include)
+target_link_libraries(nuah_android_platform PRIVATE nuah_host_bridge)
+set_target_properties(nuah_android_platform PROPERTIES BUILD_RPATH "$ORIGIN/..")
+
+add_library(nuah_android_vulkan SHARED nuah/android_shims/vulkan.cpp)
+set_target_properties(
+  nuah_android_vulkan PROPERTIES
+  OUTPUT_NAME vulkan
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+  BUILD_RPATH "$ORIGIN/..")
+target_include_directories(nuah_android_vulkan PRIVATE nuah/include)
+target_compile_options(nuah_android_vulkan PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(
+  nuah_android_vulkan PRIVATE dl PkgConfig::NUAH_PLATFORM nuah_host_bridge)
+add_library(nuah_android_media SHARED nuah/android_shims/platform.cpp)
+set_target_properties(nuah_android_media PROPERTIES OUTPUT_NAME mediandk LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+target_compile_options(nuah_android_media PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_include_directories(nuah_android_media PRIVATE nuah/include)
+target_link_libraries(nuah_android_media PRIVATE nuah_host_bridge)
+set_target_properties(nuah_android_media PROPERTIES BUILD_RPATH "$ORIGIN/..")
+add_library(nuah_android_opensles SHARED nuah/android_shims/platform.cpp)
+set_target_properties(nuah_android_opensles PROPERTIES OUTPUT_NAME OpenSLES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+target_compile_options(nuah_android_opensles PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_include_directories(nuah_android_opensles PRIVATE nuah/include)
+target_link_libraries(nuah_android_opensles PRIVATE nuah_host_bridge)
+set_target_properties(nuah_android_opensles PROPERTIES BUILD_RPATH "$ORIGIN/..")
+add_library(nuah_android_openmaxal SHARED nuah/android_shims/platform.cpp)
+set_target_properties(nuah_android_openmaxal PROPERTIES OUTPUT_NAME OpenMAXAL LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+target_compile_options(nuah_android_openmaxal PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_include_directories(nuah_android_openmaxal PRIVATE nuah/include)
+target_link_libraries(nuah_android_openmaxal PRIVATE nuah_host_bridge)
+set_target_properties(nuah_android_openmaxal PROPERTIES BUILD_RPATH "$ORIGIN/..")
+
+add_library(nuah_android_bionic SHARED nuah/android_shims/bionic.cpp)
+set_target_properties(nuah_android_bionic PROPERTIES OUTPUT_NAME c LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+target_compile_options(nuah_android_bionic PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(nuah_android_bionic PRIVATE dl)
+
+add_library(nuah_android_dl SHARED nuah/android_shims/dl.cpp)
+set_target_properties(nuah_android_dl PROPERTIES OUTPUT_NAME dl LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
+target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(nuah nuah/src/main.cpp)
+target_link_libraries(nuah PRIVATE nuah_core)
+add_dependencies(nuah nuah_atl_runtime)
+add_dependencies(nuah nuah_atl_api_jar)
+
+add_executable(nuah-services nuah/src/services_main.cpp)
+target_link_libraries(nuah-services PRIVATE nuah_core PkgConfig::NUAH_UI)
+add_dependencies(nuah-services nuah_atl_runtime)
+add_dependencies(nuah-services nuah_atl_api_jar)
+
+configure_file(nuah/share/applications/org.nuah.Nuah.desktop
+               ${CMAKE_BINARY_DIR}/org.nuah.Nuah.desktop COPYONLY)
+
+if(BUILD_TESTING)
+  find_program(NUAH_JAVAP_EXECUTABLE javap REQUIRED)
+  add_test(NAME nuah-atl-input-abi
+    COMMAND "${CMAKE_COMMAND}"
+      "-DJAVAP=${NUAH_JAVAP_EXECUTABLE}"
+      "-DATL_JAR=${NUAH_ATL_FULL_BUILD}/src/api-impl/hax.jar"
+      -P "${CMAKE_SOURCE_DIR}/nuah/tests/atl_input_abi.cmake")
+endif()

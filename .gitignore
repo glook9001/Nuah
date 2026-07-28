@@ -1,0 +1,27 @@
+# Local/CI build output
+/build/
+/build-*/
+/.ci/
+*.tar.gz
+
+# Local reverse-engineering payloads and generated runtime state; these are
+# not inputs to the Android 16 CI build.
+/.nuah-tools/
+/.nuah-run/
+/Investigation/
+/reoxide.log
+/third_party/TRACE_FILE
+
+# AOSP/repo worktrees are fetched by GitHub Actions from pinned revisions;
+# never commit their multi-gigabyte checkouts to the Nuah repository.
+/third_party/repo/
+/third_party/aosp_android15/
+/third_party/aosp_android16/art/
+/third_party/aosp_android16/libcore/
+/third_party/aosp_android16/dalvik/
+/third_party/aosp_android16/full/
+/third_party/aosp_android16/master-art/
+
+# Generated standalone ART output
+/third_party/art_standalone/out/
+/third_party/art_standalone/art-standalone.pc

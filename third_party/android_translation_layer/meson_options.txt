@@ -1,0 +1,11 @@
+option(
+  'atl_bootclasspath',
+  type: 'string',
+  value: '',
+  description: 'Required colon-separated Android 16 boot class path')
+
+option(
+  'atl_java_home',
+  type: 'string',
+  value: '',
+  description: 'JDK home used when a jni.pc file is unavailable')

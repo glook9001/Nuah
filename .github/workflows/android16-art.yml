@@ -1,0 +1,215 @@
+name: Android 16 ART/ATL build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'CMakeLists.txt'
+      - 'nuah/**'
+      - 'third_party/android_translation_layer/**'
+      - '.github/workflows/android16-art.yml'
+
+concurrency:
+  group: android16-art-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  art-module:
+    # ART's supported build path is the AOSP master-art manifest.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Check out Nuah
+        uses: actions/checkout@v4
+
+      - name: Install AOSP host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            adb bc bison build-essential ccache curl flex g++-multilib gcc-multilib repo \
+            git gn lib32ncurses-dev lib32readline-dev lib32z1-dev libelf-dev \
+            liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop pngcrush \
+            rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
+
+      - name: Restore AOSP and compiler caches
+        uses: actions/cache@v4
+        with:
+          # Cache Git objects and compiler output, not the whole 12+ GB
+          # checkout. GitHub's cache has a finite per-repository quota.
+          path: |
+            .ci/aosp-master-art/.repo
+            ~/.cache/ccache
+          key: aosp-art-${{ runner.os }}-${{ hashFiles('.github/workflows/android16-art.yml') }}
+          restore-keys: |
+            aosp-art-${{ runner.os }}-
+
+      - name: Initialize and sync master-art
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/aosp-master-art
+          cd .ci/aosp-master-art
+          if [[ ! -d .repo ]]; then
+            repo init \
+              -u https://android.googlesource.com/platform/manifest \
+              -b master-art \
+              --partial-clone --no-use-superproject
+          fi
+          repo sync -c --no-tags --optimized-fetch --prune -j"$(nproc)"
+
+      - name: Verify Android 16 release pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A pins=(
+            [art]=ed6c006bd06ae060bd9698fd2cb25c4865512ec3
+            [libcore]=fff4fcc0cf7f080cf2511cbb57561482b13b218f
+            [dalvik]=0c8569a6f7492b1ba639d33e22fe9cf6f45a80ac
+          )
+          for project in "${!pins[@]}"; do
+            url="https://android.googlesource.com/platform/$project"
+            dir=".ci/aosp-android16-pins/$project"
+            git clone --filter=blob:none --no-checkout "$url" "$dir"
+            git -C "$dir" fetch --depth=1 origin "${pins[$project]}"
+            git -C "$dir" checkout --detach "${pins[$project]}"
+            test "$(git -C "$dir" rev-parse HEAD)" = "${pins[$project]}"
+          done
+
+      - name: Build the Android 16 ART module
+        shell: bash
+        working-directory: .ci/aosp-master-art
+        run: |
+          set -euo pipefail
+          export USE_CCACHE=1
+          ccache -M 10G
+          source build/envsetup.sh
+          banchan com.android.art x86_64
+          m apps_only dist
+          # Build the host-side ART pieces that the Linux ATL adapter will
+          # consume; the APEX alone is not a host executable.
+          m dalvikvm64 libart libnativebridge
+          mkdir -p android16-host-art
+          for path in \
+            out/host/linux-x86/bin/dalvikvm64 \
+            out/host/linux-x86/lib64/libart.so \
+            out/host/linux-x86/lib64/libnativebridge.so; do
+            test -f "$path"
+            cp --parents "$path" android16-host-art/
+          done
+          for path in \
+            out/host/linux-x86/lib64/libandroidfw.so \
+            out/host/linux-x86/lib64/libartbase.so \
+            out/host/linux-x86/lib64/libdexfile.so \
+            out/host/linux-x86/lib64/liblog.so \
+            out/host/linux-x86/lib64/libsigchain.so \
+            out/host/linux-x86/lib64/libutils.so \
+            out/host/linux-x86/lib64/libziparchive.so \
+            out/host/linux-x86/framework/core-oj-hostdex.jar \
+            out/host/linux-x86/framework/core-libart-hostdex.jar; do
+            [[ -f "$path" ]] && cp --parents "$path" android16-host-art/
+          done
+          tar -czf android16-host-art.tar.gz -C android16-host-art .
+
+      - name: Publish ART module
+        uses: actions/upload-artifact@v4
+        with:
+          name: com.android.art-x86_64
+          path: .ci/aosp-master-art/out/dist/*.apex
+          if-no-files-found: error
+
+      - name: Publish host ART runtime pieces
+        uses: actions/upload-artifact@v4
+        with:
+          name: android16-host-art-x86_64
+          path: .ci/aosp-master-art/android16-host-art.tar.gz
+          if-no-files-found: error
+
+  # This job is intentionally manual: it is the ABI migration gate and may
+  # expose source/API incompatibilities while Android 16 host ART is being
+  # adapted. It never changes the baseline ATL artifact above.
+  android16-atl-adapter:
+    if: github.event_name == 'workflow_dispatch'
+    needs: art-module
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install adapter build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build meson pkg-config \
+            default-jdk libegl-dev libgtk-4-dev libadwaita-1-dev \
+            libwebkitgtk-6.0-dev libsdl3-dev libasound2-dev \
+            libavcodec-dev libcap-dev libdrm-dev libffi-dev \
+            libglib2.0-dev libgudev-1.0-dev libportal-dev libsqlite3-dev \
+            libvulkan-dev libopenxr-dev libunwind-dev \
+            libelf-dev libicu-dev libssl-dev libexpat1-dev liblz4-dev \
+            liblzma-dev zlib1g-dev autoconf automake libtool
+      - name: Build ATL support libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/deps
+          meson setup .ci/bionic-build third_party/bionic_translation \
+            --buildtype=release --prefix="$GITHUB_WORKSPACE/.ci/deps"
+          meson compile -C .ci/bionic-build
+          meson install -C .ci/bionic-build
+          cd third_party/wolfssl
+          autoreconf -i
+          ./configure --prefix="$GITHUB_WORKSPACE/.ci/deps" \
+            --enable-shared --disable-opensslall --disable-opensslextra \
+            --enable-aescbc-length-checks --enable-curve25519 \
+            --enable-ed25519 --enable-ed25519-stream --enable-oldtls \
+            --enable-base64encode --enable-tlsx --enable-scrypt \
+            --disable-examples --enable-crl --with-rsa --enable-certs \
+            --enable-sessioncerts --enable-jni
+          make -j"$(nproc)"
+          make install
+      - name: Download host ART pieces
+        uses: actions/download-artifact@v4
+        with:
+          name: android16-host-art-x86_64
+          path: .ci/host-art-download
+      - name: Stage Android 16 host runtime contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/host-art .ci/android16-runtime
+          tar -xzf .ci/host-art-download/android16-host-art.tar.gz \
+            -C .ci/host-art
+          # androidfw remains the one host dependency outside master-art.
+          make -C third_party/art_standalone -j"$(nproc)" libandroidfw
+          bash third_party/aosp_android16/prepare_host_runtime.sh \
+            .ci/host-art .ci/android16-runtime third_party/art_standalone
+      - name: Build ATL against Android 16 host ART
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/.ci/android16-runtime/pkgconfig:$GITHUB_WORKSPACE/.ci/deps/lib/pkgconfig:$GITHUB_WORKSPACE/.ci/deps/lib64/pkgconfig"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/.ci/deps/lib:$GITHUB_WORKSPACE/.ci/deps/lib64:${LD_LIBRARY_PATH:-}"
+          bootclasspath=$(cat .ci/android16-runtime/bootclasspath.build.txt)
+          cmake -S . -B build-android16-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNUAH_ATL_BOOTCLASSPATH="$bootclasspath" \
+            -DNUAH_ATL_JAVA_HOME="${JAVA_HOME}"
+          cmake --build build-android16-ci --target nuah nuah-services
+          ctest --test-dir build-android16-ci --output-on-failure
+          mkdir -p .ci/android16-runtime/natives
+          cp build-android16-ci/atl-full/android-translation-layer \
+            .ci/android16-runtime/
+          cp build-android16-ci/atl-full/libtranslation_layer_main.so \
+            .ci/android16-runtime/natives/
+          cp build-android16-ci/atl-full/libandroid.so.0 \
+            .ci/android16-runtime/natives/
+          cp build-android16-ci/nuah build-android16-ci/nuah-services \
+            .ci/android16-runtime/
+          test -x .ci/android16-runtime/android-translation-layer
+          test -s .ci/android16-runtime/natives/libtranslation_layer_main.so
+          test -s .ci/android16-runtime/bootclasspath.txt
+          tar -czf android16-atl-runtime.tar.gz -C .ci android16-runtime
+      - name: Publish Android 16 ATL runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: android16-atl-runtime-x86_64
+          path: android16-atl-runtime.tar.gz
+          if-no-files-found: error

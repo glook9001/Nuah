@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Nuah
+GenericName=Roblox Player
+Comment=Launch Roblox through Nuah's native runtime
+Icon=org.nuah.Nuah
+Keywords=roblox;game;gaming;launcher;
+MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;
+Categories=GTK;Game;
+Terminal=false
+PrefersNonDefaultGPU=true
+SingleMainWindow=true
+Exec=nuah -- %u
+Actions=open-settings;
+
+[Desktop Action open-settings]
+Name=Nuah Settings
+Exec=nuah config
