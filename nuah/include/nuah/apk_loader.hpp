@@ -21,13 +21,13 @@ class LoadedModule {
   LoadedModule(LoadedModule&& other) noexcept;
   LoadedModule& operator=(LoadedModule&& other) noexcept;
 
-  int fd() const { return fd_; }
+  const std::filesystem::path& path() const { return path_; }
   void* handle() const { return handle_; }
   std::size_t size() const { return size_; }
 
  private:
   friend LoadedModule load_apk_library(const std::filesystem::path&, const std::string&);
-  int fd_ = -1;
+  std::filesystem::path path_;
   void* handle_ = nullptr;
   std::size_t size_ = 0;
 };

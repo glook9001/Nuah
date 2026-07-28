@@ -1,10 +1,8 @@
 #include "nuah/apk_loader.hpp"
 
 #include <elf.h>
-#include <fcntl.h>
-#include <linux/memfd.h>
 #include <link.h>
-#include <sys/syscall.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -61,7 +59,7 @@ void write_all(int fd, const std::vector<std::byte>& data) {
   std::size_t done = 0;
   while (done < data.size()) {
     const auto n = ::write(fd, data.data() + done, data.size() - done);
-    if (n < 0) { if (errno == EINTR) continue; throw std::runtime_error("memfd write failed"); }
+    if (n < 0) { if (errno == EINTR) continue; throw std::runtime_error("temporary ELF write failed"); }
     done += static_cast<std::size_t>(n);
   }
 }
@@ -296,13 +294,16 @@ std::vector<std::string> elf_needed_libraries(
 
 LoadedModule::~LoadedModule() {
   if (handle_) ::dlclose(handle_);
-  if (fd_ >= 0) ::close(fd_);
+  if (!path_.empty()) {
+    std::error_code error;
+    std::filesystem::remove(path_, error);
+  }
 }
-LoadedModule::LoadedModule(LoadedModule&& other) noexcept : fd_(other.fd_), handle_(other.handle_), size_(other.size_) {
-  other.fd_ = -1; other.handle_ = nullptr; other.size_ = 0;
+LoadedModule::LoadedModule(LoadedModule&& other) noexcept : path_(std::move(other.path_)), handle_(other.handle_), size_(other.size_) {
+  other.path_.clear(); other.handle_ = nullptr; other.size_ = 0;
 }
 LoadedModule& LoadedModule::operator=(LoadedModule&& other) noexcept {
-  if (this != &other) { this->~LoadedModule(); fd_ = other.fd_; handle_ = other.handle_; size_ = other.size_; other.fd_ = -1; other.handle_ = nullptr; other.size_ = 0; }
+  if (this != &other) { this->~LoadedModule(); path_ = std::move(other.path_); handle_ = other.handle_; size_ = other.size_; other.path_.clear(); other.handle_ = nullptr; other.size_ = 0; }
   return *this;
 }
 
@@ -323,13 +324,15 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     }
   }
   const auto& image_bytes = apk_member.bytes;
-  const int fd = static_cast<int>(::syscall(SYS_memfd_create, "nuah-module", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC));
-  if (fd < 0) throw std::runtime_error("memfd_create failed");
+  char path_template[] = "/tmp/nuah-module-XXXXXX";
+  int fd = ::mkstemp(path_template);
+  if (fd < 0) throw std::runtime_error("temporary ELF file creation failed");
+  const std::filesystem::path path(path_template);
   try {
-    if (::ftruncate(fd, static_cast<off_t>(image_bytes.size())) != 0) throw std::runtime_error("memfd truncate failed");
     write_all(fd, image_bytes);
-    if (::fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE) != 0) throw std::runtime_error("memfd seal failed");
-    const std::string path = "/proc/self/fd/" + std::to_string(fd);
+    if (::fchmod(fd, 0500) != 0) throw std::runtime_error("temporary ELF permission setup failed");
+    if (::close(fd) != 0) throw std::runtime_error("temporary ELF close failed");
+    fd = -1;
     void* handle = ::dlmopen(LM_ID_NEWLM, path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
       std::string message = "dlmopen failed: ";
@@ -342,8 +345,13 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       }
       throw std::runtime_error(message);
     }
-    LoadedModule result; result.fd_ = fd; result.handle_ = handle; result.size_ = image_bytes.size();
+    LoadedModule result; result.path_ = path; result.handle_ = handle; result.size_ = image_bytes.size();
     return result;
-  } catch (...) { ::close(fd); throw; }
+  } catch (...) {
+    if (fd >= 0) ::close(fd);
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    throw;
+  }
 }
 }  // namespace nuah

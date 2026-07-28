@@ -14,7 +14,7 @@ Services/WebKit -> framed IPC -> supervisor -> native game runtime -> Roblox
 - GTK4/libadwaita Services UI with Sober-like compact preference groups,
   Sober APK-cache discovery, and a WebKit Roblox launch bridge.
 - APK split discovery and x86_64 native-image validation.
-- Sealed memfd loading primitives for APK native libraries.
+- Isolated temporary-file loading primitives for APK native libraries.
 - Native Vulkan Android-surface translation to host Wayland.
 - An explicit Android ABI registry with fail-loud unsupported calls.
 
@@ -32,7 +32,7 @@ cmake --build build --target nuah nuah-services
 ```
 
 `native-run` is the supervisor's Sober-style handoff: it loads the x86_64
-Roblox image from a sealed memfd and stops with an explicit JNI-runtime status
+Roblox image from a private temporary ELF file and stops with an explicit JNI-runtime status
 until the demand-driven JavaVM/JNIEnv table is complete. `atl-run` remains a
 legacy diagnostic command and is never selected by the Services supervisor.
 

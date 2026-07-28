@@ -93,7 +93,7 @@ int run_native(const NativeLaunchOptions& options) {
   }
 
   std::cerr << "nuah native: loaded " << kMember << " from "
-            << image_apk << " into sealed memfd=" << image.fd()
+            << image_apk << " via temporary ELF file " << image.path()
             << " (" << image.size() << " bytes)\n";
   std::cerr << "nuah native: JNI_OnLoad accepted version 0x" << std::hex
             << jni_version << std::dec << "; registered natives="
