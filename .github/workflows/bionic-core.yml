@@ -109,7 +109,9 @@ jobs:
             exit 1
           fi
           echo "runtime APEX found in $(basename "$runtime_partition"):$runtime_apex_path"
-          debugfs -R "dump -p $runtime_apex_path $work/runtime.apex" \
+          # Do not preserve Android UID/GID metadata: GitHub's hosted runner
+          # is intentionally not allowed to chown arbitrary Android IDs.
+          debugfs -R "dump $runtime_apex_path $work/runtime.apex" \
             "$runtime_partition"
           if ! test -s "$work/runtime.apex"; then
             echo 'error: logical system image has no com.android.runtime APEX' >&2
@@ -120,14 +122,22 @@ jobs:
             echo 'error: extracted runtime APEX is not a readable ZIP/APEX archive' >&2
             exit 1
           fi
-          for library in libc.so libdl.so libm.so linker64; do
-            if ! debugfs -R "dump -p /lib64/bionic/$library $work/$library" \
-                "$work/apex/apex_payload.img"; then
-              echo "error: runtime APEX is missing /lib64/bionic/$library" >&2
+          for library in libc.so libdl.so libm.so; do
+            if ! debugfs -R "dump /lib64/bionic/$library $work/$library" \
+                "$work/apex/apex_payload.img" || ! test -s "$work/$library"; then
+              echo "error: runtime APEX is missing or could not extract /lib64/bionic/$library" >&2
               debugfs -R 'ls -l /lib64/bionic' "$work/apex/apex_payload.img" >&2 || true
               exit 1
             fi
           done
+          # The dynamic linker is executable code, not a bionic shared
+          # library; modern runtime APEXes keep it in bin/.
+          if ! debugfs -R "dump /bin/linker64 $work/linker64" \
+              "$work/apex/apex_payload.img" || ! test -s "$work/linker64"; then
+            echo 'error: runtime APEX is missing or could not extract /bin/linker64' >&2
+            debugfs -R 'ls -l /bin' "$work/apex/apex_payload.img" >&2 || true
+            exit 1
+          fi
           install -m 0644 "$work/libc.so" bionic-core/lib64/libc.so
           install -m 0644 "$work/libdl.so" bionic-core/lib64/libdl.so
           install -m 0644 "$work/libm.so" bionic-core/lib64/libm.so
