@@ -148,8 +148,18 @@ jobs:
           image=.ci/android-sdk/system-images/android-36/google_apis/x86_64/system.img
           test -f "$image"
           mkdir -p bionic-api36
-          debugfs -R 'dump -p system/apex/com.android.runtime.apex .ci/runtime.apex' \
-            "$image"
+          found=0
+          while read -r partition start; do
+            offset=$((start * 512))
+            if debugfs -o "offset=$offset" \
+                -R 'stat apex/com.android.runtime.apex' "$image" >/dev/null 2>&1; then
+              debugfs -o "offset=$offset" \
+                -R 'dump -p apex/com.android.runtime.apex .ci/runtime.apex' "$image"
+              found=1
+              break
+            fi
+          done < <(partx --raw --noheadings --output NR,START "$image")
+          test "$found" = 1
           unzip -q .ci/runtime.apex apex_payload.img -d .ci/runtime-apex
           debugfs -R 'dump -p lib64/bionic/linker64 bionic-api36/linker64' \
             .ci/runtime-apex/apex_payload.img
