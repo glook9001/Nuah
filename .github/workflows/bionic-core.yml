@@ -1,0 +1,63 @@
+name: Extract API-36 bionic core
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install extraction tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y android-sdk-libsparse-utils e2fsprogs unzip
+
+      - name: Fetch the API-36 x86_64 image as CI-only input
+        run: |
+          set -euo pipefail
+          tools_root="$RUNNER_TEMP/android-tools"
+          mkdir -p "$tools_root"
+          curl --fail --location --retry 5 --retry-all-errors \
+            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+            -o "$RUNNER_TEMP/commandline-tools.zip"
+          unzip -q "$RUNNER_TEMP/commandline-tools.zip" -d "$tools_root"
+          sdkmanager="$tools_root/cmdline-tools/bin/sdkmanager"
+          yes | "$sdkmanager" --sdk_root="$tools_root/sdk" --licenses >/dev/null
+          "$sdkmanager" --sdk_root="$tools_root/sdk" \
+            'system-images;android-36;google_apis;x86_64'
+
+      - name: Extract the minimal bionic runtime bundle
+        run: |
+          set -euo pipefail
+          image="$RUNNER_TEMP/android-tools/sdk/system-images/android-36/google_apis/x86_64/system.img"
+          test -s "$image"
+          work="$RUNNER_TEMP/bionic-core"
+          mkdir -p "$work/image" "$work/apex" bionic-core/lib64
+          simg2img "$image" "$work/system.raw.img"
+          debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
+            "$work/system.raw.img" >/dev/null
+          unzip -q "$work/runtime.apex" -d "$work/apex"
+          for library in libc.so libdl.so libm.so linker64; do
+            debugfs -R "dump -p /lib64/bionic/$library $work/$library" \
+              "$work/apex/apex_payload.img" >/dev/null
+          done
+          install -m 0644 "$work/libc.so" bionic-core/lib64/libc.so
+          install -m 0644 "$work/libdl.so" bionic-core/lib64/libdl.so
+          install -m 0644 "$work/libm.so" bionic-core/lib64/libm.so
+          install -m 0755 "$work/linker64" bionic-core/lib64/linker64
+          sha256sum bionic-core/lib64/* | sort > bionic-core/SHA256SUMS
+          printf 'api=36\nabi=x86_64\nsource=system-images;android-36;google_apis;x86_64\n' \
+            > bionic-core/METADATA
+
+      - name: Publish bionic core only
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuah-bionic-core-api36-x86_64
+          path: bionic-core
+          if-no-files-found: error
