@@ -30,7 +30,7 @@ jobs:
           git clone --filter=blob:none --no-checkout "$repository" hybris-source
           git -C hybris-source checkout --detach "$revision"
           test "$(git -C hybris-source rev-parse HEAD)" = "$revision"
-          git -C hybris-source apply --recount --check \
+          git -C hybris-source/hybris apply --recount --check \
             "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
           test -f hybris-source/hybris/configure.ac
           test -f hybris-source/hybris/common/q/linker.cpp
@@ -65,7 +65,7 @@ jobs:
           . third_party/libhybris.lock
           git clone --filter=blob:none "$repository" hybris-source
           git -C hybris-source checkout --detach "$revision"
-          git -C hybris-source apply --recount \
+          git -C hybris-source/hybris apply --recount \
             "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
 
       - name: Build the x86_64 libhybris common loader
