@@ -1,4 +1,5 @@
 diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
+index 2341109..f4ae7fb 100644
 --- a/hybris/common/q/dlfcn.cpp
 +++ b/hybris/common/q/dlfcn.cpp
 @@ -359,6 +359,29 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
@@ -32,9 +33,22 @@ diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
  extern "C" {
  void* android_dlopen(const char* filename, int flag) {
 diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
+index bb43299..3cd2693 100644
 --- a/hybris/common/q/linker.cpp
 +++ b/hybris/common/q/linker.cpp
-@@ -2214,6 +2214,15 @@ void* do_dlopen(const char* name, int flags,
+@@ -1588,6 +1588,11 @@ static bool find_library_internal(android_namespace_t* ns,
+   TRACE("[ \"%s\" find_loaded_library_by_soname failed (*candidate=%s@%p). Trying harder... ]",
+         task->get_name(), candidate == nullptr ? "n/a" : candidate->get_realpath(), candidate);
+ 
++  if (soinfo* host_hook_dependency = get_host_hook_dependency(ns, task->get_name())) {
++    task->set_soinfo(host_hook_dependency);
++    return true;
++  }
++
+   if (load_library(ns, task, zip_archive_cache, load_tasks, rtld_flags, search_linked_namespaces)) {
+     return true;
+   }
+@@ -2217,6 +2222,15 @@ void* do_dlopen(const char* name, int flags,
    soinfo* const caller = find_containing_library(caller_addr);
    android_namespace_t* ns = get_caller_namespace(caller);
  
@@ -50,19 +64,8 @@ diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
    LD_LOG(kLogDlopen,
           "dlopen(name=\"%s\", flags=0x%x, extinfo=%s, caller=\"%s\", caller_ns=%s@%p, targetSdkVersion=%i) ...",
           name,
-@@ -1588,6 +1588,11 @@ static bool find_library_internal(android_namespace_t* ns,
-   TRACE("[ \"%s\" find_loaded_library_by_soname failed (*candidate=%s@%p). Trying harder... ]",
-         task->get_name(), candidate == nullptr ? "n/a" : candidate->get_realpath(), candidate);
- 
-+  if (soinfo* host_hook_dependency = get_host_hook_dependency(ns, task->get_name())) {
-+    task->set_soinfo(host_hook_dependency);
-+    return true;
-+  }
-+
-   if (load_library(ns, task, zip_archive_cache, load_tasks, rtld_flags, search_linked_namespaces)) {
-     return true;
-   }
 diff --git a/hybris/common/q/linker.h b/hybris/common/q/linker.h
+index 13fa9a4..95fdc8e 100644
 --- a/hybris/common/q/linker.h
 +++ b/hybris/common/q/linker.h
 @@ -106,6 +106,8 @@ void count_relocation(RelocationKind kind);
@@ -75,6 +78,7 @@ diff --git a/hybris/common/q/linker.h b/hybris/common/q/linker.h
  
  int open_executable(const char* path, off64_t* file_offset, std::string* realpath);
 diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.cpp
+index f0a31ea..bf8b4cb 100644
 --- a/hybris/common/q/linker_soinfo.cpp
 +++ b/hybris/common/q/linker_soinfo.cpp
 @@ -180,6 +180,13 @@ size_t soinfo::get_verdef_cnt() const {
@@ -91,7 +95,7 @@ diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.c
    uint32_t symbol_index;
    bool success =
        is_gnu_hash() ?
-@@ -291,6 +291,11 @@ bool soinfo::gnu_lookup(SymbolName& symbol_name,
+@@ -291,6 +298,11 @@ bool soinfo::gnu_lookup(SymbolName& symbol_name,
  bool soinfo::elf_lookup(SymbolName& symbol_name,
                          const version_info* vi,
                          uint32_t* symbol_index) const {
@@ -103,20 +107,24 @@ diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.c
    uint32_t hash = symbol_name.elf_hash();
  
    TRACE_TYPE(LOOKUP, "SEARCH %s in %s@%p h=%x(elf) %zd",
-
 diff --git a/hybris/common/q/linker_soinfo.h b/hybris/common/q/linker_soinfo.h
+index 4b2d169..84ee9e8 100644
 --- a/hybris/common/q/linker_soinfo.h
 +++ b/hybris/common/q/linker_soinfo.h
-@@ -44,4 +44,5 @@
+@@ -44,6 +44,7 @@
  #define FLAG_GNU_HASH         0x00000040 // uses gnu hash
  #define FLAG_MAPPED_BY_CALLER 0x00000080 // the map is reserved by the caller
                                           // and should not be unmapped
 +#define FLAG_HOST_HOOK_DEPENDENCY 0x00000020 // symbols resolve through libhybris hooks
  #define FLAG_IMAGE_LINKED     0x00000100 // Is image linked - this is a guard on link_image.
-@@ -268,4 +269,6 @@ struct soinfo {
+                                          // The difference between this flag and
+                                          // FLAG_LINKED is that FLAG_LINKED
+@@ -268,6 +269,8 @@ struct soinfo {
    void set_linked();
    void set_linker_flag();
    void set_main_executable();
 +  bool is_host_hook_dependency() const { return (flags_ & FLAG_HOST_HOOK_DEPENDENCY) != 0; }
 +  void set_host_hook_dependency() { flags_ |= FLAG_HOST_HOOK_DEPENDENCY; }
    void set_nodelete();
+ 
+   size_t increment_ref_count();
