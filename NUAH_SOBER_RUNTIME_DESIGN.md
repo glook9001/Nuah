@@ -152,6 +152,10 @@ Android compatibility runtime.
 Nuah should implement one explicit Android ABI registry rather than many
 unrelated placeholder libraries.
 
+Nuah's Android-facing compatibility contract targets API level 36. Platform
+release names are descriptive only; exported properties, symbol availability,
+and tests use the numeric API level as the authoritative target.
+
 Initial soname surface:
 
 ```text

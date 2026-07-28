@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(NUAH_ANDROID_API_LEVEL 36)
+
 include(CTest)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -174,6 +176,9 @@ set_target_properties(
   LINK_OPTIONS
     "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/bionic.map;-Wl,-soname,libc.so")
 target_compile_options(nuah_android_bionic PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(
+  nuah_android_bionic PRIVATE
+  NUAH_ANDROID_API_LEVEL=${NUAH_ANDROID_API_LEVEL})
 target_link_libraries(nuah_android_bionic PRIVATE dl nuah_android_registry)
 
 add_library(nuah_android_dl SHARED nuah/android_shims/dl.c)

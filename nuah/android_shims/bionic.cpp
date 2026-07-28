@@ -18,6 +18,9 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#define NUAH_STRINGIFY_INNER(value) #value
+#define NUAH_STRINGIFY(value) NUAH_STRINGIFY_INNER(value)
+
 extern "C" {
 std::FILE __sF[3]{};
 uintptr_t __stack_chk_guard = 0x9e3779b97f4a7c15ULL;
@@ -506,7 +509,10 @@ char* __strncpy_chk2(char* destination, const char* source, size_t count, size_t
 int __system_property_get(const char* key, char* value) {
   const char* result = "";
   if (key && std::strcmp(key, "ro.product.cpu.abi") == 0) result = "x86_64";
-  else if (key && std::strcmp(key, "ro.build.version.sdk") == 0) result = "35";
+  else if (key && std::strcmp(key, "ro.build.version.sdk") == 0)
+    result = NUAH_STRINGIFY(NUAH_ANDROID_API_LEVEL);
+  else if (key && std::strcmp(key, "ro.build.version.release") == 0)
+    result = "16";
   if (value) std::strcpy(value, result);
   return static_cast<int>(std::strlen(result));
 }
