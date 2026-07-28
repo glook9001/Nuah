@@ -310,10 +310,17 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
   if (has_version_requirements(apk_member.bytes)) {
+    const char* probe = ::getenv("NUAH_NATIVE_TRY_TRANSLATION");
+    if (probe && std::string(probe) == "1") {
+      std::fprintf(stderr,
+                   "nuah: trying registered Android version providers "
+                   "(diagnostic mode)\n");
+    } else {
     throw std::runtime_error(
         "Android ELF has GNU symbol-version requirements; refusing to enter "
         "the host linker until Nuah's Android namespace translator is active "
         "(dependencies: " + dependency_report(apk_member.bytes) + ")");
+    }
   }
   const auto& image_bytes = apk_member.bytes;
   const int fd = static_cast<int>(::syscall(SYS_memfd_create, "nuah-module", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC));
