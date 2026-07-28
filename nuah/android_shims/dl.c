@@ -1,6 +1,7 @@
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 #include "nuah/android_abi_registry.h"
 
