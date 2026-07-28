@@ -45,6 +45,73 @@ CondEntry* cond_for(void* object) {
 }
 
 extern "C" {
+void* memcpy(void* destination, const void* source, size_t length) {
+  return host<void* (*)(void*, const void*, size_t)>("memcpy")(
+      destination, source, length);
+}
+void* memmove(void* destination, const void* source, size_t length) {
+  return host<void* (*)(void*, const void*, size_t)>("memmove")(
+      destination, source, length);
+}
+void* memset(void* destination, int value, size_t length) {
+  return host<void* (*)(void*, int, size_t)>("memset")(destination, value,
+                                                         length);
+}
+int memcmp(const void* left, const void* right, size_t length) {
+  return host<int (*)(const void*, const void*, size_t)>("memcmp")(
+      left, right, length);
+}
+void* memchr(const void* data, int value, size_t length) {
+  return host<void* (*)(const void*, int, size_t)>("memchr")(
+      data, value, length);
+}
+size_t strlen(const char* text) {
+  return host<size_t (*)(const char*)>("strlen")(text);
+}
+size_t strnlen(const char* text, size_t length) {
+  return host<size_t (*)(const char*, size_t)>("strnlen")(text, length);
+}
+int strcmp(const char* left, const char* right) {
+  return host<int (*)(const char*, const char*)>("strcmp")(left, right);
+}
+int strncmp(const char* left, const char* right, size_t length) {
+  return host<int (*)(const char*, const char*, size_t)>("strncmp")(
+      left, right, length);
+}
+char* strcpy(char* destination, const char* source) {
+  return host<char* (*)(char*, const char*)>("strcpy")(destination, source);
+}
+char* strncpy(char* destination, const char* source, size_t length) {
+  return host<char* (*)(char*, const char*, size_t)>("strncpy")(
+      destination, source, length);
+}
+char* strcat(char* destination, const char* source) {
+  return host<char* (*)(char*, const char*)>("strcat")(destination, source);
+}
+char* strncat(char* destination, const char* source, size_t length) {
+  return host<char* (*)(char*, const char*, size_t)>("strncat")(
+      destination, source, length);
+}
+char* strchr(const char* text, int value) {
+  return host<char* (*)(const char*, int)>("strchr")(text, value);
+}
+char* strrchr(const char* text, int value) {
+  return host<char* (*)(const char*, int)>("strrchr")(text, value);
+}
+char* strstr(const char* text, const char* needle) {
+  return host<char* (*)(const char*, const char*)>("strstr")(
+      text, needle);
+}
+int strcasecmp(const char* left, const char* right) {
+  return host<int (*)(const char*, const char*)>("strcasecmp")(left, right);
+}
+int strncasecmp(const char* left, const char* right, size_t length) {
+  return host<int (*)(const char*, const char*, size_t)>("strncasecmp")(
+      left, right, length);
+}
+char* strerror(int error) {
+  return host<char* (*)(int)>("strerror")(error);
+}
 void __cxa_finalize(void* dso) {
   host<void (*)(void*)>("__cxa_finalize")(dso);
 }
