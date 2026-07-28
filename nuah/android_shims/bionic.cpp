@@ -28,6 +28,10 @@ char* nuah_tzname[2] __asm__("tzname") = {nullptr, nullptr};
 char** nuah_environ __asm__("environ") = nullptr;
 in6_addr nuah_in6addr_any __asm__("in6addr_any"){};
 in6_addr nuah_in6addr_loopback __asm__("in6addr_loopback"){};
+in6_addr nuah_in6addr_any_n{};
+in6_addr nuah_in6addr_loopback_n{};
+asm(".symver nuah_in6addr_any_n,in6addr_any@LIBC_N");
+asm(".symver nuah_in6addr_loopback_n,in6addr_loopback@LIBC_N");
 }
 
 namespace {
@@ -134,9 +138,11 @@ __attribute__((constructor)) static void initialize_standard_streams() {
   if (auto*** value = host<char***>("environ")) nuah_environ = *value;
   if (auto* value = host<in6_addr*>("in6addr_any")) {
     nuah_in6addr_any = *value;
+    nuah_in6addr_any_n = *value;
   }
   if (auto* value = host<in6_addr*>("in6addr_loopback")) {
     nuah_in6addr_loopback = *value;
+    nuah_in6addr_loopback_n = *value;
   }
   synchronize_timezone_data();
 }
@@ -377,6 +383,11 @@ size_t nuah_fread_chk(void* destination, size_t size, size_t count,
   return host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread")(
       destination, size, count, stream);
 }
+size_t nuah_fread_chk_n(void* destination, size_t size, size_t count,
+                        std::FILE* stream, size_t destination_size) {
+  return nuah_fread_chk(destination, size, count, stream, destination_size);
+}
+asm(".symver nuah_fread_chk_n,__fread_chk@LIBC_N");
 char* __strncpy_chk(char* destination, const char* source, size_t count,
                     size_t destination_size) {
   if (count > destination_size) std::abort();
@@ -468,6 +479,22 @@ ssize_t __write_chk(int fd, const void* data, size_t count, size_t) { return ::w
 ssize_t __sendto_chk(int fd, const void* data, size_t count, size_t, int flags, const sockaddr* address, socklen_t length) {
   return ::sendto(fd, data, count, flags, address, length);
 }
+size_t nuah_fwrite_chk_n(const void* data, size_t size, size_t count,
+                         std::FILE* stream, size_t data_size) {
+  return __fwrite_chk(data, size, count, stream, data_size);
+}
+ssize_t nuah_write_chk_n(int fd, const void* data, size_t count,
+                         size_t data_size) {
+  return __write_chk(fd, data, count, data_size);
+}
+ssize_t nuah_sendto_chk_o(int fd, const void* data, size_t count,
+                          size_t data_size, int flags,
+                          const sockaddr* address, socklen_t length) {
+  return __sendto_chk(fd, data, count, data_size, flags, address, length);
+}
+asm(".symver nuah_fwrite_chk_n,__fwrite_chk@LIBC_N");
+asm(".symver nuah_write_chk_n,__write_chk@LIBC_N");
+asm(".symver nuah_sendto_chk_o,__sendto_chk@LIBC_O");
 // Android's pthread_mutex_t/pthread_cond_t layout is ABI-incompatible with
 // glibc. Keep host synchronization objects out-of-line and use the Android
 // object address purely as Nuah's stable key.

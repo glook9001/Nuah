@@ -59,5 +59,12 @@ LIBC {
     __sF; __stack_chk_guard; stdin; stdout; stderr;
     daylight; timezone; tzname; environ; in6addr_any; in6addr_loopback;
 };
-LIBC_N { } LIBC;
-LIBC_O { } LIBC_N;
+LIBC_N {
+  global:
+    __fread_chk; __fwrite_chk; __write_chk;
+    in6addr_any; in6addr_loopback;
+} LIBC;
+LIBC_O {
+  global:
+    __sendto_chk;
+} LIBC_N;
