@@ -43,10 +43,11 @@ jobs:
           mkdir -p "$tool_root"
           release=https://github.com/soe1hom-arch/lpunpack-go/releases/download/v1.0.7
           curl --fail --location --retry 5 --retry-all-errors \
-            "$release/lpunpack-linux-amd64" -o "$tool_root/lpunpack"
+            "$release/lpunpack-linux-amd64" -o "$tool_root/lpunpack-linux-amd64"
           curl --fail --location --retry 5 --retry-all-errors \
             "$release/lpunpack_sha256sums.txt" -o "$tool_root/SHA256SUMS"
           (cd "$tool_root" && grep ' lpunpack-linux-amd64$' SHA256SUMS | sha256sum --check)
+          mv "$tool_root/lpunpack-linux-amd64" "$tool_root/lpunpack"
           chmod +x "$tool_root/lpunpack"
 
       - name: Extract the minimal bionic runtime bundle
