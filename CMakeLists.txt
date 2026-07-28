@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(nuah VERSION 0.1.0 LANGUAGES C CXX)
+project(nuah VERSION 0.1.0 LANGUAGES C CXX ASM)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -164,7 +164,9 @@ target_include_directories(nuah_android_openmaxal PRIVATE nuah/include)
 target_link_libraries(nuah_android_openmaxal PRIVATE nuah_host_bridge nuah_android_registry)
 set_target_properties(nuah_android_openmaxal PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 
-add_library(nuah_android_bionic SHARED nuah/android_shims/bionic.cpp)
+add_library(nuah_android_bionic SHARED
+  nuah/android_shims/bionic.cpp
+  nuah/android_shims/bionic_forward.S)
 set_target_properties(
   nuah_android_bionic PROPERTIES
   OUTPUT_NAME c
