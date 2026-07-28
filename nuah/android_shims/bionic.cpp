@@ -24,10 +24,14 @@ namespace {
 struct MutexEntry { void* android = nullptr; pthread_mutex_t native{}; };
 struct CondEntry { void* android = nullptr; pthread_cond_t native{}; };
 struct OnceEntry { void* android = nullptr; pthread_once_t native = PTHREAD_ONCE_INIT; };
+struct AttrEntry { void* android = nullptr; pthread_attr_t native{}; };
+struct RwlockEntry { void* android = nullptr; pthread_rwlock_t native{}; };
 std::atomic_flag table_lock = ATOMIC_FLAG_INIT;
 MutexEntry mutexes[2048];
 CondEntry conditions[1024];
 OnceEntry onces[1024];
+AttrEntry attributes[256];
+RwlockEntry rwlocks[1024];
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
@@ -60,6 +64,47 @@ OnceEntry* once_for(void* object) {
     unlock_table(); return &entry;
   }
   unlock_table(); return nullptr;
+}
+AttrEntry* attr_for(void* object) {
+  if (!object) return nullptr;
+  lock_table();
+  for (auto& entry : attributes) {
+    if (entry.android == object) {
+      unlock_table();
+      return &entry;
+    }
+  }
+  for (auto& entry : attributes) {
+    if (!entry.android) {
+      entry.android = object;
+      host<int (*)(pthread_attr_t*)>("pthread_attr_init")(&entry.native);
+      unlock_table();
+      return &entry;
+    }
+  }
+  unlock_table();
+  return nullptr;
+}
+RwlockEntry* rwlock_for(void* object) {
+  if (!object) return nullptr;
+  lock_table();
+  for (auto& entry : rwlocks) {
+    if (entry.android == object) {
+      unlock_table();
+      return &entry;
+    }
+  }
+  for (auto& entry : rwlocks) {
+    if (!entry.android) {
+      entry.android = object;
+      host<int (*)(pthread_rwlock_t*, const pthread_rwlockattr_t*)>(
+          "pthread_rwlock_init")(&entry.native, nullptr);
+      unlock_table();
+      return &entry;
+    }
+  }
+  unlock_table();
+  return nullptr;
 }
 }
 
@@ -405,4 +450,150 @@ int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex, co
 int pthread_condattr_init(pthread_condattr_t*) { return 0; }
 int pthread_condattr_destroy(pthread_condattr_t*) { return 0; }
 int pthread_condattr_setclock(pthread_condattr_t*, clockid_t) { return 0; }
+int pthread_attr_init(pthread_attr_t* object) {
+  return attr_for(object) ? 0 : ENOMEM;
+}
+int pthread_attr_destroy(pthread_attr_t* object) {
+  lock_table();
+  for (auto& entry : attributes) {
+    if (entry.android == object) {
+      const int result =
+          host<int (*)(pthread_attr_t*)>("pthread_attr_destroy")(
+              &entry.native);
+      entry.android = nullptr;
+      unlock_table();
+      return result;
+    }
+  }
+  unlock_table();
+  return EINVAL;
+}
+int pthread_attr_getstack(const pthread_attr_t* object, void** address,
+                          size_t* size) {
+  auto* entry = attr_for(const_cast<pthread_attr_t*>(object));
+  return entry ? host<int (*)(const pthread_attr_t*, void**, size_t*)>(
+                     "pthread_attr_getstack")(&entry->native, address, size)
+               : EINVAL;
+}
+int pthread_attr_setdetachstate(pthread_attr_t* object, int state) {
+  auto* entry = attr_for(object);
+  return entry ? host<int (*)(pthread_attr_t*, int)>(
+                     "pthread_attr_setdetachstate")(&entry->native, state)
+               : EINVAL;
+}
+int pthread_attr_setschedparam(pthread_attr_t* object,
+                               const sched_param* parameters) {
+  auto* entry = attr_for(object);
+  return entry
+             ? host<int (*)(pthread_attr_t*, const sched_param*)>(
+                   "pthread_attr_setschedparam")(&entry->native, parameters)
+             : EINVAL;
+}
+int pthread_attr_setstacksize(pthread_attr_t* object, size_t size) {
+  auto* entry = attr_for(object);
+  return entry ? host<int (*)(pthread_attr_t*, size_t)>(
+                     "pthread_attr_setstacksize")(&entry->native, size)
+               : EINVAL;
+}
+int pthread_create(pthread_t* thread, const pthread_attr_t* object,
+                   void* (*start)(void*), void* argument) {
+  auto* entry = object ? attr_for(const_cast<pthread_attr_t*>(object)) : nullptr;
+  return host<int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*),
+                      void*)>("pthread_create")(
+      thread, entry ? &entry->native : nullptr, start, argument);
+}
+int pthread_getattr_np(pthread_t thread, pthread_attr_t* object) {
+  auto* entry = attr_for(object);
+  return entry ? host<int (*)(pthread_t, pthread_attr_t*)>(
+                     "pthread_getattr_np")(thread, &entry->native)
+               : EINVAL;
+}
+int pthread_detach(pthread_t thread) {
+  return host<int (*)(pthread_t)>("pthread_detach")(thread);
+}
+int pthread_equal(pthread_t left, pthread_t right) {
+  return host<int (*)(pthread_t, pthread_t)>("pthread_equal")(left, right);
+}
+[[noreturn]] void pthread_exit(void* value) {
+  host<void (*)(void*)>("pthread_exit")(value);
+  __builtin_unreachable();
+}
+int pthread_getschedparam(pthread_t thread, int* policy,
+                          sched_param* parameters) {
+  return host<int (*)(pthread_t, int*, sched_param*)>(
+      "pthread_getschedparam")(thread, policy, parameters);
+}
+void* pthread_getspecific(pthread_key_t key) {
+  return host<void* (*)(pthread_key_t)>("pthread_getspecific")(key);
+}
+int pthread_join(pthread_t thread, void** value) {
+  return host<int (*)(pthread_t, void**)>("pthread_join")(thread, value);
+}
+int pthread_key_create(pthread_key_t* key, void (*destructor)(void*)) {
+  return host<int (*)(pthread_key_t*, void (*)(void*))>(
+      "pthread_key_create")(key, destructor);
+}
+int pthread_key_delete(pthread_key_t key) {
+  return host<int (*)(pthread_key_t)>("pthread_key_delete")(key);
+}
+int pthread_kill(pthread_t thread, int signal) {
+  return host<int (*)(pthread_t, int)>("pthread_kill")(thread, signal);
+}
+pthread_t pthread_self() {
+  return host<pthread_t (*)()>("pthread_self")();
+}
+int pthread_setname_np(pthread_t thread, const char* name) {
+  return host<int (*)(pthread_t, const char*)>("pthread_setname_np")(
+      thread, name);
+}
+int pthread_setschedparam(pthread_t thread, int policy,
+                          const sched_param* parameters) {
+  return host<int (*)(pthread_t, int, const sched_param*)>(
+      "pthread_setschedparam")(thread, policy, parameters);
+}
+int pthread_setspecific(pthread_key_t key, const void* value) {
+  return host<int (*)(pthread_key_t, const void*)>("pthread_setspecific")(
+      key, value);
+}
+int pthread_sigmask(int operation, const sigset_t* set, sigset_t* old_set) {
+  return host<int (*)(int, const sigset_t*, sigset_t*)>("pthread_sigmask")(
+      operation, set, old_set);
+}
+int pthread_rwlock_init(pthread_rwlock_t* object,
+                        const pthread_rwlockattr_t*) {
+  return rwlock_for(object) ? 0 : ENOMEM;
+}
+int pthread_rwlock_destroy(pthread_rwlock_t* object) {
+  lock_table();
+  for (auto& entry : rwlocks) {
+    if (entry.android == object) {
+      const int result =
+          host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_destroy")(
+              &entry.native);
+      entry.android = nullptr;
+      unlock_table();
+      return result;
+    }
+  }
+  unlock_table();
+  return EINVAL;
+}
+int pthread_rwlock_rdlock(pthread_rwlock_t* object) {
+  auto* entry = rwlock_for(object);
+  return entry ? host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_rdlock")(
+                     &entry->native)
+               : EINVAL;
+}
+int pthread_rwlock_wrlock(pthread_rwlock_t* object) {
+  auto* entry = rwlock_for(object);
+  return entry ? host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_wrlock")(
+                     &entry->native)
+               : EINVAL;
+}
+int pthread_rwlock_unlock(pthread_rwlock_t* object) {
+  auto* entry = rwlock_for(object);
+  return entry ? host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_unlock")(
+                     &entry->native)
+               : EINVAL;
+}
 }  // extern "C"
