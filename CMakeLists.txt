@@ -87,6 +87,8 @@ set_target_properties(
 
 add_library(nuah_core
   nuah/src/atl_backend.cpp
+  nuah/src/jni_contract.cpp
+  nuah/src/input_bridge.cpp
   nuah/src/native_runtime.cpp
   nuah/src/apk_loader.cpp
   nuah/src/launch_uri.cpp
@@ -163,6 +165,12 @@ set_target_properties(nuah_android_abi_registry_test PROPERTIES BUILD_RPATH
   "$ORIGIN/android")
 add_test(NAME nuah-android-abi-registry
   COMMAND nuah_android_abi_registry_test)
+
+add_executable(nuah_native_contract_test nuah/tests/native_contract_test.cpp)
+target_include_directories(nuah_native_contract_test PRIVATE nuah/include)
+target_compile_options(nuah_native_contract_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(nuah_native_contract_test PRIVATE nuah_core)
+add_test(NAME nuah-native-contract COMMAND nuah_native_contract_test)
 
 add_executable(nuah nuah/src/main.cpp)
 target_link_libraries(nuah PRIVATE nuah_core)
