@@ -1,0 +1,113 @@
+version: 2.1
+
+# CircleCI is an optional CI backend for the same Android 16-only build.
+# The job deliberately uses a Linux VM: the output is a Linux x86_64 ART/ATL
+# runtime, not a macOS or Android artifact.
+jobs:
+  android16-art:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: xlarge
+    environment:
+      USE_CCACHE: "1"
+    steps:
+      - checkout
+      - run:
+          name: Install AOSP host dependencies
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y \
+              adb bc bison build-essential ccache curl flex g++-multilib \
+              gcc-multilib git gn lib32ncurses-dev lib32readline-dev \
+              lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libssl-dev \
+              libxml2-utils lzop pngcrush repo rsync schedtool \
+              squashfs-tools unzip xsltproc zip zlib1g-dev
+      - restore_cache:
+          keys:
+            - circle-aosp-repo-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
+            - circle-aosp-repo-v1-
+      - restore_cache:
+          keys:
+            - circle-ccache-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
+            - circle-ccache-v1-
+      - run:
+          name: Initialize and sync Android 16 master-art
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            mkdir -p .ci/aosp-master-art
+            cd .ci/aosp-master-art
+            if [[ ! -d .repo ]]; then
+              repo init \
+                -u https://android.googlesource.com/platform/manifest \
+                -b master-art --partial-clone --no-use-superproject
+            fi
+            repo sync -c --no-tags --optimized-fetch --prune -j"$(nproc)"
+      - run:
+          name: Verify Android 16 release pins
+          command: |
+            set -euo pipefail
+            declare -A pins=(
+              [art]=ed6c006bd06ae060bd9698fd2cb25c4865512ec3
+              [libcore]=fff4fcc0cf7f080cf2511cbb57561482b13b218f
+              [dalvik]=0c8569a6f7492b1ba639d33e22fe9cf6f45a80ac
+            )
+            for project in "${!pins[@]}"; do
+              dir=".ci/aosp-android16-pins/$project"
+              git clone --filter=blob:none --no-checkout \
+                "https://android.googlesource.com/platform/$project" "$dir"
+              git -C "$dir" fetch --depth=1 origin "${pins[$project]}"
+              git -C "$dir" checkout --detach "${pins[$project]}"
+              test "$(git -C "$dir" rev-parse HEAD)" = "${pins[$project]}"
+            done
+      - run:
+          name: Build Android 16 ART host runtime
+          no_output_timeout: 60m
+          command: |
+            set -euo pipefail
+            ccache -M 10G
+            cd .ci/aosp-master-art
+            source build/envsetup.sh
+            banchan com.android.art x86_64
+            m apps_only dist
+            m dalvikvm64 libart libnativebridge
+            mkdir -p android16-host-art
+            for path in \
+              out/host/linux-x86/bin/dalvikvm64 \
+              out/host/linux-x86/lib64/libart.so \
+              out/host/linux-x86/lib64/libnativebridge.so; do
+              test -f "$path"
+              cp --parents "$path" android16-host-art/
+            done
+            for path in \
+              out/host/linux-x86/lib64/libandroidfw.so \
+              out/host/linux-x86/lib64/libartbase.so \
+              out/host/linux-x86/lib64/libdexfile.so \
+              out/host/linux-x86/lib64/liblog.so \
+              out/host/linux-x86/lib64/libsigchain.so \
+              out/host/linux-x86/lib64/libutils.so \
+              out/host/linux-x86/lib64/libziparchive.so \
+              out/host/linux-x86/framework/core-oj-hostdex.jar \
+              out/host/linux-x86/framework/core-libart-hostdex.jar; do
+              [[ -f "$path" ]] && cp --parents "$path" android16-host-art/
+            done
+            tar -czf android16-host-art.tar.gz -C android16-host-art .
+      - save_cache:
+          key: circle-aosp-repo-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
+          paths:
+            - .ci/aosp-master-art/.repo
+      - save_cache:
+          key: circle-ccache-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
+          paths:
+            - ~/.cache/ccache
+      - store_artifacts:
+          path: .ci/aosp-master-art/out/dist
+          destination: com.android.art-x86_64
+      - store_artifacts:
+          path: .ci/aosp-master-art/android16-host-art.tar.gz
+          destination: android16-host-art-x86_64.tar.gz
+
+workflows:
+  android16:
+    jobs:
+      - android16-art
