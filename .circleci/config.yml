@@ -7,7 +7,8 @@ jobs:
   android16-art:
     machine:
       image: ubuntu-2404:current
-    resource_class: xlarge
+    # CircleCI Free plan maximum Linux VM class: 4 vCPUs / 15 GB RAM.
+    resource_class: large
     environment:
       USE_CCACHE: "1"
     steps:
