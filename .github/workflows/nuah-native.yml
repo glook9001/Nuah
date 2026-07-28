@@ -81,8 +81,39 @@ jobs:
         with:
           name: nuah-libhybris-x86_64
           path: |
-            hybris-prefix/lib/libhybris-common.so*
+            hybris-prefix
           if-no-files-found: error
+
+  hybris-loader-smoke:
+    needs: hybris-x86_64-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Retrieve the matching libhybris runtime bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: nuah-libhybris-x86_64
+          path: hybris-prefix
+
+      - name: Build a no-dependency Android-loader probe
+        run: |
+          set -euo pipefail
+          mkdir -p hybris-probe
+          cc -fPIC -shared -nostdlib -Wl,-soname,libnuah-hybris-probe.so \
+            -o hybris-probe/libnuah-hybris-probe.so nuah/tests/hybris_probe_module.c
+          cc -Wall -Wextra -Werror -o hybris-probe/hybris_loader_probe \
+            nuah/tests/hybris_loader_probe.c -ldl
+
+      - name: Load the probe with libhybris android_dlopen
+        run: |
+          set -euo pipefail
+          test -f hybris-prefix/lib/libhybris-common.so
+          test -f hybris-prefix/lib/libhybris/linker/q.so
+          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
+            hybris-probe/hybris_loader_probe \
+            "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-probe.so"
 
   build:
     runs-on: ubuntu-24.04
