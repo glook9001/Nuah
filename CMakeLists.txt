@@ -113,7 +113,7 @@ if(NUAH_SDL3_ROOT)
     "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
 endif()
 target_link_libraries(
-  nuah_core PUBLIC dl ZLIB::ZLIB PkgConfig::NUAH_GIO
+  nuah_core PUBLIC nuah_host_bridge dl ZLIB::ZLIB PkgConfig::NUAH_GIO
   PkgConfig::NUAH_PLATFORM)
 add_dependencies(nuah_core nuah_atl_overlay)
 
