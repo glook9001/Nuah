@@ -307,7 +307,6 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
   auto image_bytes = apk_member.bytes;
-  normalize_android_elf(image_bytes);
   const int fd = static_cast<int>(::syscall(SYS_memfd_create, "nuah-module", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_EXEC));
   if (fd < 0) throw std::runtime_error("memfd_create failed");
   try {
