@@ -59,6 +59,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "ci@nuah.invalid"
           mkdir -p .ci/aosp-master-art
           cd .ci/aosp-master-art
           if [[ ! -d .repo ]]; then
