@@ -28,7 +28,11 @@ jobs:
             -o "$RUNNER_TEMP/commandline-tools.zip"
           unzip -q "$RUNNER_TEMP/commandline-tools.zip" -d "$tools_root"
           sdkmanager="$tools_root/cmdline-tools/bin/sdkmanager"
+          # sdkmanager exits as soon as it has consumed the licenses, which
+          # gives `yes` SIGPIPE under `pipefail`; that is a successful accept.
+          set +o pipefail
           yes | "$sdkmanager" --sdk_root="$tools_root/sdk" --licenses >/dev/null
+          set -o pipefail
           "$sdkmanager" --sdk_root="$tools_root/sdk" \
             'system-images;android-36;google_apis;x86_64'
 
