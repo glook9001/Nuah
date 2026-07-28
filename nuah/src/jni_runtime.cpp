@@ -165,6 +165,7 @@ struct NuahJniRuntime {
   JNIInvokeInterface_ vm_functions{};
   JNIEnv env{&env_functions};
   JavaVM vm{&vm_functions};
+  jlong native_handle = 0;
 
   NuahJniRuntime() {
     env_functions.GetVersion = get_version;
@@ -237,7 +238,50 @@ extern "C" int nuah_jni_runtime_dispatch_key(
   using Callback = jboolean(JNICALL*)(JNIEnv*, jobject, jlong, jobject);
   const auto invoke = reinterpret_cast<Callback>(callback);
   const auto result = invoke(&runtime->env,
-                             reinterpret_cast<jobject>(event), 0,
+                             reinterpret_cast<jobject>(event),
+                             runtime->native_handle,
                              reinterpret_cast<jobject>(event));
   return result == JNI_TRUE ? 1 : 0;
+}
+
+extern "C" jlong nuah_jni_runtime_initialize_game(
+    NuahJniRuntime* runtime, const char* package_name, const char* data_path) {
+  if (!runtime) return 0;
+  constexpr const char* signature =
+      "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+      "Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J";
+  const auto callback = nuah_jni_find_native_method("initializeNativeCode",
+                                                     signature);
+  if (!callback) {
+    nuah_jni_report_missing("<registered>", "initializeNativeCode", signature);
+    return 0;
+  }
+  using Callback = jlong(JNICALL*)(JNIEnv*, jobject, jstring, jstring, jstring,
+                                   jobject, jbyteArray, jobject);
+  const auto invoke = reinterpret_cast<Callback>(callback);
+  auto* activity = object_handle("GameActivity");
+  const auto result = invoke(
+      &runtime->env, reinterpret_cast<jobject>(activity),
+      runtime->env.NewStringUTF(package_name ? package_name : "com.roblox.client"),
+      runtime->env.NewStringUTF(data_path ? data_path : ""),
+      runtime->env.NewStringUTF("x86_64"), nullptr, nullptr, nullptr);
+  runtime->native_handle = result;
+  return result;
+}
+
+extern "C" int nuah_jni_runtime_dispatch_lifecycle(
+    NuahJniRuntime* runtime, const char* method_name) {
+  if (!runtime || !method_name) return 0;
+  constexpr const char* signature = "(J)V";
+  const auto callback = nuah_jni_find_native_method(method_name, signature);
+  if (!callback) {
+    nuah_jni_report_missing("<registered>", method_name, signature);
+    return 0;
+  }
+  using Callback = void(JNICALL*)(JNIEnv*, jobject, jlong);
+  const auto invoke = reinterpret_cast<Callback>(callback);
+  auto* activity = object_handle("GameActivity");
+  invoke(&runtime->env, reinterpret_cast<jobject>(activity),
+         runtime->native_handle);
+  return 1;
 }

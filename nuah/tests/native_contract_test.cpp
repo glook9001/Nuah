@@ -16,6 +16,14 @@ jboolean key_callback(JNIEnv* env, jobject, jlong, jobject event) {
   jmethodID method = env->GetMethodID(clazz, "getKeyCode", "()I");
   return env->CallIntMethod(event, method) == NUAH_KEY_W ? JNI_TRUE : JNI_FALSE;
 }
+jlong initialize_callback(JNIEnv*, jobject, jstring, jstring, jstring, jobject,
+                          jbyteArray, jobject) {
+  return 42;
+}
+int lifecycle_handle = 0;
+void start_callback(JNIEnv*, jobject, jlong handle) {
+  if (handle == 42) ++lifecycle_handle;
+}
 
 int main() {
   assert(nuah_android_keycode_from_ascii('w') == NUAH_KEY_W);
@@ -49,6 +57,19 @@ int main() {
                                    key_callback)) != 0 ||
       nuah_jni_runtime_dispatch_key(runtime, NUAH_KEY_W, 1, 0, 17, 0, 100) !=
           1) return 1;
+  if (nuah_jni_register_native(
+          "com/google/androidgamesdk/GameActivity", "initializeNativeCode",
+          "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+          "Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J",
+          reinterpret_cast<NuahJniNativeFunction>(initialize_callback)) != 0 ||
+      nuah_jni_register_native("com/google/androidgamesdk/GameActivity",
+                               "onStartNative", "(J)V",
+                               reinterpret_cast<NuahJniNativeFunction>(
+                                   start_callback)) != 0 ||
+      nuah_jni_runtime_initialize_game(runtime, "com.roblox.client", "/tmp") !=
+          42 ||
+      nuah_jni_runtime_dispatch_lifecycle(runtime, "onStartNative") != 1 ||
+      lifecycle_handle != 1) return 1;
   nuah_jni_runtime_destroy(runtime);
   nuah_input_set_sink(input_marker, nullptr);
   if (!SDL_Init(SDL_INIT_EVENTS)) return 1;

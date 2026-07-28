@@ -16,6 +16,11 @@ int nuah_jni_runtime_dispatch_key(NuahJniRuntime* runtime, int keycode,
                                   int action, int repeat, int scancode,
                                   unsigned int modifiers,
                                   unsigned long long event_time_ms);
+jlong nuah_jni_runtime_initialize_game(NuahJniRuntime* runtime,
+                                       const char* package_name,
+                                       const char* data_path);
+int nuah_jni_runtime_dispatch_lifecycle(NuahJniRuntime* runtime,
+                                         const char* method_name);
 
 #ifdef __cplusplus
 }
