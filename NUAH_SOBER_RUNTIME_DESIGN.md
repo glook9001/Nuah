@@ -85,20 +85,21 @@ Nuah maps these to `nuah-services` for the browser shell. The game process
 must not depend on WebKitGTK, while the services process must not own the game
 Vulkan surface.
 
-### Android-facing synthetic namespace
+### Android-facing compatibility namespace
 
 Sober's client imports Android-named libraries that were not present as normal
-files in the process. Nuah must provide their narrow ABI through its own
-registry:
+files in the process. Nuah provides the equivalent boundary with libhybris'
+Android linker and a restricted per-game library directory:
 
 ```text
 libandroid.so liblog.so libEGL.so libGLESv2.so libvulkan.so
-libmediandk.so libOpenSLES.so libOpenMAXAL.so libc.so libdl.so
+libmediandk.so libOpenSLES.so libOpenMAXAL.so libc.so libdl.so libm.so
 ```
 
-These names are compatibility contracts, not invitations to bundle an Android
-system image. Each symbol is either implemented by Nuah, translated to a host
-library, or explicitly reported unsupported.
+`libc.so`, `libdl.so`, and `libm.so` are supplied through the libhybris/bionic
+loader boundary, not reimplemented by Nuah on top of glibc. The other names
+are narrow Nuah providers, translated to host libraries where appropriate, or
+explicitly reported unsupported. This is not an Android system image.
 
 ## Nuah process architecture
 
@@ -120,7 +121,8 @@ nuah-supervisor (nuah)
              ▼
 nuah-main
   ├─ APK split/native-image loader
-  ├─ Android soname/symbol registry
+  ├─ libhybris Android loader + bionic compatibility boundary
+  ├─ restricted Android provider directory
   ├─ JNI 1.6 and Java-object compatibility runtime
   ├─ Android lifecycle/input callback surface
   ├─ EGL/GLES/Vulkan translation boundary
@@ -133,24 +135,26 @@ loop for game input.
 
 ## APK and native loading
 
-The first implementation may load `lib/x86_64/libroblox.so` from the APK using
-a private temporary file. The production loader should match Sober's useful
-properties:
+Nuah extracts `lib/x86_64/libroblox.so` from the selected APK split to a
+private temporary file, then passes that path to libhybris `android_dlopen`.
+The loader must preserve these useful properties:
 
 1. Open the selected split APK.
 2. Locate and inflate the x86_64 native entry.
 3. Validate ELF class, machine, program headers, and required sonames.
-4. Map the image in a private loader namespace.
-5. Resolve Android imports through Nuah's registry.
-6. Seal the backing memfd after population when the platform supports it.
+4. Load it through libhybris' Android linker plugin, never `dlmopen`.
+5. Resolve bionic imports through the matching libhybris runtime and resolve
+   narrow platform imports from Nuah's provider directory.
+6. Keep the temporary-file path until the Android loader closes the module.
 
 `libtrampoline.so` is treated as an optional Crashpad helper, not as the
 Android compatibility runtime.
 
 ## Android compatibility runtime
 
-Nuah should implement one explicit Android ABI registry rather than many
-unrelated placeholder libraries.
+Nuah has one explicit boundary, but it does **not** recreate Android's C
+runtime. Libhybris owns Android ELF loading, bionic symbol handling, and its
+linker plugin. Nuah owns only APIs which have to meet the Linux desktop.
 
 Nuah's Android-facing compatibility contract targets API level 36. Platform
 release names are descriptive only; exported properties, symbol availability,
@@ -167,12 +171,17 @@ libvulkan.so       Android Vulkan entrypoints
 libmediandk.so     media symbols required by the client
 libOpenSLES.so     audio interface IDs and calls
 libOpenMAXAL.so    optional media compatibility
-libc.so/libdl.so   narrow Android ABI/linker compatibility
 ```
 
-Every exported symbol must be classified as `implemented`, `translated`,
-`forwarded`, or `unsupported`. Unsupported calls fail loudly with the symbol
-name; they must not silently return fake success values.
+The libhybris bundle is built and versioned as one x86_64 unit: its common
+library, linker plugin, and compatible bionic runtime libraries. It has one
+restricted search path containing the game image and Nuah's providers. Nuah
+never compiles or ships synthetic replacements for `libc.so`, `libdl.so`, or
+`libm.so`.
+
+Every Nuah-provider symbol must be classified as `implemented`, `translated`,
+or `unsupported`. Unsupported calls fail loudly with the symbol name; they
+must not silently return fake success values.
 
 ## JNI and Java surface
 
@@ -250,28 +259,33 @@ game process may own a profile at a time.
 
 ## Build and distribution
 
-Normal CI builds Nuah's native runtime and ATL support only. It does not sync
-or compile AOSP ART and does not require an ART/APEX bundle. The old
-`art_standalone` source tree and ART workflow are intentionally removed.
+Normal CI builds Nuah plus the pinned x86_64 libhybris common loader and its
+linker plugin. A no-dependency ELF smoke test must pass through
+`android_dlopen` before Roblox is attempted. CI does not sync or compile AOSP
+ART and does not require an ART/APEX bundle. The old `art_standalone` source
+tree and ART workflow are intentionally removed.
 
-The runtime artifact contains Nuah/ATL binaries, the Android ABI registry, and
-configuration. The Roblox APK remains a separately acquired client payload.
+The runtime artifact contains Nuah, the libhybris bundle, Nuah's narrow
+Android providers, and configuration. The Roblox APK remains a separately
+acquired client payload.
 
 ## Implementation milestones
 
-1. Replace placeholder Android stubs with the registry and symbol diagnostics.
-2. Implement APK x86_64 loading and a disk-backed development path.
-3. Implement JNI table/object contracts observed in the investigation.
-4. Implement native window, Android Vulkan-surface translation, and swapchain.
-5. Implement physical keyboard/mouse translation and GameActivity callbacks.
-6. Reproduce session IPC and launch `placeId=1818` through the WebKit shell.
-7. Add crash isolation, ABI tests, graphics smoke tests, and input tests.
-8. Add sealed memfd loading after the ordinary loader path is stable.
+1. Build and package the pinned x86_64 libhybris loader and linker plugin.
+2. Prove `android_dlopen` with a no-dependency x86_64 ELF.
+3. Add the matching bionic runtime and Nuah provider directory; load
+   `libroblox.so` through `android_dlopen` in CI.
+4. Implement JNI table/object contracts observed in the investigation.
+5. Implement native window, Android Vulkan-surface translation, and swapchain.
+6. Implement physical keyboard/mouse translation and GameActivity callbacks.
+7. Reproduce session IPC and launch `placeId=1818` through the WebKit shell.
+8. Add crash isolation, graphics smoke tests, and input tests.
 
 ## Acceptance criteria
 
 Nuah is considered Sober-aligned when it can launch the x86_64 Roblox client in
 one native Linux game process, create a host Wayland/Vulkan surface, deliver
 working keyboard/mouse/scroll input, preserve the WebKit session, and recover
-the browser after a game-process failure—without Android APEX files, AOSP
-source, a container, a VM, or a virtual display.
+the browser after a game-process failure—without an Android container, VM, or
+virtual display. Libhybris and its narrow loader/bionic bundle are permitted;
+an Android framework or full Android system image is not.
