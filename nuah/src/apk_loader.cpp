@@ -20,6 +20,29 @@ constexpr std::uint32_t kEndOfCentralDirectory = 0x06054b50;
 constexpr std::uint32_t kCentralDirectory = 0x02014b50;
 constexpr std::uint32_t kLocalFile = 0x04034b50;
 
+void set_hybris_path_if_unset(const char* name, const std::string& value) {
+  const char* existing = ::getenv(name);
+  if (existing && *existing) return;
+  if (::setenv(name, value.c_str(), 1) != 0) {
+    throw std::runtime_error(std::string("cannot configure ") + name);
+  }
+}
+
+void configure_hybris_environment(const char* library) {
+  std::string libraries = NUAH_ANDROID_PROVIDER_DIR;
+  if (const char* bionic = ::getenv("NUAH_BIONIC_LIBRARY_DIR"); bionic && *bionic) {
+    libraries += ':';
+    libraries += bionic;
+  }
+  set_hybris_path_if_unset("HYBRIS_LD_LIBRARY_PATH", libraries);
+  if (!library || !*library || ::getenv("HYBRIS_LINKER_DIR")) return;
+  const std::filesystem::path common(library);
+  if (!common.has_parent_path()) return;
+  set_hybris_path_if_unset(
+      "HYBRIS_LINKER_DIR",
+      (common.parent_path() / "libhybris" / "linker").string());
+}
+
 std::uint16_t u16(const std::vector<std::byte>& b, std::size_t off) {
   if (off + 2 > b.size()) throw std::runtime_error("truncated ZIP field");
   return static_cast<std::uint16_t>(static_cast<unsigned char>(b[off])) |
@@ -279,6 +302,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     fd = -1;
     void* loader_library = nullptr;
     const char* library = ::getenv("NUAH_HYBRIS_LIBRARY");
+    configure_hybris_environment(library);
     loader_library = ::dlopen(library && *library ? library : "libhybris-common.so",
                               RTLD_NOW | RTLD_LOCAL);
     if (!loader_library) {

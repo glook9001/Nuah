@@ -104,6 +104,7 @@ add_library(nuah_core
 target_include_directories(nuah_core PUBLIC nuah/include)
 target_include_directories(nuah_core PUBLIC ${JNI_INCLUDE_DIRS})
 target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
+target_compile_definitions(nuah_core PRIVATE NUAH_ANDROID_PROVIDER_DIR="${CMAKE_BINARY_DIR}/android")
 target_compile_definitions(
   nuah_core PRIVATE
   NUAH_ATL_OVERLAY_PATH="$<TARGET_FILE:nuah_atl_overlay>")
