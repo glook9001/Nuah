@@ -36,6 +36,19 @@ jobs:
           "$sdkmanager" --sdk_root="$tools_root/sdk" \
             'system-images;android-36;google_apis;x86_64'
 
+      - name: Fetch a checksum-verified logical-partition extractor
+        run: |
+          set -euo pipefail
+          tool_root="$RUNNER_TEMP/lpunpack"
+          mkdir -p "$tool_root"
+          release=https://github.com/soe1hom-arch/lpunpack-go/releases/download/v1.0.7
+          curl --fail --location --retry 5 --retry-all-errors \
+            "$release/lpunpack-linux-amd64" -o "$tool_root/lpunpack"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "$release/lpunpack_sha256sums.txt" -o "$tool_root/SHA256SUMS"
+          (cd "$tool_root" && grep ' lpunpack-linux-amd64$' SHA256SUMS | sha256sum --check)
+          chmod +x "$tool_root/lpunpack"
+
       - name: Extract the minimal bionic runtime bundle
         run: |
           set -euo pipefail
@@ -66,7 +79,7 @@ jobs:
             echo 'error: API image GPT has no dynamic super partition' >&2
             exit 1
           fi
-          lpunpack "$super_partition" "$work/logical"
+          "$RUNNER_TEMP/lpunpack/lpunpack" "$super_partition" "$work/logical"
           runtime_partition=$(find "$work/logical" -maxdepth 1 -type f -name 'system*.img' -print -quit)
           if [ -z "$runtime_partition" ]; then
             echo 'error: dynamic super image has no logical system image' >&2
