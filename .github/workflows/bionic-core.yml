@@ -81,14 +81,22 @@ jobs:
             exit 1
           fi
           "$RUNNER_TEMP/lpunpack/lpunpack" "$super_partition" "$work/logical"
-          runtime_partition=$(find "$work/logical" -maxdepth 1 -type f -name 'system*.img' -print -quit)
+          runtime_partition=
+          while IFS= read -r candidate; do
+            probe=$(debugfs -R 'stat /apex/com.android.runtime.apex' "$candidate" 2>&1 || true)
+            if grep -q 'Inode:' <<<"$probe"; then
+              runtime_partition="$candidate"
+              break
+            fi
+          done < <(find "$work/logical" -maxdepth 1 -type f -name '*.img' | sort)
           if [ -z "$runtime_partition" ]; then
-            echo 'error: dynamic super image has no logical system image' >&2
+            echo 'error: no logical image contains /apex/com.android.runtime.apex' >&2
             find "$work/logical" -maxdepth 1 -type f -printf '%f\n' >&2
             exit 1
           fi
-          if ! debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
-              "$runtime_partition"; then
+          debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
+            "$runtime_partition"
+          if ! test -s "$work/runtime.apex"; then
             echo 'error: logical system image has no com.android.runtime APEX' >&2
             debugfs -R 'ls -l /apex' "$runtime_partition" >&2 || true
             exit 1
