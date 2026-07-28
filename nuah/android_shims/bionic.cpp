@@ -69,6 +69,21 @@ void* memset(void* destination, int value, size_t length) {
   return host<void* (*)(void*, int, size_t)>("memset")(destination, value,
                                                          length);
 }
+void* __memset_chk(void* destination, int value, size_t length,
+                   size_t destination_size) {
+  if (length > destination_size) std::abort();
+  return memset(destination, value, length);
+}
+void* __memcpy_chk(void* destination, const void* source, size_t length,
+                   size_t destination_size) {
+  if (length > destination_size) std::abort();
+  return memcpy(destination, source, length);
+}
+void* __memmove_chk(void* destination, const void* source, size_t length,
+                    size_t destination_size) {
+  if (length > destination_size) std::abort();
+  return memmove(destination, source, length);
+}
 int memcmp(const void* left, const void* right, size_t length) {
   return host<int (*)(const void*, const void*, size_t)>("memcmp")(
       left, right, length);
@@ -95,12 +110,24 @@ int strncmp(const char* left, const char* right, size_t length) {
 char* strcpy(char* destination, const char* source) {
   return host<char* (*)(char*, const char*)>("strcpy")(destination, source);
 }
+char* __strcpy_chk(char* destination, const char* source,
+                   size_t destination_size) {
+  const size_t length = strlen(source) + 1;
+  if (length > destination_size) std::abort();
+  return strcpy(destination, source);
+}
 char* strncpy(char* destination, const char* source, size_t length) {
   return host<char* (*)(char*, const char*, size_t)>("strncpy")(
       destination, source, length);
 }
 char* strcat(char* destination, const char* source) {
   return host<char* (*)(char*, const char*)>("strcat")(destination, source);
+}
+char* __strcat_chk(char* destination, const char* source,
+                   size_t destination_size) {
+  const size_t length = strlen(destination) + strlen(source) + 1;
+  if (length > destination_size) std::abort();
+  return strcat(destination, source);
 }
 char* strncat(char* destination, const char* source, size_t length) {
   return host<char* (*)(char*, const char*, size_t)>("strncat")(

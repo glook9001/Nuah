@@ -1,6 +1,7 @@
 LIBC {
   global:
     memcpy; memmove; memset; memcmp; memchr; strlen; strnlen; strcmp;
+    __memset_chk; __memcpy_chk; __memmove_chk; __strcpy_chk; __strcat_chk;
     strncmp; strcpy; strncpy; strcat; strncat; strchr; strrchr; strstr;
     strcasecmp; strncasecmp; strerror;
     __cxa_atexit; __cxa_finalize; __cxa_thread_atexit_impl; __register_atfork;
