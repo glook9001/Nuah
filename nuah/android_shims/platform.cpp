@@ -14,6 +14,10 @@ void unsupported_media(const char* symbol) {
   nuah_android_api_unsupported("libmediandk.so", symbol);
   errno = ENOSYS;
 }
+void unsupported_audio(const char* symbol) {
+  nuah_android_api_unsupported("libOpenSLES.so", symbol);
+  errno = ENOSYS;
+}
 }
 
 extern "C" {
@@ -104,7 +108,10 @@ void AMediaFormat_setInt32(void*, const char*, int32_t) { unsupported_media("AMe
 void AMediaFormat_setString(void*, const char*, const char*) { unsupported_media("AMediaFormat_setString"); }
 const char* AMediaFormat_toString(void*) { unsupported_media("AMediaFormat_toString"); return nullptr; }
 
-int slCreateEngine(void**, unsigned, const void*, unsigned, const void*, const bool*) { return 12; }
+int slCreateEngine(void**, unsigned, const void*, unsigned, const void*, const bool*) {
+  unsupported_audio("slCreateEngine");
+  return 12;  // SL_RESULT_FEATURE_UNSUPPORTED
+}
 void ZSTD_trace_compress_begin(...) {}
 void ZSTD_trace_compress_end(...) {}
 void ZSTD_trace_decompress_begin(...) {}

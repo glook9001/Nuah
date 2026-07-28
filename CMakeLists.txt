@@ -11,8 +11,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(NUAH_UI REQUIRED IMPORTED_TARGET gtk4 libadwaita-1 webkitgtk-6.0)
 pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
 pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
-find_program(MESON_EXECUTABLE meson REQUIRED)
-find_program(NINJA_EXECUTABLE ninja REQUIRED)
+
+option(NUAH_BUILD_ATL "Build the legacy ATL fork during this configure" OFF)
 
 set(NUAH_ATL_FULL_SOURCE "${CMAKE_SOURCE_DIR}/third_party/android_translation_layer")
 set(NUAH_ATL_FULL_BUILD "${CMAKE_BINARY_DIR}/atl-full")
@@ -20,57 +20,51 @@ set(NUAH_ATL_BOOTCLASSPATH "" CACHE STRING
     "Android boot class path passed to the ATL Meson build")
 set(NUAH_ATL_JAVA_HOME "" CACHE PATH
     "JDK home passed to ATL when jni.pc is unavailable")
-if(NOT NUAH_ATL_BOOTCLASSPATH)
-  message(FATAL_ERROR
-    "Nuah is Android 16-only: configure with -DNUAH_ATL_BOOTCLASSPATH=<split ART bootclasspath>")
-endif()
-
-set(NUAH_ATL_MESON_OPTIONS
-    --buildtype=release --prefix=/usr/local)
-if(NUAH_ATL_BOOTCLASSPATH)
+if(NUAH_BUILD_ATL)
+  find_program(MESON_EXECUTABLE meson REQUIRED)
+  find_program(NINJA_EXECUTABLE ninja REQUIRED)
+  if(NOT NUAH_ATL_BOOTCLASSPATH)
+    message(FATAL_ERROR
+      "NUAH_BUILD_ATL requires NUAH_ATL_BOOTCLASSPATH")
+  endif()
+  set(NUAH_ATL_MESON_OPTIONS --buildtype=release --prefix=/usr/local)
   list(APPEND NUAH_ATL_MESON_OPTIONS
        "-Datl_bootclasspath=${NUAH_ATL_BOOTCLASSPATH}")
-endif()
-if(NUAH_ATL_JAVA_HOME)
-  list(APPEND NUAH_ATL_MESON_OPTIONS
-       "-Datl_java_home=${NUAH_ATL_JAVA_HOME}")
-endif()
-
-# Nuah uses ATL's in-process Android CookieManager action for the explicit
-# browser-session handoff.  Keep the ATL executable built from the pinned
-# source beside Nuah rather than accidentally falling back to a system copy
-# without that action.
-if(NOT EXISTS "${NUAH_ATL_FULL_SOURCE}/meson.build")
-  message(FATAL_ERROR "Pinned Android Translation Layer source is missing")
-endif()
-if(EXISTS "${NUAH_ATL_FULL_BUILD}/build.ninja")
-  set(NUAH_ATL_MESON_RECONFIGURE --reconfigure)
+  if(NUAH_ATL_JAVA_HOME)
+    list(APPEND NUAH_ATL_MESON_OPTIONS
+         "-Datl_java_home=${NUAH_ATL_JAVA_HOME}")
+  endif()
+  if(NOT EXISTS "${NUAH_ATL_FULL_SOURCE}/meson.build")
+    message(FATAL_ERROR "Pinned Android Translation Layer source is missing")
+  endif()
+  if(EXISTS "${NUAH_ATL_FULL_BUILD}/build.ninja")
+    set(NUAH_ATL_MESON_RECONFIGURE --reconfigure)
+  else()
+    set(NUAH_ATL_MESON_RECONFIGURE)
+  endif()
+  execute_process(
+    COMMAND "${MESON_EXECUTABLE}" setup ${NUAH_ATL_MESON_RECONFIGURE}
+            "${NUAH_ATL_FULL_BUILD}" "${NUAH_ATL_FULL_SOURCE}"
+            ${NUAH_ATL_MESON_OPTIONS}
+    RESULT_VARIABLE NUAH_ATL_FULL_SETUP_RESULT
+    COMMAND_ECHO STDOUT)
+  if(NOT NUAH_ATL_FULL_SETUP_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not configure pinned Android Translation Layer")
+  endif()
+  add_custom_target(nuah_atl_runtime
+    COMMAND "${MESON_EXECUTABLE}" compile -C "${NUAH_ATL_FULL_BUILD}" android-translation-layer
+    BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/android-translation-layer"
+    COMMENT "Building legacy ATL fork (transitional only)"
+    VERBATIM)
+  add_custom_target(nuah_atl_api_jar
+    COMMAND "${NINJA_EXECUTABLE}" -C "${NUAH_ATL_FULL_BUILD}" src/api-impl/hax.jar
+    BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/src/api-impl/hax.jar"
+    COMMENT "Building transitional ATL API classes"
+    VERBATIM)
 else()
-  set(NUAH_ATL_MESON_RECONFIGURE)
+  add_custom_target(nuah_atl_runtime)
+  add_custom_target(nuah_atl_api_jar)
 endif()
-execute_process(
-  COMMAND "${MESON_EXECUTABLE}" setup ${NUAH_ATL_MESON_RECONFIGURE}
-          "${NUAH_ATL_FULL_BUILD}" "${NUAH_ATL_FULL_SOURCE}"
-          ${NUAH_ATL_MESON_OPTIONS}
-  RESULT_VARIABLE NUAH_ATL_FULL_SETUP_RESULT
-  COMMAND_ECHO STDOUT)
-if(NOT NUAH_ATL_FULL_SETUP_RESULT EQUAL 0)
-  message(FATAL_ERROR "Could not configure pinned Android Translation Layer")
-endif()
-add_custom_target(nuah_atl_runtime
-  COMMAND "${MESON_EXECUTABLE}" compile -C "${NUAH_ATL_FULL_BUILD}" android-translation-layer
-  BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/android-translation-layer"
-  COMMENT "Building pinned Android Translation Layer runtime"
-  VERBATIM)
-
-# The executable does not require hax.jar at runtime, but the input ABI test
-# inspects the compiled Java API classes. Build that artifact as part of Nuah
-# so a clean checkout cannot silently skip the contract check.
-add_custom_target(nuah_atl_api_jar
-  COMMAND "${NINJA_EXECUTABLE}" -C "${NUAH_ATL_FULL_BUILD}" src/api-impl/hax.jar
-  BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/src/api-impl/hax.jar"
-  COMMENT "Building ATL Java API classes for ABI checks"
-  VERBATIM)
 
 add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
 target_include_directories(nuah_host_bridge PUBLIC nuah/include)
@@ -159,10 +153,21 @@ set_target_properties(nuah_android_dl PROPERTIES OUTPUT_NAME dl LIBRARY_OUTPUT_D
 target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(nuah_android_dl PRIVATE nuah_android_registry)
 
+add_executable(nuah_android_abi_registry_test
+  nuah/tests/android_abi_registry_test.cpp)
+target_include_directories(nuah_android_abi_registry_test PRIVATE nuah/include)
+target_compile_options(nuah_android_abi_registry_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(nuah_android_abi_registry_test PRIVATE nuah_android_registry)
+set_target_properties(nuah_android_abi_registry_test PROPERTIES BUILD_RPATH
+  "$ORIGIN/android")
+add_test(NAME nuah-android-abi-registry
+  COMMAND nuah_android_abi_registry_test)
+
 add_executable(nuah nuah/src/main.cpp)
 target_link_libraries(nuah PRIVATE nuah_core)
 add_dependencies(nuah nuah_atl_runtime)
 add_dependencies(nuah nuah_atl_api_jar)
+add_dependencies(nuah nuah_android_abi_registry_test)
 
 add_executable(nuah-services nuah/src/services_main.cpp)
 target_link_libraries(nuah-services PRIVATE nuah_core PkgConfig::NUAH_UI)
@@ -172,7 +177,7 @@ add_dependencies(nuah-services nuah_atl_api_jar)
 configure_file(nuah/share/applications/org.nuah.Nuah.desktop
                ${CMAKE_BINARY_DIR}/org.nuah.Nuah.desktop COPYONLY)
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND NUAH_BUILD_ATL)
   find_program(NUAH_JAVAP_EXECUTABLE javap REQUIRED)
   add_test(NAME nuah-atl-input-abi
     COMMAND "${CMAKE_COMMAND}"

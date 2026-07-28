@@ -1,0 +1,54 @@
+name: Nuah native runtime
+
+on:
+  push:
+    paths:
+      - 'CMakeLists.txt'
+      - 'nuah/**'
+      - '.github/workflows/nuah-native.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: nuah-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config \
+            default-jdk libegl-dev libgtk-4-dev libadwaita-1-dev \
+            libwebkitgtk-6.0-dev libsdl3-dev libasound2-dev \
+            libavcodec-dev libcap-dev libdrm-dev libffi-dev \
+            libglib2.0-dev libgudev-1.0-dev libportal-dev libsqlite3-dev \
+            libvulkan-dev libopenxr-dev libunwind-dev libelf-dev \
+            libicu-dev libssl-dev libexpat1-dev liblz4-dev liblzma-dev \
+            zlib1g-dev
+
+      - name: Configure Nuah native runtime
+        run: |
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNUAH_BUILD_ATL=OFF
+
+      - name: Build native providers and supervisor
+        run: cmake --build build-ci --parallel
+
+      - name: Run native ABI tests
+        run: ctest --test-dir build-ci --output-on-failure
+
+      - name: Publish native runtime artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuah-native-runtime-x86_64
+          path: |
+            build-ci/nuah
+            build-ci/nuah-services
+            build-ci/android/*.so
+          if-no-files-found: error
