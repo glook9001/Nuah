@@ -1,4 +1,5 @@
 #include "nuah/native_window_bridge.h"
+#include "nuah/android_abi_registry.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -47,6 +48,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateAndroidSurfaceKHR(
     const AndroidSurfaceCreateInfo* create_info,
     const VkAllocationCallbacks* allocator,
     VkSurfaceKHR* output) {
+  nuah_android_api_register("libvulkan.so", "vkCreateAndroidSurfaceKHR",
+                            NUAH_ANDROID_API_TRANSLATED);
   if (!instance || !create_info || !output ||
       create_info->sType != VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR ||
       !create_info->window) {
@@ -163,6 +166,8 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(
     VkInstance instance,
     const char* name) {
+  nuah_android_api_register("libvulkan.so", "vkGetInstanceProcAddr",
+                            NUAH_ANDROID_API_FORWARDED);
   if (!name) return nullptr;
   if (std::strcmp(name, "vkCreateAndroidSurfaceKHR") == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(&vkCreateAndroidSurfaceKHR);

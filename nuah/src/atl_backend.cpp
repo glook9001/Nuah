@@ -116,7 +116,7 @@ std::string atl_executable() {
       "Nuah supports only the ATL Android 16 runtime");
 }
 
-void install_overlay_preload() {
+void install_legacy_overlay_preload() {
   const std::filesystem::path overlay = NUAH_ATL_OVERLAY_PATH;
   if (!std::filesystem::is_regular_file(overlay)) {
     throw std::runtime_error("Nuah ATL compatibility overlay is missing: " +
@@ -456,7 +456,13 @@ std::filesystem::path prepare_atl_native_libraries(
   }
   install_atl_library_path();
   install_android16_runtime_environment(data);
-  install_overlay_preload();
+  // Sober resolves its Android namespace inside the protected runtime and
+  // does not rely on LD_PRELOAD. Keep the old overlay only as an explicit
+  // diagnostic escape hatch while Nuah's registry is being completed.
+  if (const char* legacy = std::getenv("NUAH_ENABLE_LEGACY_PRELOAD");
+      legacy && std::string_view(legacy) == "1") {
+    install_legacy_overlay_preload();
+  }
 
   // ATL is deliberately non-unique while bootstrapping, so it needs an
   // explicit app ID to own the session-bus endpoint used for later URI opens.
