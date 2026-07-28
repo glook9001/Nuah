@@ -66,9 +66,9 @@ NUAH_FORWARD shutdown
 NUAH_FORWARD socket
 NUAH_FORWARD socketpair
 
-NUAH_FORWARD epoll_create
-NUAH_FORWARD epoll_ctl
-NUAH_FORWARD epoll_wait
+NUAH_FORWARD epoll_create, GLIBC_2.3.2
+NUAH_FORWARD epoll_ctl, GLIBC_2.3.2
+NUAH_FORWARD epoll_wait, GLIBC_2.3.2
 NUAH_FORWARD ioctl
 NUAH_FORWARD madvise
 NUAH_FORWARD mlock
