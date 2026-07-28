@@ -51,13 +51,20 @@ jobs:
             cp "$image" "$work/system.raw.img"
           fi
           partition_table=$(sfdisk --json "$work/system.raw.img")
-          system_start=$(jq -r '[.partitiontable.partitions[] | select(.name == "system")][0].start // empty' <<<"$partition_table")
-          system_size=$(jq -r '[.partitiontable.partitions[] | select(.name == "system")][0].size // empty' <<<"$partition_table")
-          test -n "$system_start" && test -n "$system_size"
-          dd if="$work/system.raw.img" of="$work/system.ext4.img" bs=512 \
-            skip="$system_start" count="$system_size" status=none
+          printf '%s\n' "$partition_table" | jq -r '.partitiontable.partitions[] | [.start, .size, (.name // "unnamed")] | @tsv'
+          runtime_partition=
+          while IFS=$'\t' read -r start size name; do
+            echo "checking GPT partition $name (start=$start sectors, size=$size sectors)"
+            dd if="$work/system.raw.img" of="$work/candidate.ext4.img" bs=512 \
+              skip="$start" count="$size" status=none
+            if debugfs -R 'stat /apex/com.android.runtime.apex' "$work/candidate.ext4.img" >/dev/null 2>&1; then
+              runtime_partition="$work/candidate.ext4.img"
+              break
+            fi
+          done < <(printf '%s\n' "$partition_table" | jq -r '.partitiontable.partitions[] | [.start, .size, (.name // "unnamed")] | @tsv' | sort -nr -k2)
+          test -n "$runtime_partition"
           debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
-            "$work/system.ext4.img" >/dev/null
+            "$runtime_partition" >/dev/null
           unzip -q "$work/runtime.apex" -d "$work/apex"
           for library in libc.so libdl.so libm.so linker64; do
             debugfs -R "dump -p /lib64/bionic/$library $work/$library" \
