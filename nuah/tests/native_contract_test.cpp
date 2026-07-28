@@ -2,6 +2,8 @@
 #include "nuah/jni_contract.h"
 #include "nuah/jni_runtime.h"
 
+#include <SDL3/SDL.h>
+
 #include <cassert>
 
 void native_marker() {}
@@ -37,9 +39,17 @@ int main() {
       env->RegisterNatives(logging, nullptr, 0) != JNI_ERR) return 1;
   nuah_jni_runtime_destroy(runtime);
   nuah_input_set_sink(input_marker, nullptr);
-  /* The sink is the game-facing delivery boundary. SDL event pumping is
-   * exercised by the native runtime; this assertion verifies registration is
-   * not silently discarded. */
-  assert(delivered == 0);
+  if (!SDL_Init(SDL_INIT_EVENTS)) return 1;
+  SDL_Event key_event{};
+  key_event.type = SDL_EVENT_KEY_DOWN;
+  key_event.key.key = SDLK_W;
+  key_event.key.scancode = SDL_SCANCODE_W;
+  key_event.key.down = true;
+  key_event.key.repeat = false;
+  if (!SDL_PushEvent(&key_event) || nuah_input_pump() != 1 || delivered != 1) {
+    SDL_Quit();
+    return 1;
+  }
+  SDL_Quit();
   return 0;
 }
