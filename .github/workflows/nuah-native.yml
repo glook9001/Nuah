@@ -54,7 +54,8 @@ jobs:
         run: |
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DNUAH_BUILD_ATL=OFF
+            -DNUAH_BUILD_ATL=OFF \
+            -DNUAH_SDL3_ROOT="$GITHUB_WORKSPACE/.ci/sdl3/root"
 
       - name: Build native providers and supervisor
         run: cmake --build build-ci --parallel

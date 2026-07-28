@@ -14,6 +14,8 @@ pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
 pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
 
 option(NUAH_BUILD_ATL "Build the legacy ATL fork during this configure" OFF)
+set(NUAH_SDL3_ROOT "" CACHE PATH
+    "Private prefix containing a prebuilt SDL3 development package")
 
 set(NUAH_ATL_FULL_SOURCE "${CMAKE_SOURCE_DIR}/third_party/android_translation_layer")
 set(NUAH_ATL_FULL_BUILD "${CMAKE_BINARY_DIR}/atl-full")
@@ -104,6 +106,11 @@ target_compile_definitions(
   nuah_core PRIVATE
   NUAH_ATL_OVERLAY_PATH="$<TARGET_FILE:nuah_atl_overlay>")
 target_compile_options(nuah_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+if(NUAH_SDL3_ROOT)
+  target_include_directories(nuah_core PRIVATE "${NUAH_SDL3_ROOT}/usr/include")
+  target_link_directories(nuah_core PRIVATE
+    "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
+endif()
 target_link_libraries(
   nuah_core PUBLIC dl ZLIB::ZLIB PkgConfig::NUAH_GIO
   PkgConfig::NUAH_PLATFORM)
@@ -128,6 +135,12 @@ set_target_properties(
   BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 target_include_directories(nuah_android_vulkan PRIVATE nuah/include)
 target_compile_options(nuah_android_vulkan PRIVATE -Wall -Wextra -Wpedantic -Werror)
+if(NUAH_SDL3_ROOT)
+  target_include_directories(nuah_android_vulkan PRIVATE
+    "${NUAH_SDL3_ROOT}/usr/include")
+  target_link_directories(nuah_android_vulkan PRIVATE
+    "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
+endif()
 target_link_libraries(
   nuah_android_vulkan PRIVATE dl PkgConfig::NUAH_PLATFORM nuah_host_bridge
   nuah_android_registry)
