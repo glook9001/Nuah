@@ -16,6 +16,14 @@ jobs:
       - run:
           name: Install AOSP host dependencies
           command: |
+            # CircleCI selected a very slow US-East Ubuntu mirror for this
+            # runner. Use a stable EU mirror; runner geography itself is not
+            # selectable on the Free plan.
+            sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+              -exec sed -i -E \
+                's#https?://[^ ]*archive\.ubuntu\.com/ubuntu#http://de.archive.ubuntu.com/ubuntu#g; \
+                 s#https?://security\.ubuntu\.com/ubuntu#http://de.archive.ubuntu.com/ubuntu#g' {} +
+            printf 'Acquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
             sudo apt-get update
             sudo apt-get install -y \
               adb bc bison build-essential ccache curl flex g++-multilib \
