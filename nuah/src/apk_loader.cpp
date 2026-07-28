@@ -54,11 +54,23 @@ void configure_hybris_environment(const char* library) {
 std::vector<void*> host_provider_handles;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 
+std::size_t android_strlen_chk(const char* text, std::size_t capacity) {
+  if (!text) std::abort();
+  const auto length = ::strnlen(text, capacity);
+  // Match bionic's contract: a string that does not fit its advertised
+  // object size is a fortify violation, never a silently truncated result.
+  if (length == capacity) std::abort();
+  return length;
+}
+
 void* resolve_host_provider_symbol(const char* symbol, const char*) {
   if (!symbol) return nullptr;
   if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
   if (std::strcmp(symbol, "__stack_chk_fail") == 0) {
     return ::dlsym(RTLD_DEFAULT, symbol);
+  }
+  if (std::strcmp(symbol, "__strlen_chk") == 0) {
+    return reinterpret_cast<void*>(android_strlen_chk);
   }
   for (auto it = host_provider_handles.rbegin(); it != host_provider_handles.rend(); ++it) {
     if (void* resolved = ::dlsym(*it, symbol)) return resolved;
