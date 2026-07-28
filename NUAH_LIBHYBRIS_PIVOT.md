@@ -45,6 +45,13 @@ The bundle must be sourced and versioned as one unit.  Nuah never imports an
 Android `libc.so`, `libdl.so`, `libm.so`, APEX, or system image; libhybris'
 hooks bridge those Android imports to the host ABI.
 
+The pinned libhybris source carries one small Nuah patch. Its Q-era linker
+models the three bionic names above as in-memory, hook-only dependency records
+when they appear in `DT_NEEDED`. This is necessary because upstream otherwise
+requires files for every dependency before it reaches its hook resolver. The
+records contain no ELF image, code, symbols, bionic library, or Android
+payload; normal Android-facing libraries remain real, narrow Nuah providers.
+
 ## Implementation order
 
 1. Pin libhybris and exercise its x86_64 linker route with a trivial DSO.

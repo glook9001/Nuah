@@ -30,6 +30,8 @@ jobs:
           git clone --filter=blob:none --no-checkout "$repository" hybris-source
           git -C hybris-source checkout --detach "$revision"
           test "$(git -C hybris-source rev-parse HEAD)" = "$revision"
+          git -C hybris-source apply --recount --check \
+            "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
           test -f hybris-source/hybris/configure.ac
           test -f hybris-source/hybris/common/q/linker.cpp
           grep -F 'xx86-64' hybris-source/hybris/configure.ac
@@ -63,6 +65,8 @@ jobs:
           . third_party/libhybris.lock
           git clone --filter=blob:none "$repository" hybris-source
           git -C hybris-source checkout --detach "$revision"
+          git -C hybris-source apply --recount \
+            "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
 
       - name: Build the x86_64 libhybris common loader
         run: |
@@ -114,6 +118,8 @@ jobs:
           LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
             hybris-probe/hybris_loader_probe \
             "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-probe.so"
+          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
+            hybris-probe/hybris_loader_probe libc.so
 
   build:
     needs: hybris-x86_64-build
