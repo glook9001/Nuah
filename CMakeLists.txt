@@ -182,6 +182,7 @@ set_target_properties(
   LINK_OPTIONS
     "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/dl.map;-Wl,-soname,libdl.so")
 target_compile_options(nuah_android_dl PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(nuah_android_dl PRIVATE _GNU_SOURCE)
 
 target_link_libraries(nuah_android_dl PRIVATE dl nuah_android_registry)
 
