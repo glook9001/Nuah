@@ -99,7 +99,7 @@ add_library(nuah_core
   nuah/src/sober_cache.cpp
   nuah/src/protocol.cpp)
 target_include_directories(nuah_core PUBLIC nuah/include)
-target_include_directories(nuah_core PRIVATE ${JNI_INCLUDE_DIRS})
+target_include_directories(nuah_core PUBLIC ${JNI_INCLUDE_DIRS})
 target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
 target_compile_definitions(nuah_core PRIVATE NUAH_ANDROID_LIBRARY_DIR="${CMAKE_BINARY_DIR}/android")
 target_compile_definitions(
