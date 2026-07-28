@@ -2,14 +2,16 @@
 
 #include "nuah/android_abi_registry.h"
 
-extern "C" void* host_dlopen(const char*, int)
-    __asm__("dlopen@GLIBC_2.2.5");
-extern "C" void* host_dlsym(void*, const char*)
-    __asm__("dlsym@GLIBC_2.2.5");
-extern "C" int host_dlclose(void*) __asm__("dlclose@GLIBC_2.2.5");
-extern "C" char* host_dlerror() __asm__("dlerror@GLIBC_2.2.5");
-extern "C" void* host_dlvsym(void*, const char*, const char*)
-    __asm__("dlvsym@GLIBC_2.2.5");
+extern "C" void* host_dlopen(const char*, int);
+extern "C" void* host_dlsym(void*, const char*);
+extern "C" int host_dlclose(void*);
+extern "C" char* host_dlerror();
+extern "C" void* host_dlvsym(void*, const char*, const char*);
+asm(".symver host_dlopen,dlopen@GLIBC_2.2.5");
+asm(".symver host_dlsym,dlsym@GLIBC_2.2.5");
+asm(".symver host_dlclose,dlclose@GLIBC_2.2.5");
+asm(".symver host_dlerror,dlerror@GLIBC_2.2.5");
+asm(".symver host_dlvsym,dlvsym@GLIBC_2.2.5");
 
 #include <cstdlib>
 #include <cstdint>
