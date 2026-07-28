@@ -285,8 +285,11 @@ int __poll_chk(pollfd* descriptors, nfds_t count, int timeout,
   return host<int (*)(pollfd*, nfds_t, int)>("poll")(
       descriptors, count, timeout);
 }
-size_t __fread_chk(void* destination, size_t size, size_t count,
-                   std::FILE* stream, size_t destination_size) {
+extern "C" size_t nuah_fread_chk(void* destination, size_t size, size_t count,
+                                 std::FILE* stream, size_t destination_size)
+    __asm__("__fread_chk");
+size_t nuah_fread_chk(void* destination, size_t size, size_t count,
+                      std::FILE* stream, size_t destination_size) {
   if (size != 0 && count > destination_size / size) std::abort();
   return host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread")(
       destination, size, count, stream);
