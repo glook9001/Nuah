@@ -274,6 +274,11 @@ The runtime artifact contains Nuah, the matching `libhybris-common.so` and
 linker plugins, Nuah's narrow Android providers, and configuration. The
 Roblox APK remains a separately acquired client payload.
 
+The bionic subset is extracted in CI from the official Android API-36 x86_64
+system image: only `linker64`, `libc.so`, `libdl.so`, and `libm.so` from
+`com.android.runtime` are retained. Nuah does not distribute the image, boot
+it, or use it as a container/VM filesystem.
+
 ## Implementation milestones
 
 1. Build and package the pinned x86_64 libhybris loader and linker plugin.
