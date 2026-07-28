@@ -262,6 +262,12 @@ int strncasecmp(const char* left, const char* right, size_t length) {
 char* strerror(int error) {
   return host<char* (*)(int)>("strerror")(error);
 }
+extern "C" int nuah_strerror_r(int error, char* buffer, size_t length)
+    __asm__("strerror_r");
+int nuah_strerror_r(int error, char* buffer, size_t length) {
+  return host<int (*)(int, char*, size_t)>("__xpg_strerror_r")(
+      error, buffer, length);
+}
 extern "C" void nuah_tzset() __asm__("tzset");
 void nuah_tzset() {
   host<void (*)()>("tzset")();

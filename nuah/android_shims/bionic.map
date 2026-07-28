@@ -3,7 +3,7 @@ LIBC {
     memcpy; memmove; memset; memcmp; memchr; strlen; strnlen; strcmp;
     __memset_chk; __memcpy_chk; __memmove_chk; __strcpy_chk; __strcat_chk;
     strncmp; strcpy; strncpy; strcat; strncat; strchr; strrchr; strstr;
-    strcasecmp; strncasecmp; strerror;
+    strcasecmp; strncasecmp; strerror; strerror_r;
     close; read; __read_chk; write; pread; pwrite; writev; open; __open_2;
     access;
     fchmod; fchown; fcntl; fstat; lstat; stat; fsync; ftruncate; lseek;
