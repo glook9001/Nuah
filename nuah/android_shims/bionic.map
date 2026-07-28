@@ -12,3 +12,5 @@ LIBC {
     pthread_condattr_setclock;
     __sF; __stack_chk_guard;
 };
+LIBC_N { } LIBC;
+LIBC_O { } LIBC_N;
