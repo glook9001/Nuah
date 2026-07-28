@@ -176,7 +176,10 @@ jobs:
       - name: Run native ABI tests
         run: |
           ctest --test-dir build-ci --output-on-failure
-          if readelf --dyn-syms --wide build-ci/android/*.so | grep -E '__[A-Za-z0-9_]+_chk'; then
+          # __stack_chk_fail is the normal host stack-protector ABI.  Reject
+          # only Android's fortified libc entry points, which cannot be
+          # satisfied by the host-loaded provider modules.
+          if readelf --dyn-syms --wide build-ci/android/*.so | grep -E '(__memcpy_chk|__memmove_chk|__memset_chk|__strcpy_chk|__strncpy_chk|__strcat_chk|__strncat_chk|__strlen_chk|__sprintf_chk|__snprintf_chk|__vsprintf_chk|__vsnprintf_chk|__fprintf_chk|__printf_chk|__vfprintf_chk)'; then
             echo 'Android-facing provider imports a fortified libc ABI symbol.' >&2
             exit 1
           fi
