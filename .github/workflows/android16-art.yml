@@ -68,12 +68,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          declare -A pins=(
-            [art]=ed6c006bd06ae060bd9698fd2cb25c4865512ec3
-            [libcore]=fff4fcc0cf7f080cf2511cbb57561482b13b218f
-            [dalvik]=0c8569a6f7492b1ba639d33e22fe9cf6f45a80ac
-          )
-          for project in "${!pins[@]}"; do
+            declare -A pins=(
+              [art]=ed6c006bd06ae060bd9698fd2cb25c4865512ec3
+              [libcore]=fff4fcc0cf7f080cf2511cbb57561482b13b218f
+              [dalvik]=0c8569a6f7492b1ba639d33e22fe9cf6f45a80ac
+            )
+            mkdir -p .ci/aosp-android16-pins
+            for project in "${!pins[@]}"; do
             url="https://android.googlesource.com/platform/$project"
             dir=".ci/aosp-android16-pins/$project"
             git clone --filter=blob:none --no-checkout "$url" "$dir"
