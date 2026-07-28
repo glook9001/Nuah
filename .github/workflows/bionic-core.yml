@@ -43,7 +43,13 @@ jobs:
           test -s "$image"
           work="$RUNNER_TEMP/bionic-core"
           mkdir -p "$work/image" "$work/apex" bionic-core/lib64
-          simg2img "$image" "$work/system.raw.img"
+          # Google currently publishes this image as raw ext4; accept sparse
+          # images too so the pinned source format can change safely.
+          if file "$image" | grep -qi 'android sparse'; then
+            simg2img "$image" "$work/system.raw.img"
+          else
+            cp "$image" "$work/system.raw.img"
+          fi
           debugfs -R "dump -p /apex/com.android.runtime.apex $work/runtime.apex" \
             "$work/system.raw.img" >/dev/null
           unzip -q "$work/runtime.apex" -d "$work/apex"
