@@ -45,6 +45,18 @@ CondEntry* cond_for(void* object) {
 }
 
 extern "C" {
+void __cxa_finalize(void* dso) {
+  host<void (*)(void*)>("__cxa_finalize")(dso);
+}
+int __cxa_atexit(void (*function)(void*), void* argument, void* dso) {
+  return host<int (*)(void (*)(void*), void*, void*)>("__cxa_atexit")(
+      function, argument, dso);
+}
+int __cxa_thread_atexit_impl(void (*function)(void*), void* argument,
+                             void* dso) {
+  return host<int (*)(void (*)(void*), void*, void*)>(
+      "__cxa_thread_atexit_impl")(function, argument, dso);
+}
 void __FD_CLR_chk(int, void*, size_t) {}
 int __FD_ISSET_chk(int, const void*, size_t) { return 0; }
 void __FD_SET_chk(int, void*, size_t) {}
