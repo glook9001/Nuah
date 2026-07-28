@@ -61,8 +61,8 @@ int memcmp(const void* left, const void* right, size_t length) {
   return host<int (*)(const void*, const void*, size_t)>("memcmp")(
       left, right, length);
 }
-void* memchr(const void* data, int value, size_t length) {
-  return host<void* (*)(const void*, int, size_t)>("memchr")(
+const void* memchr(const void* data, int value, size_t length) {
+  return host<const void* (*)(const void*, int, size_t)>("memchr")(
       data, value, length);
 }
 size_t strlen(const char* text) {
@@ -92,14 +92,14 @@ char* strncat(char* destination, const char* source, size_t length) {
   return host<char* (*)(char*, const char*, size_t)>("strncat")(
       destination, source, length);
 }
-char* strchr(const char* text, int value) {
-  return host<char* (*)(const char*, int)>("strchr")(text, value);
+const char* strchr(const char* text, int value) {
+  return host<const char* (*)(const char*, int)>("strchr")(text, value);
 }
-char* strrchr(const char* text, int value) {
-  return host<char* (*)(const char*, int)>("strrchr")(text, value);
+const char* strrchr(const char* text, int value) {
+  return host<const char* (*)(const char*, int)>("strrchr")(text, value);
 }
-char* strstr(const char* text, const char* needle) {
-  return host<char* (*)(const char*, const char*)>("strstr")(
+const char* strstr(const char* text, const char* needle) {
+  return host<const char* (*)(const char*, const char*)>("strstr")(
       text, needle);
 }
 int strcasecmp(const char* left, const char* right) {
