@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(CTest)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_package(JNI REQUIRED)
 pkg_check_modules(NUAH_UI REQUIRED IMPORTED_TARGET gtk4 libadwaita-1 webkitgtk-6.0)
 pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
 pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
@@ -88,6 +89,7 @@ set_target_properties(
 add_library(nuah_core
   nuah/src/atl_backend.cpp
   nuah/src/jni_contract.cpp
+  nuah/src/jni_runtime.cpp
   nuah/src/input_bridge.cpp
   nuah/src/native_runtime.cpp
   nuah/src/apk_loader.cpp
@@ -95,6 +97,7 @@ add_library(nuah_core
   nuah/src/sober_cache.cpp
   nuah/src/protocol.cpp)
 target_include_directories(nuah_core PUBLIC nuah/include)
+target_include_directories(nuah_core PRIVATE ${JNI_INCLUDE_DIRS})
 target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
 target_compile_definitions(nuah_core PRIVATE NUAH_ANDROID_LIBRARY_DIR="${CMAKE_BINARY_DIR}/android")
 target_compile_definitions(
