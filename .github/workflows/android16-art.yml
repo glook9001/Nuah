@@ -31,17 +31,24 @@ jobs:
             liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop pngcrush \
             rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
 
-      - name: Restore AOSP and compiler caches
+      - name: Restore AOSP repository cache
         uses: actions/cache@v4
         with:
-          # Cache Git objects and compiler output, not the whole 12+ GB
-          # checkout. GitHub's cache has a finite per-repository quota.
-          path: |
-            .ci/aosp-master-art/.repo
-            ~/.cache/ccache
-          key: aosp-art-${{ runner.os }}-${{ hashFiles('.github/workflows/android16-art.yml') }}
+          # Cache Git objects, not the whole 12+ GB checkout. Key source
+          # identity to the Android 16 pin manifest, not workflow edits.
+          path: .ci/aosp-master-art/.repo
+          key: aosp-repo-${{ runner.os }}-${{ hashFiles('third_party/aosp_android16/ATL_ANDROID16_BASE.md') }}
           restore-keys: |
-            aosp-art-${{ runner.os }}-
+            aosp-repo-${{ runner.os }}-
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-android16-${{ hashFiles('third_party/aosp_android16/ATL_ANDROID16_BASE.md') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-android16-
+            ccache-${{ runner.os }}-
 
       - name: Initialize and sync master-art
         shell: bash
