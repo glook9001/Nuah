@@ -16,6 +16,10 @@ int nuah_jni_runtime_dispatch_key(NuahJniRuntime* runtime, int keycode,
                                   int action, int repeat, int scancode,
                                   unsigned int modifiers,
                                   unsigned long long event_time_ms);
+int nuah_jni_runtime_dispatch_pointer(NuahJniRuntime* runtime, int action,
+                                      int button, double x, double y,
+                                      double dx, double dy,
+                                      unsigned long long event_time_ms);
 jlong nuah_jni_runtime_initialize_game(NuahJniRuntime* runtime,
                                        const char* package_name,
                                        const char* data_path);

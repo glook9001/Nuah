@@ -30,11 +30,20 @@ extern "C" void nuah_input_set_sink(NuahInputSink callback, void* user_data) {
 
 namespace {
 void jni_sink(const NuahInputEvent* event, void* user_data) {
-  if (!event || event->type != NUAH_INPUT_KEY) return;
-  nuah_jni_runtime_dispatch_key(
-      static_cast<NuahJniRuntime*>(user_data), event->android_keycode,
-      event->action, event->repeat, event->physical_scancode,
-      event->modifiers, event->timestamp_ns / 1000000ULL);
+  if (!event) return;
+  auto* runtime = static_cast<NuahJniRuntime*>(user_data);
+  if (event->type == NUAH_INPUT_KEY) {
+    nuah_jni_runtime_dispatch_key(runtime, event->android_keycode,
+                                  event->action, event->repeat,
+                                  event->physical_scancode, event->modifiers,
+                                  event->timestamp_ns / 1000000ULL);
+  } else if (event->type == NUAH_INPUT_POINTER_MOTION ||
+             event->type == NUAH_INPUT_POINTER_BUTTON ||
+             event->type == NUAH_INPUT_POINTER_WHEEL) {
+    nuah_jni_runtime_dispatch_pointer(
+        runtime, event->action, event->button, event->x, event->y, event->dx,
+        event->dy, event->timestamp_ns / 1000000ULL);
+  }
 }
 }
 

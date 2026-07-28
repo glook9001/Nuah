@@ -16,6 +16,8 @@ struct Handle {
   int scancode = 0;
   unsigned int modifiers = 0;
   unsigned long long event_time_ms = 0;
+  double x = 0;
+  double y = 0;
 };
 
 thread_local NuahJniRuntime* active_runtime = nullptr;
@@ -241,6 +243,39 @@ extern "C" int nuah_jni_runtime_dispatch_key(
                              reinterpret_cast<jobject>(event),
                              runtime->native_handle,
                              reinterpret_cast<jobject>(event));
+  return result == JNI_TRUE ? 1 : 0;
+}
+
+extern "C" int nuah_jni_runtime_dispatch_pointer(
+    NuahJniRuntime* runtime, int action, int button, double x, double y,
+    double dx, double dy, unsigned long long event_time_ms) {
+  if (!runtime) return 0;
+  (void)dx;
+  (void)dy;
+  constexpr const char* signature =
+      "(JLandroid/view/MotionEvent;IIIIIJJIIIIIIFF)Z";
+  const auto callback = nuah_jni_find_native_method("onTouchEventNative",
+                                                     signature);
+  if (!callback) {
+    nuah_jni_report_missing("<registered>", "onTouchEventNative", signature);
+    return 0;
+  }
+  auto* event = new Handle;
+  event->kind = 2;
+  event->action = action;
+  event->event_time_ms = event_time_ms;
+  event->x = x;
+  event->y = y;
+  using Callback = jboolean(JNICALL*)(JNIEnv*, jobject, jlong, jobject, jint,
+                                       jint, jint, jint, jint, jlong, jlong,
+                                       jint, jint, jint, jint, jint, jint,
+                                       jfloat, jfloat);
+  const auto invoke = reinterpret_cast<Callback>(callback);
+  const auto result = invoke(
+      &runtime->env, reinterpret_cast<jobject>(event), runtime->native_handle,
+      reinterpret_cast<jobject>(event), action, button, 0, 0, 0,
+      static_cast<jlong>(event_time_ms), static_cast<jlong>(event_time_ms), 0,
+      0, 0, 0, 0, 0, static_cast<jfloat>(x), static_cast<jfloat>(y));
   return result == JNI_TRUE ? 1 : 0;
 }
 

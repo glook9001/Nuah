@@ -70,5 +70,7 @@ jobs:
           path: |
             build-ci/nuah
             build-ci/nuah-services
+            build-ci/libnuah_host_bridge.so
+            build-ci/libnuah_atl_overlay.so
             build-ci/android/*.so
           if-no-files-found: error
