@@ -43,6 +43,10 @@ jobs:
                 -b master-art --partial-clone --no-use-superproject
             fi
             repo sync -c --no-tags --optimized-fetch --prune -j"$(nproc)"
+      - save_cache:
+          key: circle-aosp-repo-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
+          paths:
+            - .ci/aosp-master-art/.repo
       - run:
           name: Verify Android 16 release pins
           command: |
@@ -93,10 +97,6 @@ jobs:
               [[ -f "$path" ]] && cp --parents "$path" android16-host-art/
             done
             tar -czf android16-host-art.tar.gz -C android16-host-art .
-      - save_cache:
-          key: circle-aosp-repo-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
-          paths:
-            - .ci/aosp-master-art/.repo
       - save_cache:
           key: circle-ccache-v1-{{ checksum "third_party/aosp_android16/ATL_ANDROID16_BASE.md" }}
           paths:
