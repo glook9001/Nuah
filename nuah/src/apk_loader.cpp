@@ -1,6 +1,7 @@
 #include "nuah/apk_loader.hpp"
 
 #include <elf.h>
+#include <dlfcn.h>
 #include <link.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -293,24 +294,30 @@ std::vector<std::string> elf_needed_libraries(
 }
 
 LoadedModule::~LoadedModule() {
-  if (handle_) ::dlclose(handle_);
+  if (handle_ && close_) close_(handle_);
+  if (loader_library_) ::dlclose(loader_library_);
   if (!path_.empty()) {
     std::error_code error;
     std::filesystem::remove(path_, error);
   }
 }
-LoadedModule::LoadedModule(LoadedModule&& other) noexcept : path_(std::move(other.path_)), handle_(other.handle_), size_(other.size_) {
-  other.path_.clear(); other.handle_ = nullptr; other.size_ = 0;
+LoadedModule::LoadedModule(LoadedModule&& other) noexcept : path_(std::move(other.path_)), handle_(other.handle_), loader_library_(other.loader_library_), close_(other.close_), symbol_(other.symbol_), size_(other.size_) {
+  other.path_.clear(); other.handle_ = nullptr; other.loader_library_ = nullptr; other.close_ = nullptr; other.symbol_ = nullptr; other.size_ = 0;
 }
 LoadedModule& LoadedModule::operator=(LoadedModule&& other) noexcept {
-  if (this != &other) { this->~LoadedModule(); path_ = std::move(other.path_); handle_ = other.handle_; size_ = other.size_; other.path_.clear(); other.handle_ = nullptr; other.size_ = 0; }
+  if (this != &other) { this->~LoadedModule(); path_ = std::move(other.path_); handle_ = other.handle_; loader_library_ = other.loader_library_; close_ = other.close_; symbol_ = other.symbol_; size_ = other.size_; other.path_.clear(); other.handle_ = nullptr; other.loader_library_ = nullptr; other.close_ = nullptr; other.symbol_ = nullptr; other.size_ = 0; }
   return *this;
 }
 
-LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member) {
+void* LoadedModule::symbol(const char* name) const {
+  return handle_ && symbol_ ? symbol_(handle_, name) : nullptr;
+}
+
+LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member,
+                              LoaderBackend backend) {
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
-  if (has_version_requirements(apk_member.bytes)) {
+  if (backend == LoaderBackend::Direct && has_version_requirements(apk_member.bytes)) {
     const char* probe = ::getenv("NUAH_NATIVE_TRY_TRANSLATION");
     if (probe && std::string(probe) == "1") {
       std::fprintf(stderr,
@@ -333,19 +340,48 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     if (::fchmod(fd, 0500) != 0) throw std::runtime_error("temporary ELF permission setup failed");
     if (::close(fd) != 0) throw std::runtime_error("temporary ELF close failed");
     fd = -1;
-    void* handle = ::dlmopen(LM_ID_NEWLM, path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    void* loader_library = nullptr;
+    auto close = ::dlclose;
+    auto symbol = ::dlsym;
+    void* handle = nullptr;
+    if (backend == LoaderBackend::Hybris) {
+      const char* library = ::getenv("NUAH_HYBRIS_LIBRARY");
+      loader_library = ::dlopen(library && *library ? library : "libhybris-common.so",
+                                RTLD_NOW | RTLD_LOCAL);
+      if (!loader_library) {
+        throw std::runtime_error("cannot load libhybris common library: " +
+                                 std::string(::dlerror()));
+      }
+      const auto android_dlopen = reinterpret_cast<void* (*)(const char*, int)>(
+          ::dlsym(loader_library, "android_dlopen"));
+      const auto android_dlclose = reinterpret_cast<int (*)(void*)>(
+          ::dlsym(loader_library, "android_dlclose"));
+      const auto android_dlsym = reinterpret_cast<void* (*)(void*, const char*)>(
+          ::dlsym(loader_library, "android_dlsym"));
+      if (!android_dlopen || !android_dlclose || !android_dlsym) {
+        ::dlclose(loader_library);
+        throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
+      }
+      handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+      close = android_dlclose;
+      symbol = android_dlsym;
+    } else {
+      handle = ::dlmopen(LM_ID_NEWLM, path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    }
     if (!handle) {
-      std::string message = "dlmopen failed: ";
-      message += ::dlerror();
+      std::string message = backend == LoaderBackend::Hybris ? "android_dlopen failed: " : "dlmopen failed: ";
+      const char* error = ::dlerror();
+      message += error ? error : "unknown loader error";
       const auto needed = needed_libraries(apk_member.bytes);
       if (!needed.empty()) {
         message += " (Android image needs";
         for (const auto& library : needed) message += " " + library;
         message += "; host soname/version translation is required)";
       }
+      if (loader_library) ::dlclose(loader_library);
       throw std::runtime_error(message);
     }
-    LoadedModule result; result.path_ = path; result.handle_ = handle; result.size_ = image_bytes.size();
+    LoadedModule result; result.path_ = path; result.handle_ = handle; result.loader_library_ = loader_library; result.close_ = close; result.symbol_ = symbol; result.size_ = image_bytes.size();
     return result;
   } catch (...) {
     if (fd >= 0) ::close(fd);

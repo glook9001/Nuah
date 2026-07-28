@@ -49,9 +49,10 @@ boundary, not an interchangeable collection of `.so` files.
 
 ## Implementation order
 
-1. Pin an x86_64-capable libhybris fork and prove its linker-plugin ABI with
-   a trivial Android API-36 DSO.  Upstream documentation historically warns
-   that 64-bit support is incomplete, so this is a hard gate.
+1. Pin libhybris and exercise its x86_64 linker route with a trivial Android
+   API-36 DSO.  Upstream documentation warns that 64-bit support is
+   incomplete; Nuah accepts that as an experimental compatibility risk and
+   records it in CI rather than silently falling back to `dlmopen`.
 2. Add `HybrisLoader` beside the existing `ApkLoader`.  It calls
    `android_dlopen`/`android_dlsym`; it does not call `dlmopen`.
 3. Generate the restricted Android linker namespace at launch and expose

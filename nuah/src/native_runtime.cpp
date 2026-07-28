@@ -61,6 +61,15 @@ void prepend_library_path(const std::filesystem::path& directory) {
   }
 }
 
+LoaderBackend selected_loader_backend() {
+  const char* value = ::getenv("NUAH_LOADER_BACKEND");
+  if (!value || !*value || std::string_view(value) == "hybris") {
+    return LoaderBackend::Hybris;
+  }
+  if (std::string_view(value) == "direct") return LoaderBackend::Direct;
+  throw std::runtime_error("NUAH_LOADER_BACKEND must be hybris or direct");
+}
+
 }  // namespace
 
 int run_native(const NativeLaunchOptions& options) {
@@ -73,11 +82,12 @@ int run_native(const NativeLaunchOptions& options) {
   }
 
   const auto image_apk = find_image(options);
-  prepend_library_path(NUAH_ANDROID_LIBRARY_DIR);
+  const auto backend = selected_loader_backend();
+  if (backend == LoaderBackend::Direct) prepend_library_path(NUAH_ANDROID_LIBRARY_DIR);
   constexpr const char* kMember = "lib/x86_64/libroblox.so";
-  auto image = load_apk_library(image_apk, kMember);
+  auto image = load_apk_library(image_apk, kMember, backend);
   auto* jni_on_load = reinterpret_cast<std::int32_t (*)(JavaVM*, void*)>(
-      ::dlsym(image.handle(), "JNI_OnLoad"));
+      image.symbol("JNI_OnLoad"));
   if (!jni_on_load) {
     throw std::runtime_error(
         "loaded libroblox.so has no JNI_OnLoad entrypoint");
@@ -93,7 +103,9 @@ int run_native(const NativeLaunchOptions& options) {
   }
 
   std::cerr << "nuah native: loaded " << kMember << " from "
-            << image_apk << " via temporary ELF file " << image.path()
+            << image_apk << " via "
+            << (backend == LoaderBackend::Hybris ? "libhybris Android loader" : "dlmopen")
+            << " and temporary ELF file " << image.path()
             << " (" << image.size() << " bytes)\n";
   std::cerr << "nuah native: JNI_OnLoad accepted version 0x" << std::hex
             << jni_version << std::dec << "; registered natives="
