@@ -71,6 +71,18 @@ static void JNICALL facade_delete_local_ref(JNIEnv* ignored_env, jobject ignored
   (void)ignored_env;
   (void)ignored_object;
 }
+static jobject JNICALL facade_new_global_ref(JNIEnv* ignored_env, jobject object) {
+  (void)ignored_env;
+  return object;
+}
+static void JNICALL facade_delete_global_ref(JNIEnv* ignored_env, jobject ignored_object) {
+  (void)ignored_env;
+  (void)ignored_object;
+}
+static jobject JNICALL facade_new_local_ref(JNIEnv* ignored_env, jobject object) {
+  (void)ignored_env;
+  return object;
+}
 static jstring JNICALL facade_new_string_utf(JNIEnv* ignored_env, const char* value) {
   (void)ignored_env;
   return (jstring)(value ? value : "");
@@ -128,6 +140,9 @@ static void configure_facade(void) {
   env_table.ExceptionCheck = facade_exception_check;
   env_table.ExceptionClear = facade_exception_clear;
   env_table.DeleteLocalRef = facade_delete_local_ref;
+  env_table.NewGlobalRef = facade_new_global_ref;
+  env_table.DeleteGlobalRef = facade_delete_global_ref;
+  env_table.NewLocalRef = facade_new_local_ref;
   env_table.NewStringUTF = facade_new_string_utf;
   env_table.GetStringUTFChars = facade_get_string_utf_chars;
   env_table.ReleaseStringUTFChars = facade_release_string_utf_chars;
