@@ -89,8 +89,11 @@ int run_bionic_loader(const std::filesystem::path& image) {
   const auto child = ::fork();
   if (child < 0) throw std::runtime_error("cannot start bionic loader helper");
   if (child == 0) {
-    ::execl(linker.c_str(), linker.c_str(), "--library-path", library_path.c_str(),
-            helper.c_str(), image.c_str(), static_cast<char*>(nullptr));
+    // Android linker64's direct-exec mode takes an absolute program path as
+    // argv[1]; configure its lookup path through the normal linker variable.
+    ::setenv("LD_LIBRARY_PATH", library_path.c_str(), 1);
+    ::execl(linker.c_str(), linker.c_str(), helper.c_str(), image.c_str(),
+            static_cast<char*>(nullptr));
     _exit(127);
   }
   int status = 0;
