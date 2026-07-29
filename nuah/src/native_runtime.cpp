@@ -136,6 +136,37 @@ int run_nuah_jni(const std::filesystem::path& apk) {
   return 0;
 }
 
+int run_nuah_jni_isolated(const std::filesystem::path& apk) {
+  // Android constructors run while android_dlopen is still active. Isolate
+  // them so a native abort is converted into a useful launch error rather
+  // than taking down the supervisor with only a core-dump message.
+  const pid_t child = ::fork();
+  if (child < 0) throw std::runtime_error("cannot start isolated native bootstrap");
+  if (child == 0) {
+    try {
+      _exit(run_nuah_jni(apk));
+    } catch (const std::exception& error) {
+      std::cerr << "nuah bootstrap: native initialization failed before JNI_OnLoad: "
+                << error.what() << '\n';
+      _exit(70);
+    }
+  }
+  int status = 0;
+  if (::waitpid(child, &status, 0) != child) {
+    throw std::runtime_error("cannot wait for isolated native bootstrap");
+  }
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 0;
+  if (WIFSIGNALED(status)) {
+    throw std::runtime_error(
+        "native bootstrap terminated by signal " +
+        std::to_string(WTERMSIG(status)) +
+        " during libhybris android_dlopen (before JNI_OnLoad)");
+  }
+  throw std::runtime_error("native bootstrap exited with status " +
+                           std::to_string(WEXITSTATUS(status)) +
+                           " before JNI_OnLoad");
+}
+
 int run_bionic_loader(const std::filesystem::path& image) {
   const auto root = runtime_directory();
   const auto linker = root / "bionic/lib64/linker64";
@@ -197,7 +228,7 @@ int run_native(const NativeLaunchOptions& options) {
               << image_apk << '\n';
     return 0;
   }
-  return run_nuah_jni(image_apk);
+  return run_nuah_jni_isolated(image_apk);
 }
 
 }  // namespace nuah

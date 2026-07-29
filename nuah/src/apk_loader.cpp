@@ -7,6 +7,7 @@
 #include <zlib.h>
 
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -54,59 +55,84 @@ void configure_hybris_environment(const char* library) {
 std::vector<void*> host_provider_handles;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 
-[[noreturn]] void android_fortify_fail() { std::abort(); }
+[[noreturn]] void android_fortify_fail(const char* check, std::size_t requested,
+                                       std::size_t capacity) {
+  // Do not quietly turn a Bionic bounds failure into SIGABRT.  Roblox starts
+  // in a constructor, where this was otherwise indistinguishable from a
+  // missing Android service.  A compatibility fallback must be deliberately
+  // added per operation; blindly continuing here would permit an overflow.
+  std::fprintf(stderr,
+               "nuah bootstrap: Bionic fortify failure in %s "
+               "(requested=%zu capacity=%zu; compatibility fallbacks: none)\n",
+               check, requested, capacity);
+  std::abort();
+}
 
 std::size_t android_strlen_chk(const char* text, std::size_t capacity) {
-  if (!text) android_fortify_fail();
+  if (!text) android_fortify_fail("__strlen_chk(null)", 0, capacity);
   const auto length = ::strnlen(text, capacity);
   // Match bionic's contract: a string that does not fit its advertised
   // object size is a fortify violation, never a silently truncated result.
-  if (length == capacity) android_fortify_fail();
+  if (length == capacity) android_fortify_fail("__strlen_chk", length, capacity);
   return length;
 }
 
 void* android_memcpy_chk(void* destination, const void* source, std::size_t count,
                          std::size_t destination_capacity) {
-  if (count > destination_capacity) android_fortify_fail();
+  if (count > destination_capacity) {
+    android_fortify_fail("__memcpy_chk", count, destination_capacity);
+  }
   return std::memcpy(destination, source, count);
 }
 
 void* android_memmove_chk(void* destination, const void* source, std::size_t count,
                           std::size_t destination_capacity) {
-  if (count > destination_capacity) android_fortify_fail();
+  if (count > destination_capacity) {
+    android_fortify_fail("__memmove_chk", count, destination_capacity);
+  }
   return std::memmove(destination, source, count);
 }
 
 void* android_memset_chk(void* destination, int value, std::size_t count,
                          std::size_t destination_capacity) {
-  if (count > destination_capacity) android_fortify_fail();
+  if (count > destination_capacity) {
+    android_fortify_fail("__memset_chk", count, destination_capacity);
+  }
   return std::memset(destination, value, count);
 }
 
 char* android_strcpy_chk(char* destination, const char* source, std::size_t destination_capacity) {
-  if (!source) android_fortify_fail();
+  if (!source) android_fortify_fail("__strcpy_chk(null)", 0, destination_capacity);
   const auto length = ::strnlen(source, destination_capacity);
-  if (length >= destination_capacity) android_fortify_fail();
+  if (length >= destination_capacity) {
+    android_fortify_fail("__strcpy_chk", length + 1, destination_capacity);
+  }
   return std::strcpy(destination, source);
 }
 
 char* android_strncpy_chk(char* destination, const char* source, std::size_t count,
                           std::size_t destination_capacity) {
-  if (count > destination_capacity) android_fortify_fail();
+  if (count > destination_capacity) {
+    android_fortify_fail("__strncpy_chk", count, destination_capacity);
+  }
   return std::strncpy(destination, source, count);
 }
 
 char* android_strncpy_chk2(char* destination, const char* source, std::size_t count,
                            std::size_t destination_capacity, std::size_t source_capacity) {
   (void)source_capacity;
-  if (count > destination_capacity) android_fortify_fail();
+  if (count > destination_capacity) {
+    android_fortify_fail("__strncpy_chk2", count, destination_capacity);
+  }
   return std::strncpy(destination, source, count);
 }
 
 char* android_strcat_chk(char* destination, const char* source, std::size_t destination_capacity) {
   const auto length = android_strlen_chk(destination, destination_capacity);
   const auto remaining = destination_capacity - length;
-  if (android_strlen_chk(source, remaining) >= remaining) android_fortify_fail();
+  if (android_strlen_chk(source, remaining) >= remaining) {
+    android_fortify_fail("__strcat_chk", remaining, destination_capacity);
+  }
   return std::strcat(destination, source);
 }
 
@@ -114,7 +140,9 @@ char* android_strncat_chk(char* destination, const char* source, std::size_t cou
                            std::size_t destination_capacity) {
   const auto length = android_strlen_chk(destination, destination_capacity);
   const auto remaining = destination_capacity - length;
-  if (count >= remaining && ::strnlen(source, count) == count) android_fortify_fail();
+  if (count >= remaining && ::strnlen(source, count) == count) {
+    android_fortify_fail("__strncat_chk", count, remaining);
+  }
   return std::strncat(destination, source, count);
 }
 
