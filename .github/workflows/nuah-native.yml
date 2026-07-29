@@ -10,6 +10,10 @@ on:
       - '.github/workflows/nuah-native.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: nuah-native-${{ github.ref }}
   cancel-in-progress: true
@@ -132,6 +136,34 @@ jobs:
           name: nuah-libhybris-x86_64
           path: build-ci/hybris
 
+      - name: Retrieve the verified API-36 bionic core
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Keep the source run explicit: a native runtime must never silently
+          # consume an unverified artifact from an unrelated build.
+          gh run download 30408623995 --repo "$GITHUB_REPOSITORY" \
+            --name nuah-bionic-core-api36-x86_64 --dir build-ci/bionic
+          test -s build-ci/bionic/lib64/linker64
+          test -s build-ci/bionic/lib64/libc.so
+          (cd build-ci/bionic && sha256sum --check SHA256SUMS)
+
+      - name: Build the Android-side bionic loader helper
+        run: |
+          set -euo pipefail
+          ndk_root="$RUNNER_TEMP/android-ndk"
+          curl --fail --location --retry 5 --retry-all-errors \
+            https://dl.google.com/android/repository/android-ndk-r27d-linux.zip \
+            -o "$RUNNER_TEMP/android-ndk.zip"
+          unzip -q "$RUNNER_TEMP/android-ndk.zip" -d "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/android-ndk-r27d" "$ndk_root"
+          "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android36-clang" \
+            -std=c17 -O2 -Wall -Wextra -Werror \
+            nuah/helper/bionic_loader_main.c -ldl \
+            -o build-ci/bionic/nuah-bionic-loader
+          file build-ci/bionic/nuah-bionic-loader | grep -F 'Android'
+
       - name: Install host dependencies
         run: |
           sudo apt-get update
@@ -196,4 +228,5 @@ jobs:
             build-ci/android/*.so
             build-ci/hybris/lib/libhybris-common.so*
             build-ci/hybris/lib/libhybris/linker/*.so
+            build-ci/bionic
           if-no-files-found: error
