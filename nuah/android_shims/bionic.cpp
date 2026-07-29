@@ -10,7 +10,6 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <netinet/in.h>
-#include <new>
 #include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
@@ -57,11 +56,6 @@ struct OnceEntry { void* android = nullptr; pthread_once_t native = PTHREAD_ONCE
 struct AttrEntry { void* android = nullptr; pthread_attr_t native{}; };
 struct RwlockEntry { void* android = nullptr; pthread_rwlock_t native{}; };
 struct SemEntry { void* android = nullptr; sem_t native{}; };
-struct ThreadDestructor {
-  void (*function)(void*);
-  void* argument;
-  void* android_dso;
-};
 std::atomic_flag table_lock = ATOMIC_FLAG_INIT;
 MutexEntry mutexes[2048];
 CondEntry conditions[1024];
@@ -96,18 +90,6 @@ struct AndroidSigaction {
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
-
-extern "C" void* __dso_handle;
-
-void run_android_thread_destructor(void* opaque) {
-  auto* destructor = static_cast<ThreadDestructor*>(opaque);
-  destructor->function(destructor->argument);
-  if (auto remove = host<void (*)(void*)>(
-          "__hybris_remove_thread_local_dtor")) {
-    remove(destructor->android_dso);
-  }
-  delete destructor;
-}
 
 std::FILE* host_stream(std::FILE* stream) {
   const auto address = reinterpret_cast<uintptr_t>(stream);
@@ -632,25 +614,14 @@ int __cxa_atexit(void (*function)(void*), void* argument, void* dso) {
 }
 int __cxa_thread_atexit_impl(void (*function)(void*), void* argument,
                              void* dso) {
-  auto* destructor =
-      new (std::nothrow) ThreadDestructor{function, argument, dso};
-  if (!destructor) return ENOMEM;
-
-  // Android's DSO handle belongs to the libhybris loader, not glibc's
-  // link-map.  Register a host-owned wrapper with glibc and let libhybris
-  // retain the Android module for the lifetime of its TLS destructor.
-  const int result =
-      host<int (*)(void (*)(void*), void*, void*)>(
-          "__cxa_thread_atexit_impl")(run_android_thread_destructor,
-                                      destructor, &__dso_handle);
-  if (result != 0) {
-    delete destructor;
-    return result;
-  }
-  if (auto add =
-          host<void (*)(void*)>("__hybris_add_thread_local_dtor")) {
-    add(dso);
-  }
+  // Roblox registers Android DSO TLS destructors during GameActivity startup.
+  // The Android loader owns those DSO handles; forwarding them into glibc's
+  // destructor list causes teardown recursion on the synthetic worker thread.
+  // ATL keeps this state alive with the process, so use the same short-lived
+  // runtime policy until Nuah delegates TLS to ATL completely.
+  (void)function;
+  (void)argument;
+  (void)dso;
   return 0;
 }
 void __FD_CLR_chk(int, void*, size_t) {}
