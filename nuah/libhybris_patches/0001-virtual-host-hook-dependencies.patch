@@ -1,8 +1,8 @@
 diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
-index 2341109..f4ae7fb 100644
+index 2341109..c6360b5 100644
 --- a/hybris/common/q/dlfcn.cpp
 +++ b/hybris/common/q/dlfcn.cpp
-@@ -359,6 +359,29 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
+@@ -359,6 +359,32 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
    return __libdl_info;
  }
  
@@ -21,6 +21,9 @@ index 2341109..f4ae7fb 100644
 +  }
 +  soinfo* si = new soinfo(ns, name, nullptr, 0, RTLD_NOW);
 +  si->set_soname(name);
++  // Host-hook entries bypass link_image(), which normally initializes this.
++  // They still appear in DT_NEEDED reference counting, so root them locally.
++  si->set_local_group_root(si);
 +  si->set_host_hook_dependency();
 +  si->set_linked();
 +  si->set_nodelete();
@@ -78,7 +81,7 @@ index 13fa9a4..95fdc8e 100644
  
  int open_executable(const char* path, off64_t* file_offset, std::string* realpath);
 diff --git a/hybris/common/q/linker_soinfo.cpp b/hybris/common/q/linker_soinfo.cpp
-index f0a31ea..bf8b4cb 100644
+index f0a31ea..8c8ac10 100644
 --- a/hybris/common/q/linker_soinfo.cpp
 +++ b/hybris/common/q/linker_soinfo.cpp
 @@ -180,6 +180,13 @@ size_t soinfo::get_verdef_cnt() const {
@@ -107,8 +110,16 @@ index f0a31ea..bf8b4cb 100644
    uint32_t hash = symbol_name.elf_hash();
  
    TRACE_TYPE(LOOKUP, "SEARCH %s in %s@%p h=%x(elf) %zd",
+@@ -759,3 +771,7 @@
++void soinfo::set_local_group_root(soinfo* root) {
++  local_group_root_ = root;
++}
++
+ void soinfo::set_main_executable() {
+   flags_ |= FLAG_EXE;
+ }
 diff --git a/hybris/common/q/linker_soinfo.h b/hybris/common/q/linker_soinfo.h
-index 4b2d169..84ee9e8 100644
+index 4b2d169..7c8b3bc 100644
 --- a/hybris/common/q/linker_soinfo.h
 +++ b/hybris/common/q/linker_soinfo.h
 @@ -44,6 +44,7 @@
@@ -119,12 +130,14 @@ index 4b2d169..84ee9e8 100644
  #define FLAG_IMAGE_LINKED     0x00000100 // Is image linked - this is a guard on link_image.
                                           // The difference between this flag and
                                           // FLAG_LINKED is that FLAG_LINKED
-@@ -268,6 +269,8 @@ struct soinfo {
+@@ -268,7 +269,10 @@ struct soinfo {
    void set_linked();
    void set_linker_flag();
    void set_main_executable();
 +  bool is_host_hook_dependency() const { return (flags_ & FLAG_HOST_HOOK_DEPENDENCY) != 0; }
 +  void set_host_hook_dependency() { flags_ |= FLAG_HOST_HOOK_DEPENDENCY; }
    void set_nodelete();
++  void set_local_group_root(soinfo* root);
  
    size_t increment_ref_count();
+   size_t decrement_ref_count();

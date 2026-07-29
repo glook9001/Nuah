@@ -114,12 +114,20 @@ jobs:
           name: nuah-libhybris-x86_64
           path: hybris-prefix
 
-      - name: Build a no-dependency Android-loader probe
+      - name: Build Android-loader probes
         run: |
           set -euo pipefail
-          mkdir -p hybris-probe
+          mkdir -p hybris-probe/providers
           cc -fPIC -shared -nostdlib -Wl,-soname,libnuah-hybris-probe.so \
             -o hybris-probe/libnuah-hybris-probe.so nuah/tests/hybris_probe_module.c
+          cc -fPIC -shared -nostdlib -Wl,-soname,libandroid.so \
+            -o hybris-probe/providers/libandroid.so nuah/tests/hybris_probe_module.c
+          cc -fPIC -shared -nostdlib -Wl,-soname,libnuah-hybris-host-dependency-probe.so \
+            -Wl,--no-as-needed -Lhybris-probe/providers -landroid -Wl,--as-needed \
+            -o hybris-probe/libnuah-hybris-host-dependency-probe.so \
+            nuah/tests/hybris_host_dependency_probe.c
+          readelf --dynamic hybris-probe/libnuah-hybris-host-dependency-probe.so | \
+            grep -F 'Shared library: [libandroid.so]'
           cc -Wall -Wextra -Werror -o hybris-probe/hybris_loader_probe \
             nuah/tests/hybris_loader_probe.c -ldl
 
@@ -131,6 +139,9 @@ jobs:
           LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
             hybris-probe/hybris_loader_probe \
             "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-probe.so"
+          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
+            hybris-probe/hybris_loader_probe \
+            "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-host-dependency-probe.so"
 
   build:
     needs: hybris-x86_64-build
