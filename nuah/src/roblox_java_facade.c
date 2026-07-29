@@ -88,6 +88,53 @@ jobject com_roblox_engine_jni_locale_NativeLocaleJavaInterface_getLocale(
   return string_value(env, "en_US");
 }
 
+/*
+ * MainGameActivity installs this user snapshot before native app startup.
+ * Authentication is connected later; until then provide a complete, typed
+ * anonymous snapshot so libroblox never receives null for a Java String.
+ */
+#define USER_STRING(name, value)                                        \
+  jobject com_roblox_engine_jni_user_NativeUserJavaInterface_##name(    \
+      JNIEnv* env, jclass klass, va_list args) {                         \
+    (void)klass;                                                        \
+    (void)args;                                                         \
+    return string_value(env, value);                                    \
+  }
+#define USER_BOOLEAN(name, value)                                       \
+  jboolean com_roblox_engine_jni_user_NativeUserJavaInterface_##name(   \
+      JNIEnv* env, jclass klass, va_list args) {                         \
+    (void)env;                                                          \
+    (void)klass;                                                        \
+    (void)args;                                                         \
+    return value;                                                       \
+  }
+#define USER_INT(name, value)                                           \
+  jint com_roblox_engine_jni_user_NativeUserJavaInterface_##name(       \
+      JNIEnv* env, jclass klass, va_list args) {                         \
+    (void)env;                                                          \
+    (void)klass;                                                        \
+    (void)args;                                                         \
+    return value;                                                       \
+  }
+#define USER_LONG(name, value)                                          \
+  jlong com_roblox_engine_jni_user_NativeUserJavaInterface_##name(      \
+      JNIEnv* env, jclass klass, va_list args) {                         \
+    (void)env;                                                          \
+    (void)klass;                                                        \
+    (void)args;                                                         \
+    return value;                                                       \
+  }
+
+USER_BOOLEAN(getHasRobloxSubscription, JNI_FALSE)
+USER_BOOLEAN(getIsUnder13, JNI_FALSE)
+USER_INT(getMembershipType, 0)
+USER_STRING(getAlternateName, "")
+USER_STRING(getDisplayName, "")
+USER_STRING(getPlatformName, "PC")
+USER_STRING(getTheme, "Dark")
+USER_STRING(getUsername, "")
+USER_LONG(getUserId, 0)
+
 /* API-36 Configuration values observed by GameActivity_register. */
 #define NUAH_CONFIGURATION_INT(name, value)                              \
   jint android_content_res_Configuration_##name(JNIEnv* env,             \
