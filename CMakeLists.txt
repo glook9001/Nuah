@@ -10,7 +10,6 @@ set(NUAH_ANDROID_API_LEVEL 36)
 include(CTest)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
-find_package(JNI REQUIRED)
 pkg_check_modules(NUAH_UI REQUIRED IMPORTED_TARGET gtk4 libadwaita-1 webkitgtk-6.0)
 pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
 pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
@@ -75,6 +74,12 @@ add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
 target_include_directories(nuah_host_bridge PUBLIC nuah/include)
 target_compile_options(nuah_host_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 
+# Android's official JNI 1.6 headers.  libnativehelper's actual invocation
+# library delegates to ART, which Nuah intentionally does not bundle.
+add_library(nuah_libnativehelper_jni INTERFACE)
+target_include_directories(nuah_libnativehelper_jni INTERFACE
+  "${CMAKE_SOURCE_DIR}/third_party/libnativehelper/include_jni")
+
 add_library(nuah_android_registry SHARED nuah/android_shims/registry.cpp)
 set_target_properties(
   nuah_android_registry PROPERTIES
@@ -102,7 +107,6 @@ add_library(nuah_core
   nuah/src/sober_cache.cpp
   nuah/src/protocol.cpp)
 target_include_directories(nuah_core PUBLIC nuah/include)
-target_include_directories(nuah_core PUBLIC ${JNI_INCLUDE_DIRS})
 target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
 target_compile_definitions(
   nuah_core PRIVATE
@@ -114,7 +118,7 @@ if(NUAH_SDL3_ROOT)
     "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
 endif()
 target_link_libraries(
-  nuah_core PUBLIC nuah_host_bridge dl ZLIB::ZLIB PkgConfig::NUAH_GIO
+  nuah_core PUBLIC nuah_host_bridge nuah_libnativehelper_jni dl ZLIB::ZLIB PkgConfig::NUAH_GIO
   PkgConfig::NUAH_PLATFORM)
 add_dependencies(nuah_core nuah_atl_overlay)
 

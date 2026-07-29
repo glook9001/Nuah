@@ -6,6 +6,8 @@ on:
       - 'CMakeLists.txt'
       - 'nuah/**'
       - 'third_party/libhybris.lock'
+      - 'third_party/libnativehelper/**'
+      - '.gitmodules'
       - 'NUAH_LIBHYBRIS_PIVOT.md'
       - '.github/workflows/nuah-native.yml'
   workflow_dispatch:
@@ -24,6 +26,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Inspect pinned libhybris loader source
         run: |
@@ -56,6 +60,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install the small libhybris build toolchain
         run: |
@@ -98,6 +104,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Retrieve the matching libhybris runtime bundle
         uses: actions/download-artifact@v4
@@ -129,6 +137,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Retrieve the pinned libhybris runtime bundle
         uses: actions/download-artifact@v4

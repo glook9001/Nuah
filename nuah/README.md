@@ -41,6 +41,11 @@ It does not yet provide Android framework classes or the final lifecycle.
 `atl-run` remains a legacy diagnostic command and is never selected by the
 Services supervisor.
 
+Nuah vendors Android 16's `libnativehelper` JNI headers as a pinned source
+dependency. This supplies the official Android JNI ABI declarations only;
+`libnativehelper`'s runtime invocation library delegates to ART and is not
+used as an ART substitute.
+
 For host-window/event-loop diagnostics, set `NUAH_NATIVE_WINDOW_LOOP=1`.
 `NUAH_NATIVE_LIFECYCLE=1` additionally attempts the observed GameActivity
 initialization callbacks; use `NUAH_NATIVE_MAX_FRAMES` to bound a diagnostic
