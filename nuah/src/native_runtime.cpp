@@ -222,6 +222,10 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   }
   report_bootstrap_stage("ROBLOX_ASSET_PATH");
   set_asset_path(env, main_activity, env->NewStringUTF(content_path.c_str()));
+  // Roblox installs its own native crash handlers during JNI_OnLoad. Re-arm
+  // the supervisor before the first Roblox-specific lifecycle handoff so
+  // faults in InitParams retain their native caller chain.
+  nuah_bootstrap_diagnostics_install_signal_handler();
   report_bootstrap_stage("ROBLOX_INIT_PARAMS");
   set_init_params(env, main_activity, init_params);
 
@@ -236,10 +240,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
     }
   }
   report_bootstrap_stage("GAMEACTIVITY_REGISTRATION_COMPLETE");
-  // Roblox installs its own native crash handlers during initialization.
-  // Re-arm the supervisor's last-chance recorder at the lifecycle boundary so
-  // a fatal worker-thread fault still reports an ELF-relative caller.
-  nuah_bootstrap_diagnostics_install_signal_handler();
   report_bootstrap_stage("GAMEACTIVITY_START");
   if (!nuah_native_session_dispatch_lifecycle(session.get(), "onStartNative")) {
     throw std::runtime_error("GameActivity start callback is unavailable");
