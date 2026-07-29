@@ -54,6 +54,15 @@ NUAH_FORWARD getentropy, GLIBC_2.25
 NUAH_FORWARD signal
 NUAH_FORWARD sigaltstack
 
+/*
+ * dlsym itself uses pthread TLS.  These ABI-identical tail calls must not use
+ * the generic C++ dlsym forwarder or they recurse inside glibc's loader.
+ */
+NUAH_FORWARD pthread_getspecific
+NUAH_FORWARD pthread_key_create
+NUAH_FORWARD pthread_key_delete
+NUAH_FORWARD pthread_setspecific
+
 NUAH_FORWARD accept
 NUAH_FORWARD bind
 NUAH_FORWARD connect
