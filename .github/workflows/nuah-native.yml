@@ -160,7 +160,11 @@ jobs:
             -o "$RUNNER_TEMP/android-ndk.zip"
           unzip -q "$RUNNER_TEMP/android-ndk.zip" -d "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/android-ndk-r29" "$ndk_root"
-          "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android36-clang" \
+          # r29's newest packaged NDK CRT is API 35.  This helper has no
+          # Android API surface beyond dlopen and runs under the API-36
+          # linker/libc bundled below; its minimum API does not downgrade the
+          # runtime bionic ABI used for Roblox.
+          "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang" \
             -std=c17 -O2 -Wall -Wextra -Werror \
             nuah/helper/bionic_loader_main.c -ldl \
             -o build-ci/bionic/nuah-bionic-loader
