@@ -1,0 +1,114 @@
+#include "jni_facade.h"
+
+#include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef jint (*JniOnLoad)(JavaVM*, void*);
+
+static struct JNINativeInterface_ env_table;
+static JNIEnv env = &env_table;
+static struct JNIInvokeInterface_ vm_table;
+static JavaVM vm = &vm_table;
+static int registered_native_count;
+static char class_token;
+static char method_token;
+
+static jint JNICALL facade_get_version(JNIEnv*) { return JNI_VERSION_1_6; }
+static jclass JNICALL facade_find_class(JNIEnv*, const char*) {
+  return (jclass)&class_token;
+}
+static jclass JNICALL facade_get_object_class(JNIEnv*, jobject) {
+  return (jclass)&class_token;
+}
+static jmethodID JNICALL facade_get_method_id(JNIEnv*, jclass, const char*,
+                                               const char*) {
+  return (jmethodID)&method_token;
+}
+static jmethodID JNICALL facade_get_static_method_id(JNIEnv*, jclass,
+                                                      const char*, const char*) {
+  return (jmethodID)&method_token;
+}
+static jint JNICALL facade_register_natives(JNIEnv*, jclass,
+                                             const JNINativeMethod* methods,
+                                             jint count) {
+  if (!methods || count < 0) return JNI_ERR;
+  registered_native_count += count;
+  return JNI_OK;
+}
+static jint JNICALL facade_get_java_vm(JNIEnv*, JavaVM** output) {
+  if (!output) return JNI_ERR;
+  *output = &vm;
+  return JNI_OK;
+}
+static jboolean JNICALL facade_exception_check(JNIEnv*) { return JNI_FALSE; }
+static void JNICALL facade_exception_clear(JNIEnv*) {}
+static void JNICALL facade_delete_local_ref(JNIEnv*, jobject) {}
+static jstring JNICALL facade_new_string_utf(JNIEnv*, const char* value) {
+  return (jstring)(value ? value : "");
+}
+static const char* JNICALL facade_get_string_utf_chars(JNIEnv*, jstring value,
+                                                        jboolean*) {
+  return value ? (const char*)value : "";
+}
+static void JNICALL facade_release_string_utf_chars(JNIEnv*, jstring,
+                                                    const char*) {}
+static jsize JNICALL facade_get_string_utf_length(JNIEnv*, jstring value) {
+  return value ? (jsize)strlen((const char*)value) : 0;
+}
+static jint JNICALL facade_vm_get_env(JavaVM*, void** output, jint version) {
+  if (!output || version != JNI_VERSION_1_6) return JNI_EVERSION;
+  *output = &env;
+  return JNI_OK;
+}
+static jint JNICALL facade_vm_attach(JavaVM*, void** output, void*) {
+  if (!output) return JNI_ERR;
+  *output = &env;
+  return JNI_OK;
+}
+static jint JNICALL facade_vm_detach(JavaVM*) { return JNI_OK; }
+static jint JNICALL facade_vm_destroy(JavaVM*) { return JNI_ERR; }
+
+static void configure_facade(void) {
+  memset(&env_table, 0, sizeof(env_table));
+  memset(&vm_table, 0, sizeof(vm_table));
+  env_table.GetVersion = facade_get_version;
+  env_table.FindClass = facade_find_class;
+  env_table.GetObjectClass = facade_get_object_class;
+  env_table.GetMethodID = facade_get_method_id;
+  env_table.GetStaticMethodID = facade_get_static_method_id;
+  env_table.RegisterNatives = facade_register_natives;
+  env_table.GetJavaVM = facade_get_java_vm;
+  env_table.ExceptionCheck = facade_exception_check;
+  env_table.ExceptionClear = facade_exception_clear;
+  env_table.DeleteLocalRef = facade_delete_local_ref;
+  env_table.NewStringUTF = facade_new_string_utf;
+  env_table.GetStringUTFChars = facade_get_string_utf_chars;
+  env_table.ReleaseStringUTFChars = facade_release_string_utf_chars;
+  env_table.GetStringUTFLength = facade_get_string_utf_length;
+  vm_table.DestroyJavaVM = facade_vm_destroy;
+  vm_table.AttachCurrentThread = facade_vm_attach;
+  vm_table.DetachCurrentThread = facade_vm_detach;
+  vm_table.GetEnv = facade_vm_get_env;
+  vm_table.AttachCurrentThreadAsDaemon = facade_vm_attach;
+}
+
+int nuah_jni_invoke_onload(void* module) {
+  const JniOnLoad onload = (JniOnLoad)dlsym(module, "JNI_OnLoad");
+  if (!onload) {
+    fprintf(stderr, "bionic JNI error: libroblox.so has no JNI_OnLoad\n");
+    return 3;
+  }
+  registered_native_count = 0;
+  configure_facade();
+  const jint version = onload(&vm, 0);
+  if (version != JNI_VERSION_1_6 && version != JNI_VERSION_1_4 &&
+      version != JNI_VERSION_1_2) {
+    fprintf(stderr, "bionic JNI error: JNI_OnLoad returned unsupported version 0x%x\n",
+            (unsigned int)version);
+    return 4;
+  }
+  fprintf(stderr, "bionic JNI_OnLoad accepted version 0x%x; registered natives=%d\n",
+          (unsigned int)version, registered_native_count);
+  return 0;
+}

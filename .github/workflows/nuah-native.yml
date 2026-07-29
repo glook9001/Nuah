@@ -166,7 +166,7 @@ jobs:
           # runtime bionic ABI used for Roblox.
           "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang" \
             -std=c17 -O2 -Wall -Wextra -Werror \
-            nuah/helper/bionic_loader_main.c -ldl \
+            nuah/helper/bionic_loader_main.c nuah/helper/jni_facade.c -ldl \
             -o build-ci/bionic/nuah-bionic-loader
           android_clang="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang"
           "$android_clang" -std=c17 -O2 -Wall -Wextra -Werror -shared -fPIC \
