@@ -1,7 +1,9 @@
 #include "nuah/atl_backend.hpp"
 #include "nuah/apk_loader.hpp"
+#include "nuah/input_bridge.h"
 #include "nuah/native_session.h"
 #include "nuah/nuah_jvm.h"
+#include "nuah/window_session.h"
 
 #include <array>
 #include <cstdlib>
@@ -93,7 +95,8 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
   return path;
 }
 
-int run_nuah_jni(const std::filesystem::path& apk) {
+int run_nuah_jni(const NativeLaunchOptions& options,
+                 const std::filesystem::path& apk) {
   report_bootstrap_stage("ANDROID_DLOPEN_CONSTRUCTORS");
   auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
   report_bootstrap_stage("JNI_ONLOAD");
@@ -126,6 +129,9 @@ int run_nuah_jni(const std::filesystem::path& apk) {
        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
        "Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J"},
       {"onStartNative", "(J)V"},
+      {"onResumeNative", "(J)V"},
+      {"onPauseNative", "(J)V"},
+      {"onStopNative", "(J)V"},
       {"onSurfaceCreatedNative", "(JLandroid/view/Surface;)V"},
       {"onSurfaceChangedNative", "(JLandroid/view/Surface;III)V"},
       {"onSurfaceDestroyedNative", "(J)V"},
@@ -146,12 +152,58 @@ int run_nuah_jni(const std::filesystem::path& apk) {
     }
   }
   report_bootstrap_stage("GAMEACTIVITY_REGISTRATION_COMPLETE");
+  std::unique_ptr<NuahWindowSession, decltype(&nuah_window_session_destroy)>
+      window(nuah_window_session_create(options.width, options.height, "Roblox"),
+             nuah_window_session_destroy);
+  if (!window) throw std::runtime_error("cannot create Nuah SDL/Vulkan window");
+  void* surface = nuah_native_session_surface(
+      session.get(), nuah_window_session_native_window(window.get()));
+  if (!surface) throw std::runtime_error("cannot create Nuah Android Surface façade");
+
+  const auto data_directory = options.data_directory.value_or(
+      std::filesystem::temp_directory_path() / "nuah-data");
+  std::error_code data_error;
+  std::filesystem::create_directories(data_directory, data_error);
+  if (data_error) {
+    throw std::runtime_error("cannot create Nuah game data directory: " +
+                             data_error.message());
+  }
+  report_bootstrap_stage("GAMEACTIVITY_INITIALIZE");
+  if (!nuah_native_session_initialize_game(session.get(), "com.roblox.client",
+                                           data_directory.c_str())) {
+    throw std::runtime_error("GameActivity initializeNativeCode returned no native handle");
+  }
+  if (!nuah_native_session_dispatch_lifecycle(session.get(), "onStartNative") ||
+      !nuah_native_session_dispatch_lifecycle(session.get(), "onResumeNative")) {
+    throw std::runtime_error("GameActivity start/resume callback is unavailable");
+  }
+  const auto* native_window = nuah_window_session_native_window(window.get());
+  const int width = nuah_native_window_width(native_window);
+  const int height = nuah_native_window_height(native_window);
+  if (!nuah_native_session_dispatch_surface_created(session.get(), surface) ||
+      !nuah_native_session_dispatch_surface_changed(session.get(), surface, 0,
+                                                    width, height)) {
+    throw std::runtime_error("GameActivity surface lifecycle callback is unavailable");
+  }
+  report_bootstrap_stage("GRAPHICS_LIFECYCLE_ACTIVE");
+  nuah_input_bind_native_session(session.get());
+  while (!nuah_window_session_should_close(window.get())) {
+    nuah_window_session_pump(window.get());
+    (void)nuah_input_pump();
+    ::usleep(10000);
+  }
+  nuah_input_bind_native_session(nullptr);
+  (void)nuah_native_session_dispatch_surface_destroyed(session.get(), surface);
+  (void)nuah_native_session_dispatch_lifecycle(session.get(), "onPauseNative");
+  (void)nuah_native_session_dispatch_lifecycle(session.get(), "onStopNative");
+  nuah_native_session_clear_surface(session.get());
   std::cerr << "nuah native: libroblox.so accepted retained Nuah JVM JNI version 0x"
             << std::hex << version << std::dec << '\n';
   return 0;
 }
 
-int run_nuah_jni_isolated(const std::filesystem::path& apk) {
+int run_nuah_jni_isolated(const NativeLaunchOptions& options,
+                          const std::filesystem::path& apk) {
   // Android constructors run while android_dlopen is still active. Isolate
   // them so a native abort is converted into a useful launch error rather
   // than taking down the supervisor with only a core-dump message.
@@ -169,7 +221,7 @@ int run_nuah_jni_isolated(const std::filesystem::path& apk) {
     ::close(stage_pipe[0]);
     bootstrap_stage_fd = stage_pipe[1];
     try {
-      _exit(run_nuah_jni(apk));
+      _exit(run_nuah_jni(options, apk));
     } catch (const std::exception& error) {
       std::cerr << "nuah bootstrap: native initialization failed before JNI_OnLoad: "
                 << error.what() << '\n';
@@ -260,7 +312,7 @@ int run_native(const NativeLaunchOptions& options) {
               << image_apk << '\n';
     return 0;
   }
-  return run_nuah_jni_isolated(image_apk);
+  return run_nuah_jni_isolated(options, image_apk);
 }
 
 }  // namespace nuah

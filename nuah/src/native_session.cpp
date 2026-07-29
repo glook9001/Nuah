@@ -34,6 +34,32 @@ extern "C" int nuah_native_session_dispatch_lifecycle(
   return session ? nuah_jvm_dispatch_lifecycle(session->jvm, method_name) : 0;
 }
 
+extern "C" void* nuah_native_session_surface(NuahNativeSession* session,
+                                               NuahNativeWindow* window) {
+  return session ? nuah_jvm_surface(session->jvm, window) : nullptr;
+}
+
+extern "C" void nuah_native_session_clear_surface(NuahNativeSession* session) {
+  if (session) nuah_jvm_clear_surface(session->jvm);
+}
+
+extern "C" int nuah_native_session_dispatch_surface_created(
+    NuahNativeSession* session, void* surface) {
+  return session ? nuah_jvm_dispatch_surface_created(session->jvm, surface) : 0;
+}
+
+extern "C" int nuah_native_session_dispatch_surface_changed(
+    NuahNativeSession* session, void* surface, int format, int width, int height) {
+  return session ? nuah_jvm_dispatch_surface_changed(session->jvm, surface, format,
+                                                      width, height)
+                 : 0;
+}
+
+extern "C" int nuah_native_session_dispatch_surface_destroyed(
+    NuahNativeSession* session, void* surface) {
+  return session ? nuah_jvm_dispatch_surface_destroyed(session->jvm, surface) : 0;
+}
+
 extern "C" int nuah_native_session_dispatch_key(
     NuahNativeSession* session, int keycode, int action, int repeat,
     int scancode, unsigned int modifiers, unsigned long long event_time_ms) {

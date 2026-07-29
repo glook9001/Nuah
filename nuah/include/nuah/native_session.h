@@ -16,6 +16,16 @@ long long nuah_native_session_initialize_game(NuahNativeSession* session,
                                               const char* data_path);
 int nuah_native_session_dispatch_lifecycle(NuahNativeSession* session,
                                            const char* method_name);
+void* nuah_native_session_surface(NuahNativeSession* session,
+                                  NuahNativeWindow* window);
+void nuah_native_session_clear_surface(NuahNativeSession* session);
+int nuah_native_session_dispatch_surface_created(NuahNativeSession* session,
+                                                 void* surface);
+int nuah_native_session_dispatch_surface_changed(NuahNativeSession* session,
+                                                 void* surface, int format,
+                                                 int width, int height);
+int nuah_native_session_dispatch_surface_destroyed(NuahNativeSession* session,
+                                                   void* surface);
 int nuah_native_session_dispatch_key(NuahNativeSession* session, int keycode,
                                      int action, int repeat, int scancode,
                                      unsigned int modifiers,

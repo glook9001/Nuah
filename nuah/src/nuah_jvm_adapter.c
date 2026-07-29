@@ -1,4 +1,5 @@
 #include "nuah/nuah_jvm.h"
+#include "nuah/native_window_bridge.h"
 
 #include <stddef.h>
 #include "jvm/jvm.h"
@@ -30,6 +31,8 @@ struct NuahJvm {
   jlong native_handle;
   struct nuah_event key;
   struct nuah_event motion;
+  jobject surface;
+  NuahNativeWindow* surface_window;
 };
 
 static struct jvm_object* object_for(struct NuahJvm* jvm, jobject object) {
@@ -158,6 +161,7 @@ NuahJvm* nuah_jvm_create(void) {
 
 void nuah_jvm_destroy(NuahJvm* jvm) {
   if (!jvm) return;
+  nuah_jvm_clear_surface(jvm);
   jvm_release(&jvm->core);
   free(jvm);
 }
@@ -218,6 +222,26 @@ void* nuah_jvm_motion_event(NuahJvm* jvm, int action, int button, double x,
   return jvm->motion.object;
 }
 
+void* nuah_jvm_surface(NuahJvm* jvm, NuahNativeWindow* window) {
+  if (!jvm || !window) return NULL;
+  if (jvm->surface && jvm->surface_window == window) return jvm->surface;
+  nuah_jvm_clear_surface(jvm);
+  jvm->surface = make_object(jvm, "android/view/Surface");
+  if (!jvm->surface || !nuah_native_window_alias_surface(window, jvm->surface)) {
+    jvm->surface = NULL;
+    return NULL;
+  }
+  jvm->surface_window = window;
+  return jvm->surface;
+}
+
+void nuah_jvm_clear_surface(NuahJvm* jvm) {
+  if (!jvm || !jvm->surface) return;
+  nuah_native_window_unregister_surface(jvm->surface);
+  jvm->surface = NULL;
+  jvm->surface_window = NULL;
+}
+
 long long nuah_jvm_initialize_game(NuahJvm* jvm, const char* package_name,
                                    const char* data_path) {
   static const char* signature =
@@ -241,6 +265,38 @@ int nuah_jvm_dispatch_lifecycle(NuahJvm* jvm, const char* method_name) {
       jvm, "com/google/androidgamesdk/GameActivity", method_name, "(J)V");
   if (!callback) return 0;
   callback(&jvm->core.env, jvm->activity, jvm->native_handle);
+  return 1;
+}
+
+int nuah_jvm_dispatch_surface_created(NuahJvm* jvm, void* surface) {
+  typedef void (*callback_t)(JNIEnv*, jobject, jlong, jobject);
+  callback_t callback = (callback_t)nuah_jvm_find_registered_native(
+      jvm, "com/google/androidgamesdk/GameActivity", "onSurfaceCreatedNative",
+      "(JLandroid/view/Surface;)V");
+  if (!callback || !surface) return 0;
+  callback(&jvm->core.env, jvm->activity, jvm->native_handle, surface);
+  return 1;
+}
+
+int nuah_jvm_dispatch_surface_changed(NuahJvm* jvm, void* surface, int format,
+                                      int width, int height) {
+  typedef void (*callback_t)(JNIEnv*, jobject, jlong, jobject, jint, jint, jint);
+  callback_t callback = (callback_t)nuah_jvm_find_registered_native(
+      jvm, "com/google/androidgamesdk/GameActivity", "onSurfaceChangedNative",
+      "(JLandroid/view/Surface;III)V");
+  if (!callback || !surface || width <= 0 || height <= 0) return 0;
+  callback(&jvm->core.env, jvm->activity, jvm->native_handle, surface, format,
+           width, height);
+  return 1;
+}
+
+int nuah_jvm_dispatch_surface_destroyed(NuahJvm* jvm, void* surface) {
+  typedef void (*callback_t)(JNIEnv*, jobject, jlong, jobject);
+  callback_t callback = (callback_t)nuah_jvm_find_registered_native(
+      jvm, "com/google/androidgamesdk/GameActivity", "onSurfaceDestroyedNative",
+      "(JLandroid/view/Surface;)V");
+  if (!callback || !surface) return 0;
+  callback(&jvm->core.env, jvm->activity, jvm->native_handle, surface);
   return 1;
 }
 

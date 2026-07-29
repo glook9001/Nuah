@@ -5,6 +5,7 @@ extern "C" {
 #endif
 
 typedef struct NuahJvm NuahJvm;
+typedef struct NuahNativeWindow NuahNativeWindow;
 
 NuahJvm* nuah_jvm_create(void);
 void nuah_jvm_destroy(NuahJvm* jvm);
@@ -31,12 +32,18 @@ void* nuah_jvm_key_event(NuahJvm* jvm, int keycode, int action, int repeat,
 void* nuah_jvm_motion_event(NuahJvm* jvm, int action, int button, double x,
                             double y, double dx, double dy,
                             unsigned long long event_time_ms);
+void* nuah_jvm_surface(NuahJvm* jvm, NuahNativeWindow* window);
+void nuah_jvm_clear_surface(NuahJvm* jvm);
 
 // Invoke exact GameActivity natives registered by libroblox.so.  These calls
 // are kept here so callback arguments always belong to this NuahJvm.
 long long nuah_jvm_initialize_game(NuahJvm* jvm, const char* package_name,
                                    const char* data_path);
 int nuah_jvm_dispatch_lifecycle(NuahJvm* jvm, const char* method_name);
+int nuah_jvm_dispatch_surface_created(NuahJvm* jvm, void* surface);
+int nuah_jvm_dispatch_surface_changed(NuahJvm* jvm, void* surface,
+                                      int format, int width, int height);
+int nuah_jvm_dispatch_surface_destroyed(NuahJvm* jvm, void* surface);
 int nuah_jvm_dispatch_key(NuahJvm* jvm, int keycode, int action, int repeat,
                           int scancode, unsigned int modifiers,
                           unsigned long long event_time_ms);

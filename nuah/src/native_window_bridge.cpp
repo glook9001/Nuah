@@ -50,6 +50,16 @@ extern "C" void nuah_native_window_unregister_surface(void* surface) {
   nuah_native_window_release(window);
 }
 
+extern "C" int nuah_native_window_alias_surface(NuahNativeWindow* window,
+                                                  void* surface) {
+  if (!window || !surface) return 0;
+  std::scoped_lock lock(registry_mutex);
+  if (registry.contains(surface)) return 0;
+  nuah_native_window_acquire(window);
+  registry.emplace(surface, window);
+  return 1;
+}
+
 extern "C" NuahNativeWindow* nuah_native_window_from_surface(void* surface) {
   std::scoped_lock lock(registry_mutex);
   const auto found = registry.find(surface);

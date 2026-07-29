@@ -13,6 +13,9 @@ NuahNativeWindow* nuah_native_window_register_surface(
     void* host_window,
     int width,
     int height);
+// Associates a Java Surface façade handle with an existing native window.
+// The alias owns one reference until it is unregistered.
+int nuah_native_window_alias_surface(NuahNativeWindow* window, void* surface);
 void nuah_native_window_unregister_surface(void* surface);
 NuahNativeWindow* nuah_native_window_from_surface(void* surface);
 void nuah_native_window_acquire(NuahNativeWindow* window);
