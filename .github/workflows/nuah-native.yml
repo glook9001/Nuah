@@ -7,6 +7,7 @@ on:
       - 'nuah/**'
       - 'third_party/libhybris.lock'
       - 'third_party/libnativehelper/**'
+      - 'third_party/android2gnulinux/**'
       - '.gitmodules'
       - 'NUAH_LIBHYBRIS_PIVOT.md'
       - '.github/workflows/nuah-native.yml'

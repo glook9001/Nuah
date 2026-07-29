@@ -1,3 +1,6 @@
 [submodule "third_party/libnativehelper"]
 	path = third_party/libnativehelper
 	url = https://android.googlesource.com/platform/libnativehelper
+[submodule "third_party/android2gnulinux"]
+	path = third_party/android2gnulinux
+	url = https://github.com/glook9001/android2gnulinux.git
