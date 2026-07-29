@@ -100,12 +100,27 @@ target_compile_definitions(nuah_android_bionic PRIVATE
   NUAH_ANDROID_API_LEVEL=${NUAH_ANDROID_API_LEVEL})
 target_compile_options(nuah_android_bionic PRIVATE
   -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_link_options(nuah_android_bionic PRIVATE
+  "-Wl,--version-script=${CMAKE_SOURCE_DIR}/nuah/android_shims/bionic.map")
 
 add_library(nuah_atl_overlay SHARED nuah/atl_overlay/compat.cpp)
 target_compile_options(nuah_atl_overlay PRIVATE -Wall -Wextra -Wpedantic -Werror)
 set_target_properties(
   nuah_atl_overlay PROPERTIES
   OUTPUT_NAME nuah_atl_overlay)
+
+# The Nuah JVM is a narrow adapter around the licensed android2gnulinux JNI
+# core.  Its old linker/platform layers are deliberately not compiled.
+add_library(nuah_jvm_core STATIC
+  third_party/android2gnulinux/src/jvm/jvm.c
+  third_party/android2gnulinux/src/wrapper/wrapper.c
+  nuah/src/nuah_jvm_adapter.c)
+target_include_directories(nuah_jvm_core PRIVATE
+  nuah/include
+  third_party/android2gnulinux/src
+  third_party/android2gnulinux/src/linker)
+target_compile_definitions(nuah_jvm_core PRIVATE _GNU_SOURCE)
+target_link_libraries(nuah_jvm_core PUBLIC dl pthread)
 
 add_library(nuah_core
   nuah/src/atl_backend.cpp
@@ -130,7 +145,7 @@ if(NUAH_SDL3_ROOT)
     "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
 endif()
 target_link_libraries(
-  nuah_core PUBLIC nuah_host_bridge nuah_libnativehelper_jni dl ZLIB::ZLIB PkgConfig::NUAH_GIO
+  nuah_core PUBLIC nuah_host_bridge nuah_libnativehelper_jni nuah_jvm_core dl ZLIB::ZLIB PkgConfig::NUAH_GIO
   PkgConfig::NUAH_PLATFORM)
 add_dependencies(nuah_core nuah_atl_overlay)
 add_dependencies(nuah_core nuah_android_bionic)
