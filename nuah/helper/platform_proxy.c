@@ -33,6 +33,19 @@ PLATFORM_STUB(__android_log_assert) PLATFORM_STUB(__android_log_buf_write)
 PLATFORM_STUB(__android_log_print) PLATFORM_STUB(__android_log_write)
 PLATFORM_STUB(android_set_abort_message)
 
+/* Media NDK declares these as exported const char* variables, not functions.
+ * Keep their ABI and spelling exactly so linker64 can relocate Roblox. */
+const char* AMEDIAFORMAT_KEY_BIT_RATE = "bitrate";
+const char* AMEDIAFORMAT_KEY_CHANNEL_COUNT = "channel-count";
+const char* AMEDIAFORMAT_KEY_COLOR_FORMAT = "color-format";
+const char* AMEDIAFORMAT_KEY_FRAME_RATE = "frame-rate";
+const char* AMEDIAFORMAT_KEY_HEIGHT = "height";
+const char* AMEDIAFORMAT_KEY_I_FRAME_INTERVAL = "i-frame-interval";
+const char* AMEDIAFORMAT_KEY_MIME = "mime";
+const char* AMEDIAFORMAT_KEY_SAMPLE_RATE = "sample-rate";
+const char* AMEDIAFORMAT_KEY_STRIDE = "stride";
+const char* AMEDIAFORMAT_KEY_WIDTH = "width";
+
 /* OpenSL imports are interface IDs, i.e. exported data rather than calls. */
 void* SL_IID_ANDROIDCONFIGURATION;
 void* SL_IID_ANDROIDSIMPLEBUFFERQUEUE;
