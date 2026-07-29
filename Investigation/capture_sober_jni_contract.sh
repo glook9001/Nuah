@@ -17,13 +17,16 @@ maps="/proc/$pid/maps"
 [[ -r $maps ]] || { echo "cannot read $maps" >&2; exit 1; }
 [[ ! -e $output ]] || { echo "refusing to overwrite $output" >&2; exit 1; }
 
-# Sober's client runtime is mapped as sober_rx.  The offsets below are tied to
-# the observed Flatpak revision; fail closed instead of tracing an unknown map.
-base=$(awk '$2 ~ /^r.x/ && $0 ~ /sober_rx/ { split($1, range, "-"); print "0x" range[1]; exit }' "$maps")
-[[ -n $base ]] || {
-  echo "no executable sober_rx map in $maps; launch a Roblox room in Sober first" >&2
+# The client has appeared as both sober_rx and /memfd:sober.  The offsets below
+# are tied to the observed Flatpak revision; derive the ELF PIE base from its
+# executable mapping and fail closed instead of tracing an unknown map.
+map_info=$(awk '$2 ~ /^r.x/ && ($0 ~ /sober_rx/ || $0 ~ /\/memfd:sober/) { split($1, range, "-"); print "0x" range[1], "0x" $3; exit }' "$maps")
+[[ -n $map_info ]] || {
+  echo "no executable Sober client map in $maps; launch a Roblox room in Sober first" >&2
   exit 1
 }
+read -r map_start map_offset <<<"$map_info"
+base=$(printf '0x%x' "$((map_start - map_offset))")
 
 : >"$output"
 echo "# sober-jni-live-v1 pid=$pid base=$base" >"$output"
