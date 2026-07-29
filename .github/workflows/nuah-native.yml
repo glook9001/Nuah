@@ -156,11 +156,12 @@ jobs:
           set -euo pipefail
           ndk_root="$RUNNER_TEMP/android-ndk"
           curl --fail --location --retry 5 --retry-all-errors \
-            https://dl.google.com/android/repository/android-ndk-r27d-linux.zip \
+            https://dl.google.com/android/repository/android-ndk-r28c-linux.zip \
             -o "$RUNNER_TEMP/android-ndk.zip"
           unzip -q "$RUNNER_TEMP/android-ndk.zip" -d "$RUNNER_TEMP"
-          mv "$RUNNER_TEMP/android-ndk-r27d" "$ndk_root"
-          "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android36-clang" \
+          mv "$RUNNER_TEMP/android-ndk-r28c" "$ndk_root"
+          "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" \
+            --target=x86_64-linux-android36 \
             -std=c17 -O2 -Wall -Wextra -Werror \
             nuah/helper/bionic_loader_main.c -ldl \
             -o build-ci/bionic/nuah-bionic-loader
