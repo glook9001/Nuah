@@ -162,6 +162,7 @@ jobs:
           mv "$RUNNER_TEMP/android-ndk-r28c" "$ndk_root"
           "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" \
             --target=x86_64-linux-android36 \
+            --sysroot="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
             -std=c17 -O2 -Wall -Wextra -Werror \
             nuah/helper/bionic_loader_main.c -ldl \
             -o build-ci/bionic/nuah-bionic-loader
