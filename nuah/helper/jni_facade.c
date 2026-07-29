@@ -162,6 +162,7 @@ int nuah_jni_invoke_onload(void* module) {
   }
   registered_native_count = 0;
   configure_facade();
+  fprintf(stderr, "bionic JNI_OnLoad entry=%p\n", (void*)onload);
   const jint version = onload(&vm, 0);
   if (version != JNI_VERSION_1_6 && version != JNI_VERSION_1_4 &&
       version != JNI_VERSION_1_2) {
