@@ -139,9 +139,21 @@ jobs:
           LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
             hybris-probe/hybris_loader_probe \
             "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-probe.so"
+          probe="$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-host-dependency-probe.so"
+          set +e
           LD_LIBRARY_PATH="$GITHUB_WORKSPACE/hybris-prefix/lib" \
-            hybris-probe/hybris_loader_probe \
-            "$GITHUB_WORKSPACE/hybris-probe/libnuah-hybris-host-dependency-probe.so"
+            hybris-probe/hybris_loader_probe "$probe"
+          probe_status=$?
+          set -e
+          if [ "$probe_status" -ne 0 ]; then
+            echo "::error::host-hook dependency probe exited with $probe_status"
+            gdb --batch \
+              -ex "set env LD_LIBRARY_PATH $GITHUB_WORKSPACE/hybris-prefix/lib" \
+              -ex run \
+              -ex 'thread apply all bt full' \
+              --args hybris-probe/hybris_loader_probe "$probe" || true
+            exit "$probe_status"
+          fi
 
   build:
     needs: hybris-x86_64-build
