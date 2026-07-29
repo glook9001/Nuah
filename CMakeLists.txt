@@ -230,7 +230,8 @@ target_include_directories(nuah_jvm_registration_test PRIVATE
   nuah/include
   third_party/android2gnulinux/src)
 target_compile_options(nuah_jvm_registration_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(nuah_jvm_registration_test PRIVATE nuah_jvm_core)
+target_link_libraries(nuah_jvm_registration_test PRIVATE nuah_jvm_core nuah_host_bridge)
+set_target_properties(nuah_jvm_registration_test PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME nuah-jvm-registration COMMAND nuah_jvm_registration_test)
 
 add_executable(nuah nuah/src/main.cpp)
