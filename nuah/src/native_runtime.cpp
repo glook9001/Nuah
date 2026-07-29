@@ -30,8 +30,10 @@ void report_bootstrap_stage(const char* stage) {
   const std::size_t length = std::strlen(stage);
   // Stage names are short fixed literals and fit in one pipe write.  A failed
   // diagnostic write must never change the result of Roblox initialization.
-  (void)::write(bootstrap_stage_fd, stage, length);
-  (void)::write(bootstrap_stage_fd, "\n", 1);
+  const ssize_t stage_written = ::write(bootstrap_stage_fd, stage, length);
+  if (stage_written < 0) return;
+  const ssize_t newline_written = ::write(bootstrap_stage_fd, "\n", 1);
+  if (newline_written < 0) return;
 }
 
 std::vector<std::filesystem::path> image_candidates(
