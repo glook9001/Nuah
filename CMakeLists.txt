@@ -117,8 +117,7 @@ add_library(nuah_jvm_core STATIC
   nuah/src/nuah_jvm_adapter.c)
 target_include_directories(nuah_jvm_core PRIVATE
   nuah/include
-  third_party/android2gnulinux/src
-  third_party/android2gnulinux/src/linker)
+  third_party/android2gnulinux/src)
 target_compile_definitions(nuah_jvm_core PRIVATE _GNU_SOURCE)
 target_link_libraries(nuah_jvm_core PUBLIC dl pthread)
 
