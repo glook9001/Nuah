@@ -1,5 +1,6 @@
 #include "nuah/atl_backend.hpp"
 #include "nuah/apk_loader.hpp"
+#include "nuah/bootstrap_diagnostics.h"
 #include "nuah/input_bridge.h"
 #include "nuah/native_session.h"
 #include "nuah/nuah_jvm.h"
@@ -11,9 +12,11 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -23,17 +26,8 @@
 namespace nuah {
 namespace {
 
-int bootstrap_stage_fd = -1;
-
 void report_bootstrap_stage(const char* stage) {
-  if (bootstrap_stage_fd < 0 || !stage) return;
-  const std::size_t length = std::strlen(stage);
-  // Stage names are short fixed literals and fit in one pipe write.  A failed
-  // diagnostic write must never change the result of Roblox initialization.
-  const ssize_t stage_written = ::write(bootstrap_stage_fd, stage, length);
-  if (stage_written < 0) return;
-  const ssize_t newline_written = ::write(bootstrap_stage_fd, "\n", 1);
-  if (newline_written < 0) return;
+  nuah_bootstrap_diagnostics_set_stage(stage);
 }
 
 std::vector<std::filesystem::path> image_candidates(
@@ -99,6 +93,15 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
 
 int run_nuah_jni(const NativeLaunchOptions& options,
                  const std::filesystem::path& apk) {
+  std::string asset_apks;
+  for (const auto& candidate : image_candidates(options)) {
+    if (!std::filesystem::is_regular_file(candidate)) continue;
+    if (!asset_apks.empty()) asset_apks += ':';
+    asset_apks += std::filesystem::absolute(candidate).string();
+  }
+  if (asset_apks.empty() || ::setenv("NUAH_APK_PATHS", asset_apks.c_str(), 1) != 0) {
+    throw std::runtime_error("cannot configure Android asset APK paths");
+  }
   report_bootstrap_stage("ANDROID_DLOPEN_CONSTRUCTORS");
   auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
   report_bootstrap_stage("JNI_ONLOAD");
@@ -122,14 +125,26 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   // second mock registry would make successful input delivery impossible.
   constexpr const char* kGameActivity =
       "com/google/androidgamesdk/GameActivity";
+  constexpr const char* kInitializeSignature =
+      "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+      "Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J";
+  if (!nuah_jvm_find_registered_native(
+          jvm, kGameActivity, "initializeNativeCode", kInitializeSignature)) {
+    void* exported_initialize = image.symbol(
+        "Java_com_google_androidgamesdk_GameActivity_initializeNativeCode");
+    if (!exported_initialize ||
+        !nuah_jvm_bind_native(jvm, kGameActivity, "initializeNativeCode",
+                              kInitializeSignature, exported_initialize)) {
+      throw std::runtime_error(
+          "libroblox.so exposes neither a registered nor exported "
+          "GameActivity initializeNativeCode");
+    }
+  }
   struct NativeRequirement {
     const char* member;
     const char* signature;
   };
   constexpr NativeRequirement kInputLifecycleRequirements[] = {
-      {"initializeNativeCode",
-       "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
-       "Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J"},
       {"onStartNative", "(J)V"},
       {"onResumeNative", "(J)V"},
       {"onPauseNative", "(J)V"},
@@ -143,17 +158,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       {"onTextInputEventNative",
        "(JLcom/google/androidgamesdk/gametextinput/State;)V"},
   };
-  for (const auto& requirement : kInputLifecycleRequirements) {
-    if (!nuah_jvm_find_registered_native(jvm, kGameActivity,
-                                         requirement.member,
-                                         requirement.signature)) {
-      throw std::runtime_error(
-          "libroblox.so JNI_OnLoad did not register required GameActivity "
-          "callback " +
-          std::string(requirement.member) + " " + requirement.signature);
-    }
-  }
-  report_bootstrap_stage("GAMEACTIVITY_REGISTRATION_COMPLETE");
   std::unique_ptr<NuahWindowSession, decltype(&nuah_window_session_destroy)>
       window(nuah_window_session_create(options.width, options.height, "Roblox"),
              nuah_window_session_destroy);
@@ -175,9 +179,28 @@ int run_nuah_jni(const NativeLaunchOptions& options,
                                            data_directory.c_str())) {
     throw std::runtime_error("GameActivity initializeNativeCode returned no native handle");
   }
-  if (!nuah_native_session_dispatch_lifecycle(session.get(), "onStartNative") ||
-      !nuah_native_session_dispatch_lifecycle(session.get(), "onResumeNative")) {
-    throw std::runtime_error("GameActivity start/resume callback is unavailable");
+  for (const auto& requirement : kInputLifecycleRequirements) {
+    if (!nuah_jvm_find_registered_native(jvm, kGameActivity,
+                                         requirement.member,
+                                         requirement.signature)) {
+      throw std::runtime_error(
+          "GameActivity initializeNativeCode did not register required "
+          "callback " +
+          std::string(requirement.member) + " " + requirement.signature);
+    }
+  }
+  report_bootstrap_stage("GAMEACTIVITY_REGISTRATION_COMPLETE");
+  // Roblox installs its own native crash handlers during initialization.
+  // Re-arm the supervisor's last-chance recorder at the lifecycle boundary so
+  // a fatal worker-thread fault still reports an ELF-relative caller.
+  nuah_bootstrap_diagnostics_install_signal_handler();
+  report_bootstrap_stage("GAMEACTIVITY_START");
+  if (!nuah_native_session_dispatch_lifecycle(session.get(), "onStartNative")) {
+    throw std::runtime_error("GameActivity start callback is unavailable");
+  }
+  report_bootstrap_stage("GAMEACTIVITY_RESUME");
+  if (!nuah_native_session_dispatch_lifecycle(session.get(), "onResumeNative")) {
+    throw std::runtime_error("GameActivity resume callback is unavailable");
   }
   const auto* native_window = nuah_window_session_native_window(window.get());
   const int width = nuah_native_window_width(native_window);
@@ -209,19 +232,24 @@ int run_nuah_jni_isolated(const NativeLaunchOptions& options,
   // Android constructors run while android_dlopen is still active. Isolate
   // them so a native abort is converted into a useful launch error rather
   // than taking down the supervisor with only a core-dump message.
-  int stage_pipe[2] = {-1, -1};
-  if (::pipe(stage_pipe) != 0) {
-    throw std::runtime_error("cannot create native bootstrap stage pipe");
+  void* mapping =
+      ::mmap(nullptr, sizeof(NuahBootstrapDiagnostics),
+             PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (mapping == MAP_FAILED) {
+    throw std::runtime_error("cannot create native bootstrap diagnostics");
   }
+  auto* diagnostics = static_cast<NuahBootstrapDiagnostics*>(mapping);
+  std::memset(diagnostics, 0, sizeof(*diagnostics));
+  diagnostics->version = 1;
+  nuah_bootstrap_diagnostics_attach(diagnostics);
   const pid_t child = ::fork();
   if (child < 0) {
-    ::close(stage_pipe[0]);
-    ::close(stage_pipe[1]);
+    nuah_bootstrap_diagnostics_attach(nullptr);
+    ::munmap(mapping, sizeof(*diagnostics));
     throw std::runtime_error("cannot start isolated native bootstrap");
   }
   if (child == 0) {
-    ::close(stage_pipe[0]);
-    bootstrap_stage_fd = stage_pipe[1];
+    nuah_bootstrap_diagnostics_install_signal_handler();
     try {
       _exit(run_nuah_jni(options, apk));
     } catch (const std::exception& error) {
@@ -230,23 +258,50 @@ int run_nuah_jni_isolated(const NativeLaunchOptions& options,
       _exit(70);
     }
   }
-  ::close(stage_pipe[1]);
   int status = 0;
   if (::waitpid(child, &status, 0) != child) {
-    ::close(stage_pipe[0]);
+    nuah_bootstrap_diagnostics_attach(nullptr);
+    ::munmap(mapping, sizeof(*diagnostics));
     throw std::runtime_error("cannot wait for isolated native bootstrap");
   }
-  std::array<char, 512> stage_buffer{};
-  const ssize_t received = ::read(stage_pipe[0], stage_buffer.data(), stage_buffer.size() - 1);
-  ::close(stage_pipe[0]);
-  std::string stage = received > 0 ? std::string(stage_buffer.data(), received) : "NO_STAGE";
-  while (!stage.empty() && (stage.back() == '\n' || stage.back() == '\r')) stage.pop_back();
+  const NuahBootstrapDiagnostics result = *diagnostics;
+  nuah_bootstrap_diagnostics_attach(nullptr);
+  ::munmap(mapping, sizeof(*diagnostics));
+  if (result.module_path[0]) {
+    const std::filesystem::path crash_module(result.module_path);
+    if (crash_module.parent_path() == "/tmp" &&
+        crash_module.filename().string().starts_with("nuah-module-")) {
+      std::error_code ignored;
+      std::filesystem::remove(crash_module, ignored);
+    }
+  }
+  const std::string stage = result.stage[0] ? result.stage : "NO_STAGE";
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 0;
   if (WIFSIGNALED(status)) {
-    throw std::runtime_error(
-        "native bootstrap terminated by signal " +
-        std::to_string(WTERMSIG(status)) +
-        " at " + stage);
+    std::ostringstream message;
+    message << "native bootstrap terminated by signal " << WTERMSIG(status)
+            << " at " << stage;
+    if (result.abort_seen) {
+      message << "; crash caller "
+              << (result.module_path[0] ? result.module_path : "(unmapped)")
+              << "+0x" << std::hex << result.module_offset << std::dec
+              << " (pc=0x" << std::hex << result.caller << std::dec
+              << " tid=" << result.thread_id << ")";
+    }
+    if (result.fault_address) {
+      message << "; fault-address=0x" << std::hex << result.fault_address
+              << std::dec;
+    }
+    if (result.abort_message[0]) {
+      message << "; Android abort message: " << result.abort_message;
+    }
+    if (result.last_log[0]) {
+      message << "; last Android log: " << result.last_log;
+    }
+    if (result.last_property[0]) {
+      message << "; last Android property: " << result.last_property;
+    }
+    throw std::runtime_error(message.str());
   }
   throw std::runtime_error("native bootstrap exited with status " +
                            std::to_string(WEXITSTATUS(status)) +

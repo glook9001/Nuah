@@ -22,6 +22,9 @@ void* nuah_jvm_jni_env(NuahJvm* jvm);
 void* nuah_jvm_find_registered_native(NuahJvm* jvm, const char* class_name,
                                       const char* method_name,
                                       const char* signature);
+int nuah_jvm_bind_native(NuahJvm* jvm, const char* class_name,
+                         const char* method_name, const char* signature,
+                         void* function);
 
 // Opaque façade objects are allocated by the same imported JNI core used for
 // JNI_OnLoad.  They are deliberately not host pointers or a second fake JVM.

@@ -9,14 +9,20 @@
 
 .macro NUAH_FORWARD symbol, version=GLIBC_2.2.5
   .symver nuah_host_\symbol, \symbol@\version
-  .globl \symbol
+  /*
+   * A translated implementation in bionic.cpp always wins.  The weak
+   * tail-call is the complete, reviewed ABI-identical fallback set; this
+   * avoids growing a symbol-name chain in the loader after every smoke run.
+   */
+  .weak \symbol
   .type \symbol, @function
 \symbol:
   jmp nuah_host_\symbol@PLT
   .size \symbol, .-\symbol
 .endm
 
-NUAH_FORWARD abort
+/* abort is implemented by bionic.cpp so constructor diagnostics retain the
+ * Android caller before control reaches glibc. */
 NUAH_FORWARD _exit
 NUAH_FORWARD exit
 NUAH_FORWARD clock
@@ -44,6 +50,9 @@ NUAH_FORWARD getuid
 NUAH_FORWARD setpriority
 NUAH_FORWARD sysconf
 NUAH_FORWARD waitpid
+NUAH_FORWARD getentropy, GLIBC_2.25
+NUAH_FORWARD signal
+NUAH_FORWARD sigaltstack
 
 NUAH_FORWARD accept
 NUAH_FORWARD bind
@@ -105,6 +114,10 @@ NUAH_FORWARD atol
 NUAH_FORWARD atoll
 NUAH_FORWARD bsearch
 NUAH_FORWARD mbtowc
+NUAH_FORWARD mbrlen
+NUAH_FORWARD mbrtowc
+NUAH_FORWARD mbsnrtowcs
+NUAH_FORWARD mbsrtowcs
 NUAH_FORWARD memrchr
 NUAH_FORWARD qsort
 NUAH_FORWARD rand
@@ -127,6 +140,8 @@ NUAH_FORWARD vsscanf
 NUAH_FORWARD wcslen
 NUAH_FORWARD wmemchr
 NUAH_FORWARD wmemcmp
+NUAH_FORWARD wcrtomb
+NUAH_FORWARD wcsnrtombs
 NUAH_FORWARD btowc
 NUAH_FORWARD execv
 NUAH_FORWARD execve

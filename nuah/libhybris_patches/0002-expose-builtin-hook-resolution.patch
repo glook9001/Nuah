@@ -1,0 +1,54 @@
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 67bbf31..9b08f53 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -94,6 +94,7 @@ extern int my_property_list(void (*propfn)(const char *key, const char *value, v
+ static locale_t hybris_locale;
+ static int locale_inited = 0;
+ static hybris_hook_cb hook_callback = NULL;
++static __thread int skip_hook_callback = 0;
+ 
+ #ifdef WANT_ARM_TRACING
+ static void (*_android_linker_init)(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, void *(_create_wrapper)(const char*, void*, int), int wrapping_enabled) = NULL;
+@@ -3427,6 +3428,20 @@ void hybris_set_hook_callback(hybris_hook_cb callback)
+     hook_callback = callback;
+ }
+ 
++/*
++ * Let a context-specific callback delegate to libhybris before adding its
++ * narrow platform providers.  The TLS guard avoids recursively invoking the
++ * callback while preserving the existing public callback ABI.
++ */
++void *hybris_get_builtin_hook(const char *symbol, const char *requester)
++{
++    void *result;
++    skip_hook_callback++;
++    result = __hybris_get_hooked_symbol(symbol, requester);
++    skip_hook_callback--;
++    return result;
++}
++
+ #define LINKER_NAME_JB "jb"
+ #define LINKER_NAME_MM "mm"
+ #define LINKER_NAME_N "n"
+@@ -3522,7 +3537,7 @@ static void* __hybris_get_hooked_symbol(const char *sym, const char *requester)
+ 
+     /* First check if we have a callback registered which could
+      * give us a context specific hook implementation */
+-    if (hook_callback)
++    if (hook_callback && !skip_hook_callback)
+     {
+         found = hook_callback(sym, requester);
+         if (found)
+diff --git a/hybris/include/hybris/common/hooks.h b/hybris/include/hybris/common/hooks.h
+index e78d7d5..fa1a1d8 100644
+--- a/hybris/include/hybris/common/hooks.h
++++ b/hybris/include/hybris/common/hooks.h
+@@ -28,6 +28,7 @@ extern "C" {
+ typedef void* (*hybris_hook_cb)(const char *symbol_name, const char *requester);
+ 
+ void hybris_set_hook_callback(hybris_hook_cb callback);
++void *hybris_get_builtin_hook(const char *symbol, const char *requester);
+ 
+ #ifdef __cplusplus
+ }

@@ -1,0 +1,209 @@
+#include "nuah/android_abi_registry.h"
+
+#include <archive.h>
+#include <archive_entry.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include <sys/types.h>
+
+namespace {
+struct NuahAssetManager {
+  std::vector<std::string> apks;
+};
+
+struct NuahAsset {
+  std::vector<unsigned char> bytes;
+  std::size_t offset = 0;
+};
+
+std::once_flag manager_once;
+NuahAssetManager manager;
+
+bool trace_enabled() {
+  const char* value = std::getenv("NUAH_BOOTSTRAP_TRACE");
+  return value && *value;
+}
+
+void initialize_manager() {
+  const char* paths = std::getenv("NUAH_APK_PATHS");
+  if (!paths) return;
+  const char* begin = paths;
+  for (const char* cursor = paths;; ++cursor) {
+    if (*cursor != ':' && *cursor != '\0') continue;
+    if (cursor != begin) manager.apks.emplace_back(begin, cursor);
+    if (*cursor == '\0') break;
+    begin = cursor + 1;
+  }
+}
+
+std::unique_ptr<NuahAsset> read_member(const std::string& apk,
+                                       const std::string& member) {
+  using ArchivePtr = std::unique_ptr<archive, decltype(&archive_read_free)>;
+  ArchivePtr archive_reader(archive_read_new(), archive_read_free);
+  if (!archive_reader) return nullptr;
+  archive_read_support_filter_all(archive_reader.get());
+  archive_read_support_format_zip(archive_reader.get());
+  if (archive_read_open_filename(archive_reader.get(), apk.c_str(), 64 * 1024) !=
+      ARCHIVE_OK) {
+    return nullptr;
+  }
+
+  archive_entry* entry = nullptr;
+  while (archive_read_next_header(archive_reader.get(), &entry) == ARCHIVE_OK) {
+    const char* path = archive_entry_pathname(entry);
+    if (!path || member != path) {
+      archive_read_data_skip(archive_reader.get());
+      continue;
+    }
+    const auto declared_size = archive_entry_size(entry);
+    if (declared_size < 0 || declared_size > 512LL * 1024 * 1024) return nullptr;
+    auto asset = std::make_unique<NuahAsset>();
+    asset->bytes.resize(static_cast<std::size_t>(declared_size));
+    std::size_t done = 0;
+    while (done < asset->bytes.size()) {
+      const auto count = archive_read_data(
+          archive_reader.get(), asset->bytes.data() + done,
+          asset->bytes.size() - done);
+      if (count <= 0) return nullptr;
+      done += static_cast<std::size_t>(count);
+    }
+    return asset;
+  }
+  return nullptr;
+}
+
+off64_t seek_asset(NuahAsset* asset, off64_t offset, int whence) {
+  if (!asset) {
+    errno = EINVAL;
+    return -1;
+  }
+  off64_t base = 0;
+  if (whence == SEEK_CUR) {
+    base = static_cast<off64_t>(asset->offset);
+  } else if (whence == SEEK_END) {
+    base = static_cast<off64_t>(asset->bytes.size());
+  } else if (whence != SEEK_SET) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (offset < -base) {
+    errno = EINVAL;
+    return -1;
+  }
+  const off64_t destination = base + offset;
+  if (destination < 0 ||
+      static_cast<unsigned long long>(destination) > asset->bytes.size()) {
+    errno = EINVAL;
+    return -1;
+  }
+  asset->offset = static_cast<std::size_t>(destination);
+  return destination;
+}
+}  // namespace
+
+extern "C" {
+void* AAssetManager_fromJava(void*, void*) {
+  std::call_once(manager_once, initialize_manager);
+  return &manager;
+}
+
+void* AAssetManager_open(void* opaque_manager, const char* filename, int) {
+  if (!opaque_manager || !filename || std::strstr(filename, "..")) {
+    errno = EINVAL;
+    return nullptr;
+  }
+  auto* asset_manager = static_cast<NuahAssetManager*>(opaque_manager);
+  const std::string member = std::string("assets/") + filename;
+  for (const auto& apk : asset_manager->apks) {
+    if (auto asset = read_member(apk, member)) {
+      if (trace_enabled()) {
+        std::fprintf(stderr, "nuah assets: opened %s from %s (%zu bytes)\n",
+                     filename, apk.c_str(), asset->bytes.size());
+      }
+      return asset.release();
+    }
+  }
+  if (trace_enabled()) {
+    std::fprintf(stderr, "nuah assets: missing %s\n", filename);
+  }
+  errno = ENOENT;
+  return nullptr;
+}
+
+void AAsset_close(void* opaque_asset) {
+  delete static_cast<NuahAsset*>(opaque_asset);
+}
+
+const void* AAsset_getBuffer(void* opaque_asset) {
+  auto* asset = static_cast<NuahAsset*>(opaque_asset);
+  return asset && !asset->bytes.empty() ? asset->bytes.data() : nullptr;
+}
+
+off_t AAsset_getLength(void* opaque_asset) {
+  auto* asset = static_cast<NuahAsset*>(opaque_asset);
+  return asset ? static_cast<off_t>(asset->bytes.size()) : -1;
+}
+
+off64_t AAsset_getLength64(void* opaque_asset) {
+  return static_cast<off64_t>(AAsset_getLength(opaque_asset));
+}
+
+int AAsset_read(void* opaque_asset, void* buffer, std::size_t count) {
+  auto* asset = static_cast<NuahAsset*>(opaque_asset);
+  if (!asset || (!buffer && count)) {
+    errno = EINVAL;
+    return -1;
+  }
+  const auto available = asset->bytes.size() - asset->offset;
+  const auto copied = std::min(count, available);
+  if (copied) {
+    std::memcpy(buffer, asset->bytes.data() + asset->offset, copied);
+    asset->offset += copied;
+  }
+  return static_cast<int>(copied);
+}
+
+off_t AAsset_seek(void* opaque_asset, off_t offset, int whence) {
+  return static_cast<off_t>(
+      seek_asset(static_cast<NuahAsset*>(opaque_asset), offset, whence));
+}
+
+off64_t AAsset_seek64(void* opaque_asset, off64_t offset, int whence) {
+  return seek_asset(static_cast<NuahAsset*>(opaque_asset), offset, whence);
+}
+
+off_t AAsset_getRemainingLength(void* opaque_asset) {
+  auto* asset = static_cast<NuahAsset*>(opaque_asset);
+  return asset ? static_cast<off_t>(asset->bytes.size() - asset->offset) : -1;
+}
+
+off64_t AAsset_getRemainingLength64(void* opaque_asset) {
+  return static_cast<off64_t>(AAsset_getRemainingLength(opaque_asset));
+}
+
+int AAsset_isAllocated(void* opaque_asset) {
+  return opaque_asset ? 1 : 0;
+}
+
+int AAsset_openFileDescriptor(void*, off_t*, off_t*) {
+  // Android documents failure for compressed assets. Roblox can fall back to
+  // AAsset_read/AAsset_getBuffer, which work for both stored and compressed ZIP
+  // entries through libarchive.
+  errno = ENOTSUP;
+  return -1;
+}
+
+int AAsset_openFileDescriptor64(void*, off64_t*, off64_t*) {
+  errno = ENOTSUP;
+  return -1;
+}
+}  // extern "C"

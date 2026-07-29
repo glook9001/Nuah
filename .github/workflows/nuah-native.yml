@@ -41,6 +41,8 @@ jobs:
           test "$(git -C hybris-source rev-parse HEAD)" = "$revision"
           git -C hybris-source/hybris apply --recount --check \
             "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
+          git -C hybris-source/hybris apply --recount --check \
+            "$GITHUB_WORKSPACE/nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch"
           test -f hybris-source/hybris/configure.ac
           test -f hybris-source/hybris/common/q/linker.cpp
           grep -F 'xx86-64' hybris-source/hybris/configure.ac
@@ -78,6 +80,8 @@ jobs:
           git -C hybris-source checkout --detach "$revision"
           git -C hybris-source/hybris apply --recount \
             "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
+          git -C hybris-source/hybris apply --recount \
+            "$GITHUB_WORKSPACE/nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch"
 
       - name: Build the x86_64 libhybris common loader
         run: |
@@ -244,7 +248,7 @@ jobs:
             libglib2.0-dev libgudev-1.0-dev libportal-dev libsqlite3-dev \
             libvulkan-dev libopenxr-dev libunwind-dev libelf-dev \
             libicu-dev libssl-dev libexpat1-dev liblz4-dev liblzma-dev \
-            zlib1g-dev
+            libarchive-dev zlib1g-dev
 
       - name: Install prebuilt SDL3 development package
         run: |

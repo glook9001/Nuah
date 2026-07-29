@@ -2,8 +2,13 @@
 #include "nuah/android_abi_registry.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <mutex>
+#include <poll.h>
+#include <vector>
+#include <unistd.h>
 
 namespace {
 void unsupported(const char* symbol) {
@@ -21,7 +26,20 @@ void unsupported_audio(const char* symbol) {
 }
 
 extern "C" {
-struct NuahLooper { int refs = 1; };
+using NuahLooperCallback = int (*)(int, int, void*);
+struct NuahLooperRegistration {
+  int fd;
+  int ident;
+  int events;
+  NuahLooperCallback callback;
+  void* data;
+};
+struct NuahLooper {
+  int refs = 1;
+  unsigned int polls = 0;
+  std::mutex mutex;
+  std::vector<NuahLooperRegistration> registrations;
+};
 struct NuahConfiguration { int unused = 0; };
 extern const char AMEDIAFORMAT_KEY_MIME[] = "mime";
 extern const char AMEDIAFORMAT_KEY_WIDTH[] = "width";
@@ -42,18 +60,21 @@ void* SL_IID_PLAY = &sl_play;
 void* SL_IID_ANDROIDSIMPLEBUFFERQUEUE = &sl_android_simple_buffer_queue;
 void* SL_IID_RECORD = &sl_record;
 
-void* AAssetManager_fromJava(void*, void*) { unsupported("AAssetManager_fromJava"); return nullptr; }
-void* AAssetManager_open(void*, const char*, int) { unsupported("AAssetManager_open"); return nullptr; }
-void AAsset_close(void*) { unsupported("AAsset_close"); }
-const void* AAsset_getBuffer(void*) { unsupported("AAsset_getBuffer"); return nullptr; }
-long AAsset_getLength(void*) { unsupported("AAsset_getLength"); return -1; }
-int AAsset_openFileDescriptor(void*, long*, long*) { unsupported("AAsset_openFileDescriptor"); return -1; }
-
 void* AConfiguration_new() { return new NuahConfiguration; }
 void AConfiguration_delete(void* configuration) { delete static_cast<NuahConfiguration*>(configuration); }
-void AConfiguration_fromAssetManager(void*, void*) { unsupported("AConfiguration_fromAssetManager"); }
-int AConfiguration_getCountry(void*) { unsupported("AConfiguration_getCountry"); return 0; }
-int AConfiguration_getLanguage(void*) { unsupported("AConfiguration_getLanguage"); return 0; }
+void AConfiguration_fromAssetManager(void*, void*) {}
+void AConfiguration_getCountry(void*, char country[2]) {
+  if (country) {
+    country[0] = 'U';
+    country[1] = 'S';
+  }
+}
+void AConfiguration_getLanguage(void*, char language[2]) {
+  if (language) {
+    language[0] = 'e';
+    language[1] = 'n';
+  }
+}
 int AConfiguration_getNavHidden(void*) { unsupported("AConfiguration_getNavHidden"); return 0; }
 int AConfiguration_getScreenHeightDp(void*) { return 720; }
 int AConfiguration_getScreenSize(void*) { unsupported("AConfiguration_getScreenSize"); return 0; }
@@ -63,9 +84,98 @@ void* ALooper_forThread() { static thread_local NuahLooper looper; return &loope
 void* ALooper_prepare(int) { return ALooper_forThread(); }
 void ALooper_acquire(void* looper) { if (looper) ++static_cast<NuahLooper*>(looper)->refs; }
 void ALooper_release(void* looper) { if (looper && static_cast<NuahLooper*>(looper)->refs > 1) --static_cast<NuahLooper*>(looper)->refs; }
-int ALooper_addFd(void*, int, int, int, void*, void*) { unsupported("ALooper_addFd"); return -1; }
-int ALooper_removeFd(void*, int) { unsupported("ALooper_removeFd"); return -1; }
-int ALooper_pollOnce(int, int*, int*, void**) { unsupported("ALooper_pollOnce"); return -1; }
+int ALooper_addFd(void* opaque_looper, int fd, int ident, int events,
+                  NuahLooperCallback callback, void* data) {
+  if (!opaque_looper || fd < 0 || (!callback && ident < 0)) {
+    errno = EINVAL;
+    return -1;
+  }
+  auto* looper = static_cast<NuahLooper*>(opaque_looper);
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+      trace && *trace) {
+    std::fprintf(stderr,
+                 "nuah looper: add thread=%ld looper=%p fd=%d ident=%d "
+                 "events=%d callback=%p\n",
+                 static_cast<long>(::gettid()), opaque_looper, fd, ident,
+                 events, reinterpret_cast<void*>(callback));
+  }
+  std::scoped_lock lock(looper->mutex);
+  for (auto& registration : looper->registrations) {
+    if (registration.fd == fd) {
+      registration = {fd, ident, events, callback, data};
+      return 1;
+    }
+  }
+  looper->registrations.push_back({fd, ident, events, callback, data});
+  return 1;
+}
+int ALooper_removeFd(void* opaque_looper, int fd) {
+  if (!opaque_looper) return 0;
+  auto* looper = static_cast<NuahLooper*>(opaque_looper);
+  std::scoped_lock lock(looper->mutex);
+  for (auto it = looper->registrations.begin();
+       it != looper->registrations.end(); ++it) {
+    if (it->fd == fd) {
+      looper->registrations.erase(it);
+      return 1;
+    }
+  }
+  return 0;
+}
+int ALooper_pollOnce(int timeout_ms, int* out_fd, int* out_events,
+                     void** out_data) {
+  auto* looper = static_cast<NuahLooper*>(ALooper_forThread());
+  std::vector<NuahLooperRegistration> registrations;
+  {
+    std::scoped_lock lock(looper->mutex);
+    registrations = looper->registrations;
+  }
+  if (registrations.empty()) {
+    if (timeout_ms > 0) (void)::poll(nullptr, 0, timeout_ms);
+    return -3;  // ALOOPER_POLL_TIMEOUT or no registered source.
+  }
+  std::vector<pollfd> descriptors;
+  descriptors.reserve(registrations.size());
+  for (const auto& registration : registrations) {
+    short events = 0;
+    if ((registration.events & 1) != 0) events |= POLLIN;
+    if ((registration.events & 2) != 0) events |= POLLOUT;
+    descriptors.push_back({registration.fd, events, 0});
+  }
+  const int ready = ::poll(descriptors.data(), descriptors.size(), timeout_ms);
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+      trace && *trace && looper->polls++ < 12) {
+    std::fprintf(stderr,
+                 "nuah looper: poll thread=%ld looper=%p sources=%zu "
+                 "timeout=%d ready=%d\n",
+                 static_cast<long>(::gettid()), static_cast<void*>(looper),
+                 registrations.size(), timeout_ms, ready);
+  }
+  if (ready == 0) return -3;  // ALOOPER_POLL_TIMEOUT
+  if (ready < 0) return -4;   // ALOOPER_POLL_ERROR
+  for (std::size_t index = 0; index < descriptors.size(); ++index) {
+    if (!descriptors[index].revents) continue;
+    int android_events = 0;
+    if ((descriptors[index].revents & POLLIN) != 0) android_events |= 1;
+    if ((descriptors[index].revents & POLLOUT) != 0) android_events |= 2;
+    if ((descriptors[index].revents & POLLERR) != 0) android_events |= 4;
+    if ((descriptors[index].revents & POLLHUP) != 0) android_events |= 8;
+    if ((descriptors[index].revents & POLLNVAL) != 0) android_events |= 16;
+    const auto registration = registrations[index];
+    if (registration.callback) {
+      if (!registration.callback(registration.fd, android_events,
+                                 registration.data)) {
+        (void)ALooper_removeFd(looper, registration.fd);
+      }
+      return -2;  // ALOOPER_POLL_CALLBACK
+    }
+    if (out_fd) *out_fd = registration.fd;
+    if (out_events) *out_events = android_events;
+    if (out_data) *out_data = registration.data;
+    return registration.ident;
+  }
+  return -3;
+}
 
 void ANativeWindow_acquire(void* window) {
   nuah_native_window_acquire(static_cast<NuahNativeWindow*>(window));

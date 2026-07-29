@@ -1,12 +1,16 @@
 #include "nuah/apk_loader.hpp"
+#include "nuah/bootstrap_diagnostics.h"
 
 #include <elf.h>
 #include <dlfcn.h>
+#include <link.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
 
 #include <array>
+#include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -53,7 +57,39 @@ void configure_hybris_environment(const char* library) {
 }
 
 std::vector<void*> host_provider_handles;
+void* bionic_provider_handle = nullptr;
+using HybrisBuiltinHook = void* (*)(const char*, const char*);
+HybrisBuiltinHook hybris_builtin_hook = nullptr;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
+
+long android_sysconf(int name) {
+  // bionic's sysconf names are ABI numbers, not portable source constants.
+  // Forwarding the raw integer to glibc is wrong: for example Android 0x27
+  // means page size while glibc interprets 39 as _SC_PHYS_PAGES.  Roblox's
+  // allocator consumes these values during its ELF constructors.
+  switch (name) {
+    case 0x0006:
+      return ::sysconf(_SC_CLK_TCK);
+    case 0x000b:
+      return ::sysconf(_SC_OPEN_MAX);
+    case 0x0026:
+      return ::sysconf(_SC_IOV_MAX);
+    case 0x0027:
+    case 0x0028:
+      return ::sysconf(_SC_PAGESIZE);
+    case 0x0060:
+      return ::sysconf(_SC_NPROCESSORS_CONF);
+    case 0x0061:
+      return ::sysconf(_SC_NPROCESSORS_ONLN);
+    case 0x0062:
+      return ::sysconf(_SC_PHYS_PAGES);
+    case 0x0063:
+      return ::sysconf(_SC_AVPHYS_PAGES);
+    default:
+      errno = EINVAL;
+      return -1;
+  }
+}
 
 [[noreturn]] void android_fortify_fail(const char* check, std::size_t requested,
                                        std::size_t capacity) {
@@ -148,6 +184,37 @@ char* android_strncat_chk(char* destination, const char* source, std::size_t cou
 
 void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (!symbol) return nullptr;
+  // A small audited set must precede libhybris: these objects have different
+  // API-36 x86-64 layouts (pthread attributes and legacy Bionic FILE), or
+  // carry Nuah's constructor diagnostics. Everything else delegates to
+  // libhybris before the finite provider fallback.
+  const bool requires_bionic_provider =
+      std::strcmp(symbol, "abort") == 0 ||
+      std::strcmp(symbol, "fflush") == 0 ||
+      std::strcmp(symbol, "fread") == 0 ||
+      std::strcmp(symbol, "fwrite") == 0 ||
+      std::strcmp(symbol, "fclose") == 0 ||
+      std::strcmp(symbol, "__sF") == 0 ||
+      std::strcmp(symbol, "stdin") == 0 ||
+      std::strcmp(symbol, "stdout") == 0 ||
+      std::strcmp(symbol, "stderr") == 0 ||
+      std::strcmp(symbol, "pthread_attr_init") == 0 ||
+      std::strcmp(symbol, "pthread_attr_destroy") == 0 ||
+      std::strcmp(symbol, "pthread_attr_getstack") == 0 ||
+      std::strcmp(symbol, "pthread_attr_setdetachstate") == 0 ||
+      std::strcmp(symbol, "pthread_attr_setschedparam") == 0 ||
+      std::strcmp(symbol, "pthread_attr_setstacksize") == 0 ||
+      std::strcmp(symbol, "pthread_create") == 0 ||
+      std::strcmp(symbol, "pthread_getattr_np") == 0;
+  if (bionic_provider_handle && requires_bionic_provider) {
+    if (void* resolved =
+            ::dlvsym(bionic_provider_handle, symbol, "LIBC")) {
+      return resolved;
+    }
+  }
+  if (std::strcmp(symbol, "sysconf") == 0) {
+    return reinterpret_cast<void*>(android_sysconf);
+  }
   if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
   if (std::strcmp(symbol, "__stack_chk_fail") == 0) {
     return ::dlsym(RTLD_DEFAULT, symbol);
@@ -163,8 +230,29 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (std::strcmp(symbol, "__strncpy_chk2") == 0) return reinterpret_cast<void*>(android_strncpy_chk2);
   if (std::strcmp(symbol, "__strcat_chk") == 0) return reinterpret_cast<void*>(android_strcat_chk);
   if (std::strcmp(symbol, "__strncat_chk") == 0) return reinterpret_cast<void*>(android_strncat_chk);
+  const bool requires_hybris_synchronization =
+      std::strncmp(symbol, "pthread_mutex", 13) == 0 ||
+      std::strncmp(symbol, "pthread_cond", 12) == 0 ||
+      std::strncmp(symbol, "pthread_rwlock", 14) == 0 ||
+      std::strcmp(symbol, "pthread_once") == 0;
+  if (requires_hybris_synchronization && hybris_builtin_hook) {
+    return hybris_builtin_hook(symbol, requester);
+  }
   for (auto it = host_provider_handles.rbegin(); it != host_provider_handles.rend(); ++it) {
-    if (void* resolved = ::dlsym(*it, symbol)) return resolved;
+    void* resolved = ::dlsym(*it, symbol);
+    if (!resolved) continue;
+    Dl_info owner{};
+    link_map* provider = nullptr;
+    if (::dladdr(resolved, &owner) != 0 &&
+        ::dlinfo(*it, RTLD_DI_LINKMAP, &provider) == 0 && provider &&
+        owner.dli_fbase == reinterpret_cast<void*>(provider->l_addr)) {
+      return resolved;
+    }
+  }
+  if (hybris_builtin_hook) {
+    if (void* resolved = hybris_builtin_hook(symbol, requester)) {
+      return resolved;
+    }
   }
   // libhybris may still satisfy this through one of its built-in host hooks,
   // so keep this trace opt-in and never treat a callback miss as a loader
@@ -179,6 +267,18 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
 void load_host_provider(const std::filesystem::path& path) {
   void* handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
   if (handle) {
+    if (path.filename() == "libbionic.so") bionic_provider_handle = handle;
+    const auto callbacks = nuah_bootstrap_diagnostics_callbacks();
+    if (auto setter = reinterpret_cast<void (*)(
+            const NuahDiagnosticsCallbacks*)>(
+            ::dlsym(handle, "nuah_bionic_set_diagnostics_callbacks"))) {
+      setter(&callbacks);
+    }
+    if (auto setter = reinterpret_cast<void (*)(
+            const NuahDiagnosticsCallbacks*)>(
+            ::dlsym(handle, "nuah_log_set_diagnostics_callbacks"))) {
+      setter(&callbacks);
+    }
     host_provider_handles.push_back(handle);
     return;
   }
@@ -191,7 +291,7 @@ void configure_host_provider_hooks(void* hybris) {
   static bool configured = false;
   if (configured) return;
   const auto android = runtime_directory() / "android";
-  for (const auto* name : {"libbionic.so", "liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so",
+  for (const auto* name : {"libbionic.so", "libm.so", "liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so",
                            "libOpenSLES.so", "libOpenMAXAL.so"}) {
     load_host_provider(android / name);
   }
@@ -207,6 +307,12 @@ void configure_host_provider_hooks(void* hybris) {
   const auto set_hook_callback = reinterpret_cast<void (*)(void* (*)(const char*, const char*))>(
       ::dlsym(hybris, "hybris_set_hook_callback"));
   if (!set_hook_callback) throw std::runtime_error("libhybris lacks hook callback support");
+  hybris_builtin_hook = reinterpret_cast<HybrisBuiltinHook>(
+      ::dlsym(hybris, "hybris_get_builtin_hook"));
+  if (!hybris_builtin_hook) {
+    throw std::runtime_error(
+        "libhybris bundle lacks the Nuah built-in-first hook API");
+  }
   set_hook_callback(resolve_host_provider_symbol);
   configured = true;
 }
@@ -396,6 +502,91 @@ std::vector<std::string> needed_libraries(const std::vector<std::byte>& data) {
   return result;
 }
 
+std::vector<std::string> undefined_dynamic_symbols(
+    const std::vector<std::byte>& data) {
+  validate_elf(data);
+  Elf64_Ehdr header{};
+  std::memcpy(&header, data.data(), sizeof(header));
+  if (!header.e_shoff || !header.e_shnum ||
+      header.e_shoff > data.size() ||
+      header.e_shnum >
+          (data.size() - header.e_shoff) / sizeof(Elf64_Shdr)) {
+    throw std::runtime_error("ELF section headers are outside the image");
+  }
+
+  std::vector<std::string> result;
+  for (std::uint16_t index = 0; index < header.e_shnum; ++index) {
+    Elf64_Shdr symbols{};
+    std::memcpy(&symbols,
+                data.data() + header.e_shoff +
+                    index * sizeof(Elf64_Shdr),
+                sizeof(symbols));
+    if (symbols.sh_type != SHT_DYNSYM ||
+        symbols.sh_entsize != sizeof(Elf64_Sym) ||
+        symbols.sh_link >= header.e_shnum ||
+        symbols.sh_offset > data.size() ||
+        symbols.sh_size > data.size() - symbols.sh_offset) {
+      continue;
+    }
+    Elf64_Shdr strings{};
+    std::memcpy(&strings,
+                data.data() + header.e_shoff +
+                    symbols.sh_link * sizeof(Elf64_Shdr),
+                sizeof(strings));
+    if (strings.sh_type != SHT_STRTAB ||
+        strings.sh_offset > data.size() ||
+        strings.sh_size > data.size() - strings.sh_offset) {
+      throw std::runtime_error("ELF dynamic string table is outside the image");
+    }
+    const auto count = symbols.sh_size / sizeof(Elf64_Sym);
+    for (std::size_t symbol_index = 0; symbol_index < count;
+         ++symbol_index) {
+      Elf64_Sym symbol{};
+      std::memcpy(&symbol,
+                  data.data() + symbols.sh_offset +
+                      symbol_index * sizeof(Elf64_Sym),
+                  sizeof(symbol));
+      if (symbol.st_shndx != SHN_UNDEF ||
+          ELF64_ST_BIND(symbol.st_info) != STB_GLOBAL ||
+          !symbol.st_name || symbol.st_name >= strings.sh_size) {
+        continue;
+      }
+      const auto* begin = reinterpret_cast<const char*>(
+          data.data() + strings.sh_offset + symbol.st_name);
+      const auto* end = reinterpret_cast<const char*>(
+          data.data() + strings.sh_offset + strings.sh_size);
+      const auto* nul =
+          static_cast<const char*>(std::memchr(begin, '\0', end - begin));
+      if (!nul) {
+        throw std::runtime_error(
+            "unterminated ELF dynamic symbol name");
+      }
+      result.emplace_back(begin, nul);
+    }
+  }
+  std::sort(result.begin(), result.end());
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+void preflight_host_hooks(const std::vector<std::byte>& image,
+                          const char* requester) {
+  std::vector<std::string> missing;
+  for (const auto& symbol : undefined_dynamic_symbols(image)) {
+    if (!resolve_host_provider_symbol(symbol.c_str(), requester)) {
+      missing.push_back(symbol);
+    }
+  }
+  if (missing.empty()) return;
+  std::string message =
+      "libhybris preflight found " + std::to_string(missing.size()) +
+      " unresolved strong symbol";
+  if (missing.size() != 1) message += "s";
+  message += ":";
+  for (const auto& symbol : missing) message += " " + symbol;
+  throw std::runtime_error(message);
+}
+
 }  // namespace
 
 ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::string& member) {
@@ -493,6 +684,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
     }
     configure_host_provider_hooks(loader_library);
+    preflight_host_hooks(image_bytes, path.c_str());
     void* handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
       std::string message = "android_dlopen failed: ";

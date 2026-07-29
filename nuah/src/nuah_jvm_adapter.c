@@ -7,8 +7,18 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <time.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+extern jobject java_lang_Class_getClassLoader(JNIEnv*, jobject);
+jobject (*nuah_java_facade_link_anchor)(JNIEnv*, jobject) =
+    java_lang_Class_getClassLoader;
+extern jobject
+com_roblox_engine_jni_NativeGLJavaInterface_getDeviceStaticParams(
+    JNIEnv*, jclass, va_list);
+jobject (*nuah_roblox_java_facade_link_anchor)(JNIEnv*, jclass, va_list) =
+    com_roblox_engine_jni_NativeGLJavaInterface_getDeviceStaticParams;
 
 #define NUAH_CONTAINER_OF(ptr, type, member) \
   ((type*)((char*)(ptr) - offsetof(type, member)))
@@ -27,6 +37,8 @@ struct nuah_event {
 
 struct NuahJvm {
   struct jvm core;
+  jclass (*base_find_class)(JNIEnv*, const char*);
+  jint (*base_register_natives)(JNIEnv*, jclass, const JNINativeMethod*, jint);
   jobject activity;
   jlong native_handle;
   struct nuah_event key;
@@ -34,6 +46,32 @@ struct NuahJvm {
   jobject surface;
   NuahNativeWindow* surface_window;
 };
+
+static int bootstrap_trace_enabled(void) {
+  const char* value = getenv("NUAH_BOOTSTRAP_TRACE");
+  return value && *value;
+}
+
+static jclass nuah_find_class(JNIEnv* env, const char* name) {
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  jclass result = jvm->base_find_class(env, name);
+  if (bootstrap_trace_enabled()) {
+    fprintf(stderr, "nuah jvm: FindClass %s -> %p\n",
+            name ? name : "(null)", result);
+  }
+  return result;
+}
+
+static jint nuah_register_natives(JNIEnv* env, jclass klass,
+                                  const JNINativeMethod* methods,
+                                  jint count) {
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  if (bootstrap_trace_enabled()) {
+    fprintf(stderr, "nuah jvm: RegisterNatives class=%s count=%d\n",
+            jvm_get_class_name(&jvm->core, klass), count);
+  }
+  return jvm->base_register_natives(env, klass, methods, count);
+}
 
 static struct jvm_object* object_for(struct NuahJvm* jvm, jobject object) {
   const uintptr_t index = (uintptr_t)object;
@@ -140,6 +178,10 @@ NuahJvm* nuah_jvm_create(void) {
   NuahJvm* jvm = calloc(1, sizeof(*jvm));
   if (!jvm) return NULL;
   jvm_init(&jvm->core);
+  jvm->base_find_class = jvm->core.native.FindClass;
+  jvm->base_register_natives = jvm->core.native.RegisterNatives;
+  jvm->core.native.FindClass = nuah_find_class;
+  jvm->core.native.RegisterNatives = nuah_register_natives;
   jvm->core.native.GetVersion = nuah_get_version;
   jvm->core.native.CallIntMethod = nuah_call_int;
   jvm->core.native.CallIntMethodV = nuah_call_int_v;
@@ -194,6 +236,18 @@ void* nuah_jvm_find_registered_native(NuahJvm* jvm, const char* class_name,
     }
   }
   return NULL;
+}
+
+int nuah_jvm_bind_native(NuahJvm* jvm, const char* class_name,
+                         const char* method_name, const char* signature,
+                         void* function) {
+  if (!jvm || !class_name || !method_name || !signature || !function) return 0;
+  jclass klass = jvm->core.native.FindClass(&jvm->core.env, class_name);
+  if (!klass) return 0;
+  const JNINativeMethod method = {
+      .name = method_name, .signature = signature, .fnPtr = function};
+  return jvm->core.native.RegisterNatives(&jvm->core.env, klass, &method, 1) ==
+         JNI_OK;
 }
 
 void* nuah_jvm_game_activity(NuahJvm* jvm) { return jvm ? jvm->activity : NULL; }
@@ -252,10 +306,16 @@ long long nuah_jvm_initialize_game(NuahJvm* jvm, const char* package_name,
       jvm, "com/google/androidgamesdk/GameActivity", "initializeNativeCode", signature);
   if (!callback) return 0;
   JNIEnv* env = &jvm->core.env;
+  jobject assets = make_object(jvm, "android/content/res/AssetManager");
+  jobject configuration = make_object(jvm, "android/content/res/Configuration");
+  jbyteArray saved_state = jvm->core.native.NewByteArray(env, 0);
+  const char* path = data_path ? data_path : "";
+  (void)package_name;
   jvm->native_handle = callback(env, jvm->activity,
-                  jvm->core.native.NewStringUTF(env, package_name ? package_name : "com.roblox.client"),
-                  jvm->core.native.NewStringUTF(env, data_path ? data_path : ""),
-                  jvm->core.native.NewStringUTF(env, "x86_64"), NULL, NULL, NULL);
+                  jvm->core.native.NewStringUTF(env, path),
+                  jvm->core.native.NewStringUTF(env, path),
+                  jvm->core.native.NewStringUTF(env, path), assets,
+                  saved_state, configuration);
   return jvm->native_handle;
 }
 
@@ -291,12 +351,12 @@ int nuah_jvm_dispatch_surface_changed(NuahJvm* jvm, void* surface, int format,
 }
 
 int nuah_jvm_dispatch_surface_destroyed(NuahJvm* jvm, void* surface) {
-  typedef void (*callback_t)(JNIEnv*, jobject, jlong, jobject);
+  typedef void (*callback_t)(JNIEnv*, jobject, jlong);
   callback_t callback = (callback_t)nuah_jvm_find_registered_native(
       jvm, "com/google/androidgamesdk/GameActivity", "onSurfaceDestroyedNative",
-      "(JLandroid/view/Surface;)V");
+      "(J)V");
   if (!callback || !surface) return 0;
-  callback(&jvm->core.env, jvm->activity, jvm->native_handle, surface);
+  callback(&jvm->core.env, jvm->activity, jvm->native_handle);
   return 1;
 }
 

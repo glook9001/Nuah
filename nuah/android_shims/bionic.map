@@ -15,6 +15,9 @@ LIBC {
     mktime; strftime;
     getegid; geteuid; getgid; getpagesize; getpid; getppid; getpriority;
     getuid; setpriority; sysconf; waitpid;
+    setjmp; _setjmp; longjmp; _longjmp; sigsetjmp; siglongjmp;
+    getentropy; signal; sigaltstack; sigaction; sigaddset; sigemptyset;
+    sigfillset;
     accept; accept4; bind; connect; freeaddrinfo; gai_strerror; getaddrinfo;
     gethostname; getnameinfo; getpeername; getsockname; getsockopt;
     if_indextoname; if_nametoindex; inet_ntop; inet_pton; listen; recvfrom;
@@ -26,10 +29,11 @@ LIBC {
     sched_get_priority_max; sched_get_priority_min; sched_getparam;
     sched_getscheduler; sched_setscheduler; sched_yield; syscall; sysinfo;
     timerfd_create; timerfd_settime; uname; utime; utimes;
-    atof; atoi; atol; atoll; bsearch; mbtowc; memrchr; qsort; rand; random;
+    atof; atoi; atol; atoll; bsearch; mbtowc; mbrlen; mbrtowc; mbsnrtowcs;
+    mbsrtowcs; memrchr; qsort; rand; random;
     snprintf; srand; sscanf; strcspn; strpbrk; strspn; strtod; strtof;
     strtol; strtoll; strtoul; strtoull; vasprintf; vsnprintf; vsscanf;
-    wcslen; wmemchr; wmemcmp;
+    wcslen; wmemchr; wmemcmp; wcrtomb; wcsnrtombs;
     clearerr; closedir; closelog; fclose; fdopen; feof; ferror; fflush;
     fgets; fileno; fopen; fprintf; fputc; fputs; fputwc; fread; fscanf;
     fseek; fseeko; ftell; ftello; fwrite; getc; getwc; openlog; opendir;
@@ -49,6 +53,7 @@ LIBC {
     __gnu_strerror_r; __strchr_chk; __strlen_chk; __strncpy_chk2;
     __system_property_get; __fwrite_chk; __write_chk; __sendto_chk;
     android_set_abort_message; pthread_mutex_init; pthread_mutex_destroy;
+    nuah_bionic_set_diagnostics_callbacks;
     pthread_mutex_lock; pthread_mutex_trylock; pthread_mutex_unlock;
     pthread_mutexattr_init; pthread_mutexattr_destroy;
     pthread_mutexattr_settype; pthread_cond_init; pthread_cond_destroy;

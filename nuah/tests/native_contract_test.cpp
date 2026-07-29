@@ -35,8 +35,8 @@ void surface_changed_callback(JNIEnv*, jobject, jlong handle, jobject surface,
     ++surface_callback_count;
   }
 }
-void surface_destroyed_callback(JNIEnv*, jobject, jlong handle, jobject surface) {
-  if (handle == 42 && surface) ++surface_callback_count;
+void surface_destroyed_callback(JNIEnv*, jobject, jlong handle) {
+  if (handle == 42) ++surface_callback_count;
 }
 
 int main() {
@@ -83,7 +83,7 @@ int main() {
        const_cast<char*>("(JLandroid/view/Surface;III)V"),
        reinterpret_cast<void*>(surface_changed_callback)},
       {const_cast<char*>("onSurfaceDestroyedNative"),
-       const_cast<char*>("(JLandroid/view/Surface;)V"),
+       const_cast<char*>("(J)V"),
        reinterpret_cast<void*>(surface_destroyed_callback)},
   };
   if (!activity || env->RegisterNatives(activity, methods, 6) != JNI_OK ||

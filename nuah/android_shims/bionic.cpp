@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <atomic>
+#include <csetjmp>
 #include <cstdarg>
 #include <fcntl.h>
 #include <getopt.h>
@@ -12,17 +13,22 @@
 #include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include "nuah/bootstrap_diagnostics.h"
+
 #define NUAH_STRINGIFY_INNER(value) #value
 #define NUAH_STRINGIFY(value) NUAH_STRINGIFY_INNER(value)
 
 extern "C" {
-std::FILE __sF[3]{};
+// Legacy Android objects still reference Bionic's pre-API-23 __sF array.
+// Bionic's LP64 FILE ABI is an opaque 152-byte object; it is not glibc FILE.
+alignas(void*) unsigned char __sF[3][152]{};
 uintptr_t __stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 std::FILE* nuah_stdin __asm__("stdin") = nullptr;
 std::FILE* nuah_stdout __asm__("stdout") = nullptr;
@@ -42,6 +48,8 @@ asm(".symver nuah_in6addr_loopback_n,in6addr_loopback@LIBC_N");
 }
 
 namespace {
+NuahDiagnosticsCallbacks diagnostics_callbacks{};
+
 struct MutexEntry { void* android = nullptr; pthread_mutex_t native{}; };
 struct CondEntry { void* android = nullptr; pthread_cond_t native{}; };
 struct OnceEntry { void* android = nullptr; pthread_once_t native = PTHREAD_ONCE_INIT; };
@@ -55,9 +63,71 @@ OnceEntry onces[1024];
 AttrEntry attributes[256];
 RwlockEntry rwlocks[1024];
 SemEntry semaphores[512];
+
+// Android 16 x86-64 exposes an 88-byte jmp_buf; glibc uses a 200-byte buffer.
+// Key stable host buffers by the opaque Android address instead of writing a
+// host object past the caller's allocation. setjmp itself is an assembly
+// tail-call (bionic_setjmp.S), so the saved stack belongs to Roblox's caller.
+struct JumpEntry {
+  std::atomic<void*> android{nullptr};
+  std::jmp_buf native{};
+};
+JumpEntry jump_buffers[4096];
+constexpr std::size_t kJumpBufferCount =
+    sizeof(jump_buffers) / sizeof(jump_buffers[0]);
+
+using AndroidSignalHandler = void (*)(int);
+using AndroidSignalAction = void (*)(int, siginfo_t*, void*);
+struct AndroidSigaction {
+  int flags;
+  union {
+    AndroidSignalHandler handler;
+    AndroidSignalAction action;
+  };
+  unsigned long mask;
+  void (*restorer)(void);
+};
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
+std::FILE* host_stream(std::FILE* stream) {
+  const auto address = reinterpret_cast<uintptr_t>(stream);
+  const auto base = reinterpret_cast<uintptr_t>(__sF);
+  if (address == base) return nuah_stdin;
+  if (address == base + sizeof(__sF[0])) return nuah_stdout;
+  if (address == base + 2 * sizeof(__sF[0])) return nuah_stderr;
+  return stream;
+}
+
+extern "C" void* nuah_host_jmpbuf(void* android_buffer) {
+  if (!android_buffer) std::abort();
+  const auto key = reinterpret_cast<uintptr_t>(android_buffer);
+  const std::size_t start = (key >> 3U) % kJumpBufferCount;
+  for (std::size_t offset = 0; offset < kJumpBufferCount; ++offset) {
+    auto& entry = jump_buffers[(start + offset) % kJumpBufferCount];
+    void* existing = entry.android.load(std::memory_order_acquire);
+    if (existing == android_buffer) return static_cast<void*>(entry.native);
+    if (!existing) {
+      void* expected = nullptr;
+      if (entry.android.compare_exchange_strong(
+              expected, android_buffer, std::memory_order_acq_rel)) {
+        return static_cast<void*>(entry.native);
+      }
+      if (expected == android_buffer) return static_cast<void*>(entry.native);
+    }
+  }
+  std::fprintf(stderr,
+               "nuah bootstrap: exhausted translated Android jmp_buf table\n");
+  std::abort();
+}
+
+int host_signal_number(int signal_number) {
+  // Android reserves 33 for its thread/backtrace signal. glibc reserves its
+  // own internal pair below SIGRTMIN, so route that Android-visible slot to
+  // the first host real-time signal as the established compatibility layers
+  // in this tree do.
+  return signal_number == 33 ? SIGRTMIN : signal_number;
+}
 MutexEntry* mutex_for(void* object) {
   lock_table();
   for (auto& entry : mutexes) if (entry.android == object) { unlock_table(); return &entry; }
@@ -137,6 +207,27 @@ SemEntry* sem_for(void* object) {
 }
 }
 
+extern "C" [[noreturn]] void abort() {
+  if (diagnostics_callbacks.record_abort) {
+    diagnostics_callbacks.record_abort(__builtin_return_address(0));
+  }
+  const auto host_abort = reinterpret_cast<void (*)()>(
+      ::dlvsym(RTLD_DEFAULT, "abort", "GLIBC_2.2.5"));
+  if (host_abort && reinterpret_cast<void*>(host_abort) !=
+                        reinterpret_cast<void*>(abort)) {
+    host_abort();
+  }
+  ::raise(SIGABRT);
+  ::_exit(128 + SIGABRT);
+}
+
+extern "C" void nuah_bionic_set_diagnostics_callbacks(
+    const NuahDiagnosticsCallbacks* callbacks) {
+  diagnostics_callbacks =
+      callbacks && callbacks->version == 1 ? *callbacks
+                                           : NuahDiagnosticsCallbacks{};
+}
+
 void synchronize_timezone_data() {
   if (auto* value = host<int*>("daylight")) nuah_daylight = *value;
   if (auto* value = host<long*>("timezone")) nuah_timezone = *value;
@@ -144,6 +235,111 @@ void synchronize_timezone_data() {
     nuah_tzname[0] = value[0];
     nuah_tzname[1] = value[1];
   }
+}
+
+extern "C" {
+int nuah_sigemptyset(unsigned long* set) __asm__("sigemptyset");
+int nuah_sigemptyset(unsigned long* set) {
+  if (!set) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set = 0;
+  return 0;
+}
+
+int nuah_sigfillset(unsigned long* set) __asm__("sigfillset");
+int nuah_sigfillset(unsigned long* set) {
+  if (!set) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set = ~0UL;
+  return 0;
+}
+
+int nuah_sigaddset(unsigned long* set, int signal_number)
+    __asm__("sigaddset");
+int nuah_sigaddset(unsigned long* set, int signal_number) {
+  if (!set || signal_number < 1 || signal_number > 64) {
+    errno = EINVAL;
+    return -1;
+  }
+  *set |= 1UL << (signal_number - 1);
+  return 0;
+}
+
+int nuah_sigaction(int signal_number, const AndroidSigaction* action,
+                   AndroidSigaction* old_action) __asm__("sigaction");
+int nuah_sigaction(int signal_number, const AndroidSigaction* action,
+                   AndroidSigaction* old_action) {
+  struct ::sigaction native_action {};
+  struct ::sigaction native_old_action {};
+  if (action) {
+    native_action.sa_flags = action->flags;
+    native_action.sa_restorer = action->restorer;
+    if ((action->flags & SA_SIGINFO) != 0) {
+      native_action.sa_sigaction = action->action;
+    } else {
+      native_action.sa_handler = action->handler;
+    }
+    host<int (*)(sigset_t*)>("sigemptyset")(&native_action.sa_mask);
+    for (int candidate = 1; candidate <= 64; ++candidate) {
+      if ((action->mask & (1UL << (candidate - 1))) != 0) {
+        (void)host<int (*)(sigset_t*, int)>("sigaddset")(
+            &native_action.sa_mask, host_signal_number(candidate));
+      }
+    }
+  }
+  const int result =
+      host<int (*)(int, const struct ::sigaction*, struct ::sigaction*)>(
+          "sigaction")(host_signal_number(signal_number),
+                       action ? &native_action : nullptr,
+                       old_action ? &native_old_action : nullptr);
+  if (result != 0 || !old_action) return result;
+
+  std::memset(old_action, 0, sizeof(*old_action));
+  old_action->flags = native_old_action.sa_flags;
+  old_action->restorer = native_old_action.sa_restorer;
+  if ((native_old_action.sa_flags & SA_SIGINFO) != 0) {
+    old_action->action = native_old_action.sa_sigaction;
+  } else {
+    old_action->handler = native_old_action.sa_handler;
+  }
+  for (int candidate = 1; candidate <= 64; ++candidate) {
+    if (host<int (*)(const sigset_t*, int)>("sigismember")(
+            &native_old_action.sa_mask,
+            host_signal_number(candidate)) == 1) {
+      old_action->mask |= 1UL << (candidate - 1);
+    }
+  }
+  return result;
+}
+
+int fflush(std::FILE* stream) {
+  return host<int (*)(std::FILE*)>("fflush")(
+      stream ? host_stream(stream) : nullptr);
+}
+size_t fread(void* destination, size_t size, size_t count,
+             std::FILE* stream) {
+  return host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread")(
+      destination, size, count, host_stream(stream));
+}
+size_t fwrite(const void* data, size_t size, size_t count,
+              std::FILE* stream) {
+  return host<size_t (*)(const void*, size_t, size_t, std::FILE*)>("fwrite")(
+      data, size, count, host_stream(stream));
+}
+int fclose(std::FILE* stream) {
+  // Standard streams are process-owned and must not be closed by a legacy
+  // Android FILE façade.
+  std::FILE* translated = host_stream(stream);
+  if (translated == nuah_stdin || translated == nuah_stdout ||
+      translated == nuah_stderr) {
+    return 0;
+  }
+  return host<int (*)(std::FILE*)>("fclose")(translated);
+}
 }
 
 __attribute__((constructor)) static void initialize_standard_streams() {
@@ -514,6 +710,9 @@ int __system_property_get(const char* key, char* value) {
   else if (key && std::strcmp(key, "ro.build.version.release") == 0)
     result = "16";
   if (value) std::strcpy(value, result);
+  if (diagnostics_callbacks.record_property) {
+    diagnostics_callbacks.record_property(key, result);
+  }
   return static_cast<int>(std::strlen(result));
 }
 void android_set_abort_message(const char* message) {
@@ -525,6 +724,9 @@ void android_set_abort_message(const char* message) {
                static_cast<int>(length), message ? message : "(null)",
                length == kMaximumMessage ? "…" : "");
   std::fflush(stderr);
+  if (diagnostics_callbacks.record_abort_message) {
+    diagnostics_callbacks.record_abort_message(message);
+  }
 }
 size_t __fwrite_chk(const void* data, size_t size, size_t count, std::FILE* stream, size_t) { return std::fwrite(data, size, count, stream); }
 ssize_t __write_chk(int fd, const void* data, size_t count, size_t) { return ::write(fd, data, count); }
@@ -608,13 +810,35 @@ int pthread_attr_setschedparam(pthread_attr_t* object,
 }
 int pthread_attr_setstacksize(pthread_attr_t* object, size_t size) {
   auto* entry = attr_for(object);
-  return entry ? host<int (*)(pthread_attr_t*, size_t)>(
-                     "pthread_attr_setstacksize")(&entry->native, size)
-               : EINVAL;
+  const int result =
+      entry ? host<int (*)(pthread_attr_t*, size_t)>(
+                  "pthread_attr_setstacksize")(&entry->native, size)
+            : EINVAL;
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+      trace && *trace) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_attr_setstacksize android=%p "
+                 "size=%zu result=%d\n",
+                 static_cast<void*>(object), size, result);
+  }
+  return result;
 }
 int pthread_create(pthread_t* thread, const pthread_attr_t* object,
                    void* (*start)(void*), void* argument) {
   auto* entry = object ? attr_for(const_cast<pthread_attr_t*>(object)) : nullptr;
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+      trace && *trace) {
+    size_t stack_size = 0;
+    if (entry) {
+      (void)host<int (*)(const pthread_attr_t*, size_t*)>(
+          "pthread_attr_getstacksize")(&entry->native, &stack_size);
+    }
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_create android_attr=%p "
+                 "host_stack_size=%zu start=%p\n",
+                 static_cast<const void*>(object), stack_size,
+                 reinterpret_cast<void*>(start));
+  }
   return host<int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*),
                       void*)>("pthread_create")(
       thread, entry ? &entry->native : nullptr, start, argument);

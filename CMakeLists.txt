@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(nuah VERSION 0.1.0 LANGUAGES C CXX)
+project(nuah VERSION 0.1.0 LANGUAGES C CXX ASM)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(NUAH_UI REQUIRED IMPORTED_TARGET gtk4 libadwaita-1 webkitgtk-6.0)
 pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
 pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
+pkg_check_modules(NUAH_ARCHIVE REQUIRED IMPORTED_TARGET libarchive)
 
 option(NUAH_BUILD_ATL "Build the legacy ATL fork during this configure" OFF)
 set(NUAH_SDL3_ROOT "" CACHE PATH
@@ -74,6 +75,12 @@ add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
 target_include_directories(nuah_host_bridge PUBLIC nuah/include)
 target_compile_options(nuah_host_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 
+add_library(nuah_bootstrap_diagnostics STATIC
+  nuah/src/bootstrap_diagnostics.cpp)
+target_include_directories(nuah_bootstrap_diagnostics PUBLIC nuah/include)
+target_compile_options(nuah_bootstrap_diagnostics PRIVATE
+  -Wall -Wextra -Wpedantic -Werror)
+
 # Android's official JNI 1.6 headers.  libnativehelper's actual invocation
 # library delegates to ART, which Nuah intentionally does not bundle.
 add_library(nuah_libnativehelper_jni INTERFACE)
@@ -91,7 +98,10 @@ set_target_properties(nuah_android_registry PROPERTIES BUILD_RPATH "$ORIGIN")
 
 # Host-side Bionic compatibility symbols consumed by libhybris hooks.  This is
 # intentionally a provider named libbionic.so, never a replacement host libc.
-add_library(nuah_android_bionic SHARED nuah/android_shims/bionic.cpp)
+add_library(nuah_android_bionic SHARED
+  nuah/android_shims/bionic.cpp
+  nuah/android_shims/bionic_forward.S
+  nuah/android_shims/bionic_setjmp.S)
 set_target_properties(nuah_android_bionic PROPERTIES
   OUTPUT_NAME bionic
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
@@ -100,6 +110,7 @@ target_compile_definitions(nuah_android_bionic PRIVATE
   NUAH_ANDROID_API_LEVEL=${NUAH_ANDROID_API_LEVEL})
 target_compile_options(nuah_android_bionic PRIVATE
   -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_include_directories(nuah_android_bionic PRIVATE nuah/include)
 target_link_options(nuah_android_bionic PRIVATE
   "-Wl,--version-script=${CMAKE_SOURCE_DIR}/nuah/android_shims/bionic.map")
 
@@ -113,7 +124,9 @@ set_target_properties(
 # core.  Its old linker/platform layers are deliberately not compiled.
 add_library(nuah_jvm_core STATIC
   third_party/android2gnulinux/src/jvm/jvm.c
+  third_party/android2gnulinux/src/libjvm-java.c
   third_party/android2gnulinux/src/wrapper/wrapper.c
+  nuah/src/roblox_java_facade.c
   nuah/src/nuah_jvm_adapter.c)
 target_include_directories(nuah_jvm_core PRIVATE
   nuah/include
@@ -145,20 +158,39 @@ if(NUAH_SDL3_ROOT)
     "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
 endif()
 target_link_libraries(
-  nuah_core PUBLIC nuah_host_bridge nuah_libnativehelper_jni nuah_jvm_core dl ZLIB::ZLIB PkgConfig::NUAH_GIO
+  nuah_core PUBLIC nuah_host_bridge nuah_bootstrap_diagnostics nuah_libnativehelper_jni nuah_jvm_core dl ZLIB::ZLIB PkgConfig::NUAH_GIO
   PkgConfig::NUAH_PLATFORM)
 add_dependencies(nuah_core nuah_atl_overlay)
 add_dependencies(nuah_core nuah_android_bionic)
+add_dependencies(nuah_core nuah_android_math)
 
 add_library(nuah_android_log SHARED nuah/android_shims/log.cpp)
 set_target_properties(nuah_android_log PROPERTIES OUTPUT_NAME log LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
 target_compile_options(nuah_android_log PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_include_directories(nuah_android_log PRIVATE nuah/include)
 
-add_library(nuah_android_platform SHARED nuah/android_shims/platform.cpp)
+add_library(nuah_android_math SHARED nuah/android_shims/math.cpp)
+set_target_properties(nuah_android_math PROPERTIES
+  OUTPUT_NAME m
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+  BUILD_RPATH "$ORIGIN")
+target_include_directories(nuah_android_math PRIVATE nuah/include)
+target_compile_options(nuah_android_math PRIVATE
+  -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_link_options(nuah_android_math PRIVATE
+  "-Wl,--version-script=${CMAKE_SOURCE_DIR}/nuah/android_shims/math.map")
+target_link_libraries(nuah_android_math PRIVATE
+  m nuah_android_registry)
+
+add_library(nuah_android_platform SHARED
+  nuah/android_shims/asset_manager.cpp
+  nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_platform PROPERTIES OUTPUT_NAME android LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
 target_compile_options(nuah_android_platform PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_compile_definitions(nuah_android_platform PRIVATE _LARGEFILE64_SOURCE)
 target_include_directories(nuah_android_platform PRIVATE nuah/include)
-target_link_libraries(nuah_android_platform PRIVATE nuah_host_bridge nuah_android_registry)
+target_link_libraries(nuah_android_platform PRIVATE
+  nuah_host_bridge nuah_android_registry PkgConfig::NUAH_ARCHIVE)
 set_target_properties(nuah_android_platform PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 
 add_library(nuah_android_vulkan SHARED nuah/android_shims/vulkan.cpp)
@@ -234,9 +266,22 @@ target_link_libraries(nuah_jvm_registration_test PRIVATE nuah_jvm_core nuah_host
 set_target_properties(nuah_jvm_registration_test PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME nuah-jvm-registration COMMAND nuah_jvm_registration_test)
 
+add_executable(nuah_bootstrap_diagnostics_test
+  nuah/tests/bootstrap_diagnostics_test.cpp)
+target_include_directories(nuah_bootstrap_diagnostics_test PRIVATE nuah/include)
+target_compile_options(nuah_bootstrap_diagnostics_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(nuah_bootstrap_diagnostics_test PRIVATE
+  NUAH_TEST_BIONIC_PATH="$<TARGET_FILE:nuah_android_bionic>")
+target_link_libraries(nuah_bootstrap_diagnostics_test PRIVATE
+  nuah_bootstrap_diagnostics dl)
+add_dependencies(nuah_bootstrap_diagnostics_test nuah_android_bionic)
+add_test(NAME nuah-bootstrap-diagnostics
+  COMMAND nuah_bootstrap_diagnostics_test)
+
 add_executable(nuah nuah/src/main.cpp)
 target_link_libraries(nuah PRIVATE nuah_core)
-set_target_properties(nuah PROPERTIES BUILD_RPATH "$ORIGIN")
+set_target_properties(nuah PROPERTIES BUILD_RPATH "$ORIGIN" ENABLE_EXPORTS ON)
 add_dependencies(nuah nuah_atl_runtime)
 add_dependencies(nuah nuah_atl_api_jar)
 add_dependencies(nuah nuah_android_abi_registry_test)
