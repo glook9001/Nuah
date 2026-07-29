@@ -156,7 +156,7 @@ void configure_host_provider_hooks(void* hybris) {
   static bool configured = false;
   if (configured) return;
   const auto android = runtime_directory() / "android";
-  for (const auto* name : {"liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so",
+  for (const auto* name : {"libbionic.so", "liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so",
                            "libOpenSLES.so", "libOpenMAXAL.so"}) {
     load_host_provider(android / name);
   }

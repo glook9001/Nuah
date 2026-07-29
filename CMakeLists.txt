@@ -89,6 +89,18 @@ target_include_directories(nuah_android_registry PUBLIC nuah/include)
 target_compile_options(nuah_android_registry PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 set_target_properties(nuah_android_registry PROPERTIES BUILD_RPATH "$ORIGIN")
 
+# Host-side Bionic compatibility symbols consumed by libhybris hooks.  This is
+# intentionally a provider named libbionic.so, never a replacement host libc.
+add_library(nuah_android_bionic SHARED nuah/android_shims/bionic.cpp)
+set_target_properties(nuah_android_bionic PROPERTIES
+  OUTPUT_NAME bionic
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+  BUILD_RPATH "$ORIGIN")
+target_compile_definitions(nuah_android_bionic PRIVATE
+  NUAH_ANDROID_API_LEVEL=${NUAH_ANDROID_API_LEVEL})
+target_compile_options(nuah_android_bionic PRIVATE
+  -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+
 add_library(nuah_atl_overlay SHARED nuah/atl_overlay/compat.cpp)
 target_compile_options(nuah_atl_overlay PRIVATE -Wall -Wextra -Wpedantic -Werror)
 set_target_properties(
@@ -121,6 +133,7 @@ target_link_libraries(
   nuah_core PUBLIC nuah_host_bridge nuah_libnativehelper_jni dl ZLIB::ZLIB PkgConfig::NUAH_GIO
   PkgConfig::NUAH_PLATFORM)
 add_dependencies(nuah_core nuah_atl_overlay)
+add_dependencies(nuah_core nuah_android_bionic)
 
 add_library(nuah_android_log SHARED nuah/android_shims/log.cpp)
 set_target_properties(nuah_android_log PROPERTIES OUTPUT_NAME log LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
