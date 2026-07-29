@@ -168,6 +168,13 @@ jobs:
             -std=c17 -O2 -Wall -Wextra -Werror \
             nuah/helper/bionic_loader_main.c -ldl \
             -o build-ci/bionic/nuah-bionic-loader
+          android_clang="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android35-clang"
+          "$android_clang" -std=c17 -O2 -Wall -Wextra -Werror -shared -fPIC \
+            -DNUAH_EGL_PROXY -Wl,-soname,libEGL.so \
+            nuah/helper/graphics_proxy.c -o build-ci/bionic/lib64/libEGL.so
+          "$android_clang" -std=c17 -O2 -Wall -Wextra -Werror -shared -fPIC \
+            -DNUAH_GLES_PROXY -Wl,-soname,libGLESv2.so \
+            nuah/helper/graphics_proxy.c -o build-ci/bionic/lib64/libGLESv2.so
           readelf --program-headers build-ci/bionic/nuah-bionic-loader | \
             grep -F '/system/bin/linker64'
 
