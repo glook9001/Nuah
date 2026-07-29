@@ -6,68 +6,114 @@
 
 typedef jint (*JniOnLoad)(JavaVM*, void*);
 
-static struct JNINativeInterface_ env_table;
+static struct JNINativeInterface env_table;
 static JNIEnv env = &env_table;
-static struct JNIInvokeInterface_ vm_table;
+static struct JNIInvokeInterface vm_table;
 static JavaVM vm = &vm_table;
 static int registered_native_count;
 static char class_token;
 static char method_token;
 
-static jint JNICALL facade_get_version(JNIEnv*) { return JNI_VERSION_1_6; }
-static jclass JNICALL facade_find_class(JNIEnv*, const char*) {
+static jint JNICALL facade_get_version(JNIEnv* ignored_env) {
+  (void)ignored_env;
+  return JNI_VERSION_1_6;
+}
+static jclass JNICALL facade_find_class(JNIEnv* ignored_env, const char* ignored_name) {
+  (void)ignored_env;
+  (void)ignored_name;
   return (jclass)&class_token;
 }
-static jclass JNICALL facade_get_object_class(JNIEnv*, jobject) {
+static jclass JNICALL facade_get_object_class(JNIEnv* ignored_env, jobject ignored_object) {
+  (void)ignored_env;
+  (void)ignored_object;
   return (jclass)&class_token;
 }
-static jmethodID JNICALL facade_get_method_id(JNIEnv*, jclass, const char*,
-                                               const char*) {
+static jmethodID JNICALL facade_get_method_id(JNIEnv* ignored_env, jclass ignored_class,
+                                               const char* ignored_name,
+                                               const char* ignored_signature) {
+  (void)ignored_env;
+  (void)ignored_class;
+  (void)ignored_name;
+  (void)ignored_signature;
   return (jmethodID)&method_token;
 }
-static jmethodID JNICALL facade_get_static_method_id(JNIEnv*, jclass,
-                                                      const char*, const char*) {
+static jmethodID JNICALL facade_get_static_method_id(JNIEnv* ignored_env,
+                                                      jclass ignored_class,
+                                                      const char* ignored_name,
+                                                      const char* ignored_signature) {
+  (void)ignored_env;
+  (void)ignored_class;
+  (void)ignored_name;
+  (void)ignored_signature;
   return (jmethodID)&method_token;
 }
-static jint JNICALL facade_register_natives(JNIEnv*, jclass,
+static jint JNICALL facade_register_natives(JNIEnv* ignored_env, jclass ignored_class,
                                              const JNINativeMethod* methods,
                                              jint count) {
+  (void)ignored_env;
+  (void)ignored_class;
   if (!methods || count < 0) return JNI_ERR;
   registered_native_count += count;
   return JNI_OK;
 }
-static jint JNICALL facade_get_java_vm(JNIEnv*, JavaVM** output) {
+static jint JNICALL facade_get_java_vm(JNIEnv* ignored_env, JavaVM** output) {
+  (void)ignored_env;
   if (!output) return JNI_ERR;
   *output = &vm;
   return JNI_OK;
 }
-static jboolean JNICALL facade_exception_check(JNIEnv*) { return JNI_FALSE; }
-static void JNICALL facade_exception_clear(JNIEnv*) {}
-static void JNICALL facade_delete_local_ref(JNIEnv*, jobject) {}
-static jstring JNICALL facade_new_string_utf(JNIEnv*, const char* value) {
+static jboolean JNICALL facade_exception_check(JNIEnv* ignored_env) {
+  (void)ignored_env;
+  return JNI_FALSE;
+}
+static void JNICALL facade_exception_clear(JNIEnv* ignored_env) { (void)ignored_env; }
+static void JNICALL facade_delete_local_ref(JNIEnv* ignored_env, jobject ignored_object) {
+  (void)ignored_env;
+  (void)ignored_object;
+}
+static jstring JNICALL facade_new_string_utf(JNIEnv* ignored_env, const char* value) {
+  (void)ignored_env;
   return (jstring)(value ? value : "");
 }
-static const char* JNICALL facade_get_string_utf_chars(JNIEnv*, jstring value,
-                                                        jboolean*) {
+static const char* JNICALL facade_get_string_utf_chars(JNIEnv* ignored_env, jstring value,
+                                                        jboolean* ignored_copy) {
+  (void)ignored_env;
+  (void)ignored_copy;
   return value ? (const char*)value : "";
 }
-static void JNICALL facade_release_string_utf_chars(JNIEnv*, jstring,
-                                                    const char*) {}
-static jsize JNICALL facade_get_string_utf_length(JNIEnv*, jstring value) {
+static void JNICALL facade_release_string_utf_chars(JNIEnv* ignored_env,
+                                                    jstring ignored_value,
+                                                    const char* ignored_chars) {
+  (void)ignored_env;
+  (void)ignored_value;
+  (void)ignored_chars;
+}
+static jsize JNICALL facade_get_string_utf_length(JNIEnv* ignored_env, jstring value) {
+  (void)ignored_env;
   return value ? (jsize)strlen((const char*)value) : 0;
 }
-static jint JNICALL facade_vm_get_env(JavaVM*, void** output, jint version) {
+static jint JNICALL facade_vm_get_env(JavaVM* ignored_vm, void** output, jint version) {
+  (void)ignored_vm;
   if (!output || version != JNI_VERSION_1_6) return JNI_EVERSION;
   *output = &env;
   return JNI_OK;
 }
-static jint JNICALL facade_vm_attach(JavaVM*, void** output, void*) {
+static jint JNICALL facade_vm_attach(JavaVM* ignored_vm, void** output,
+                                     void* ignored_args) {
+  (void)ignored_vm;
+  (void)ignored_args;
   if (!output) return JNI_ERR;
   *output = &env;
   return JNI_OK;
 }
-static jint JNICALL facade_vm_detach(JavaVM*) { return JNI_OK; }
-static jint JNICALL facade_vm_destroy(JavaVM*) { return JNI_ERR; }
+static jint JNICALL facade_vm_detach(JavaVM* ignored_vm) {
+  (void)ignored_vm;
+  return JNI_OK;
+}
+static jint JNICALL facade_vm_destroy(JavaVM* ignored_vm) {
+  (void)ignored_vm;
+  return JNI_ERR;
+}
 
 static void configure_facade(void) {
   memset(&env_table, 0, sizeof(env_table));
