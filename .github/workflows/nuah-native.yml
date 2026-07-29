@@ -114,6 +114,11 @@ jobs:
           name: nuah-libhybris-x86_64
           path: hybris-prefix
 
+      - name: Install loader crash diagnostics
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdb
+
       - name: Build Android-loader probes
         run: |
           set -euo pipefail
