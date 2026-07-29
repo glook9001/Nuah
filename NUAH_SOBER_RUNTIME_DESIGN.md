@@ -190,9 +190,34 @@ must not silently return fake success values.
 
 ## JNI and Java surface
 
-The runtime supplies a real JNI 1.6 table and a small object/class model for
-the classes observed through `JNI_OnLoad` and `RegisterNatives`. The first
-contract includes:
+NuahJVM is one native, contract-driven runtime. It is not ART, OpenJDK, a DEX
+interpreter, or a second process. It reuses the imported android2gnulinux JNI
+core for JNI 1.6 table mechanics, references, strings, arrays, method IDs, and
+`RegisterNatives`; Nuah supplies the small Android-facing object façade and
+host bindings around it.
+
+```text
+libroblox.so
+       │ JNI 1.6 / JavaVM
+       ▼
+NuahJVM
+  ├─ imported generic JNI ABI core
+  ├─ contract registry: class + member + signature
+  ├─ object arena: GameActivity, KeyEvent, MotionEvent, Surface, ...
+  ├─ façade dispatcher: contract entry -> host implementation
+  └─ callback registry: RegisterNatives -> Roblox function pointer
+       │
+       ▼
+Nuah host services: window, graphics, keyboard, mouse, audio, files
+```
+
+There is exactly one JavaVM: the one passed to Roblox's `JNI_OnLoad`. Host
+input must create objects in that same NuahJVM object arena and invoke
+callbacks in that same callback registry. A separate fake JNI runtime or a
+method-name-only callback lookup is prohibited, because either would allow
+input to be delivered to a different runtime than the one Roblox initialized.
+
+The initial contract includes:
 
 - `FindClass`, method/field lookup, `Call*Method`, strings and arrays;
 - exception check/clear and local/global references;
@@ -204,6 +229,53 @@ contract includes:
 The implementation is intentionally demand-driven. A missing class or method
 is recorded with its caller and signature so the surface can grow from real
 Roblox behavior instead of from a speculative Android framework clone.
+Unknown APIs must fail with that full contract key; they must never return a
+generic success value. Service groups such as audio, storage, media, and
+WebView remain outside the input/lifecycle MVP until evidence requires them.
+
+### Observed Sober JNI contract
+
+The following boundary is evidence, not a proposed Android API.  In the
+captured Sober process, Roblox's `JNI_OnLoad` performed:
+
+```text
+FindClass("com/roblox/universalapp/logging/LoggingProtocol")
+GetStaticMethodID("getProcessTimestamp", "()J")
+CallStaticLongMethod(...)
+DeleteLocalRef(...)
+ExceptionCheck()
+ExceptionClear()
+```
+
+Roblox then called `RegisterNatives` for
+`com/google/androidgamesdk/GameActivity`.  Nuah must support this exact
+initial native-callback set before claiming a runnable activity:
+
+```text
+initializeNativeCode(...) -> long      getDlError() -> String
+terminateNativeCode(long)
+onStartNative(long)                    onResumeNative(long)
+onPauseNative(long)                    onStopNative(long)
+onSaveInstanceStateNative(long) -> byte[]
+onConfigurationChangedNative(long, Configuration)
+onTrimMemoryNative(long, int)          onWindowFocusChangedNative(long, boolean)
+onSurfaceCreatedNative(long, Surface)  onSurfaceChangedNative(long, Surface, int, int, int)
+onSurfaceRedrawNeededNative(long, Surface)
+onSurfaceDestroyedNative(long)
+onTouchEventNative(long, MotionEvent, ...)
+onKeyDownNative(long, KeyEvent) -> boolean
+onKeyUpNative(long, KeyEvent) -> boolean
+onTextInputEventNative(long, State)    onWindowInsetsChangedNative(long)
+setInputConnectionNative(long, InputConnection)
+onContentRectChangedNative(long, int, int, int, int)
+onSoftwareKeyboardVisibilityChangedNative(long, boolean)
+onEditorActionNative(long, int)
+```
+
+The capture also observed four audio callback names, but not their owner
+classes: `nativeCacheAudioParameters`, `nativeCacheDirectBufferAddress`,
+`nativeDataIsRecorded`, and `nativeGetPlayoutData`.  They remain unresolved
+contract entries and are not treated as implemented APIs.
 
 ## Input
 
@@ -224,6 +296,17 @@ repeat, modifiers, timestamps, mouse buttons, motion, wheel axes, focus, and
 pointer coordinates. `WASD`, `1`–`9`, mouse buttons, motion, and scrolling are
 mandatory tests. Nuah must not read `/dev/input` directly or create a virtual
 Android keyboard.
+
+The observed contract proves that Sober supplies `KeyEvent` and `MotionEvent`
+objects to Roblox's registered callbacks, and that Sober resolves Roblox's
+`NativeInputInterface.nativePassMouseMove` export. It does **not** yet prove
+the exact accessor sequence or every field value used for a live key/mouse
+event. In particular, `getKeyCode`, `getAction`, `getScanCode`,
+`getMetaState`, and motion accessors are implementation candidates, not yet
+captured facts. The next input probe must start before game initialization,
+record method-ID creation, then correlate `Call*Method` activity during
+keyboard/mouse use. Nuah may not claim desktop-input parity until that probe
+validates its event objects.
 
 ## Graphics
 
