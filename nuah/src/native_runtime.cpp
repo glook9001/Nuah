@@ -333,6 +333,10 @@ int run_nuah_jni_isolated(const NativeLaunchOptions& options,
               << "+0x" << std::hex << result.module_offset << std::dec
               << " (pc=0x" << std::hex << result.caller << std::dec
               << " tid=" << result.thread_id << ")";
+      if (result.parent_module_offset) {
+        message << "; parent module offset +0x" << std::hex
+                << result.parent_module_offset << std::dec;
+      }
     }
     if (result.fault_address) {
       message << "; fault-address=0x" << std::hex << result.fault_address

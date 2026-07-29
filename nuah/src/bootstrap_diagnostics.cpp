@@ -92,6 +92,22 @@ void fatal_signal_handler(int signal_number, siginfo_t* info,
     }
   }
 
+  if (std::strstr(shared_diagnostics->module_path, "/nuah-module-") &&
+      !handling_fatal_signal) {
+    handling_fatal_signal = 1;
+    void* frames[64]{};
+    const int count = ::backtrace(frames, 64);
+    for (int index = 0; index < count; ++index) {
+      NuahBootstrapDiagnostics frame{};
+      if (locate_mapping(reinterpret_cast<uintptr_t>(frames[index]), &frame) &&
+          std::strstr(frame.module_path, "/nuah-module-") &&
+          frame.module_offset != shared_diagnostics->module_offset) {
+        shared_diagnostics->parent_module_offset = frame.module_offset;
+        break;
+      }
+    }
+  }
+
   struct sigaction action {};
   action.sa_handler = SIG_DFL;
   ::sigemptyset(&action.sa_mask);

@@ -16,6 +16,7 @@ typedef struct NuahBootstrapDiagnostics {
   uintptr_t caller;
   uintptr_t fault_address;
   uint64_t module_offset;
+  uint64_t parent_module_offset;
   char stage[64];
   char module_path[512];
   char abort_message[NUAH_BOOTSTRAP_TEXT_CAPACITY];
