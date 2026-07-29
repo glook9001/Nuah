@@ -26,6 +26,19 @@
 #define NUAH_STRINGIFY(value) NUAH_STRINGIFY_INNER(value)
 
 extern "C" {
+void* nuah_host_pthread_getspecific(pthread_key_t);
+int nuah_host_pthread_key_create(pthread_key_t*, void (*)(void*));
+int nuah_host_pthread_key_delete(pthread_key_t);
+int nuah_host_pthread_setspecific(pthread_key_t, const void*);
+asm(".symver nuah_host_pthread_getspecific,"
+    "pthread_getspecific@GLIBC_2.2.5");
+asm(".symver nuah_host_pthread_key_create,pthread_key_create@GLIBC_2.2.5");
+asm(".symver nuah_host_pthread_key_delete,pthread_key_delete@GLIBC_2.2.5");
+asm(".symver nuah_host_pthread_setspecific,"
+    "pthread_setspecific@GLIBC_2.2.5");
+}
+
+extern "C" {
 // Legacy Android objects still reference Bionic's pre-API-23 __sF array.
 // Bionic's LP64 FILE ABI is an opaque 152-byte object; it is not glibc FILE.
 alignas(void*) unsigned char __sF[3][152]{};
@@ -865,17 +878,16 @@ int pthread_getschedparam(pthread_t thread, int* policy,
       "pthread_getschedparam")(thread, policy, parameters);
 }
 void* pthread_getspecific(pthread_key_t key) {
-  return host<void* (*)(pthread_key_t)>("pthread_getspecific")(key);
+  return nuah_host_pthread_getspecific(key);
 }
 int pthread_join(pthread_t thread, void** value) {
   return host<int (*)(pthread_t, void**)>("pthread_join")(thread, value);
 }
 int pthread_key_create(pthread_key_t* key, void (*destructor)(void*)) {
-  return host<int (*)(pthread_key_t*, void (*)(void*))>(
-      "pthread_key_create")(key, destructor);
+  return nuah_host_pthread_key_create(key, destructor);
 }
 int pthread_key_delete(pthread_key_t key) {
-  return host<int (*)(pthread_key_t)>("pthread_key_delete")(key);
+  return nuah_host_pthread_key_delete(key);
 }
 int pthread_kill(pthread_t thread, int signal) {
   return host<int (*)(pthread_t, int)>("pthread_kill")(thread, signal);
@@ -893,8 +905,7 @@ int pthread_setschedparam(pthread_t thread, int policy,
       "pthread_setschedparam")(thread, policy, parameters);
 }
 int pthread_setspecific(pthread_key_t key, const void* value) {
-  return host<int (*)(pthread_key_t, const void*)>("pthread_setspecific")(
-      key, value);
+  return nuah_host_pthread_setspecific(key, value);
 }
 int pthread_sigmask(int operation, const sigset_t* set, sigset_t* old_set) {
   return host<int (*)(int, const sigset_t*, sigset_t*)>("pthread_sigmask")(
