@@ -163,8 +163,8 @@ jint JNICALL vm_destroy(JavaVM*) { return JNI_ERR; }
 }  // namespace
 
 struct NuahJniRuntime {
-  JNINativeInterface_ env_functions{};
-  JNIInvokeInterface_ vm_functions{};
+  JNINativeInterface env_functions{};
+  JNIInvokeInterface vm_functions{};
   JNIEnv env{&env_functions};
   JavaVM vm{&vm_functions};
   jlong native_handle = 0;

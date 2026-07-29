@@ -109,7 +109,10 @@ class HostJvm {
     JavaVMOption option{};
     option.optionString = const_cast<char*>("-Djava.awt.headless=true");
     JavaVMInitArgs arguments{};
-    arguments.version = JNI_VERSION_1_8;
+    // Android's official JNI headers expose the JNI 1.6 ABI.  A modern host
+    // JVM accepts this compatibility version while preserving Android's
+    // documented contract for native libraries.
+    arguments.version = JNI_VERSION_1_6;
     arguments.nOptions = 1;
     arguments.options = &option;
     arguments.ignoreUnrecognized = JNI_TRUE;
