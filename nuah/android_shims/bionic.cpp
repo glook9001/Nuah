@@ -516,7 +516,16 @@ int __system_property_get(const char* key, char* value) {
   if (value) std::strcpy(value, result);
   return static_cast<int>(std::strlen(result));
 }
-void android_set_abort_message(const char*) {}
+void android_set_abort_message(const char* message) {
+  // Bionic clients use this to explain an imminent abort.  Retaining it as a
+  // no-op turns a recoverable compatibility diagnosis into an opaque SIGABRT.
+  constexpr size_t kMaximumMessage = 1024;
+  const size_t length = message ? ::strnlen(message, kMaximumMessage) : 0;
+  std::fprintf(stderr, "nuah bootstrap: Android abort message: %.*s%s\n",
+               static_cast<int>(length), message ? message : "(null)",
+               length == kMaximumMessage ? "…" : "");
+  std::fflush(stderr);
+}
 size_t __fwrite_chk(const void* data, size_t size, size_t count, std::FILE* stream, size_t) { return std::fwrite(data, size, count, stream); }
 ssize_t __write_chk(int fd, const void* data, size_t count, size_t) { return ::write(fd, data, count); }
 ssize_t __sendto_chk(int fd, const void* data, size_t count, size_t, int flags, const sockaddr* address, socklen_t length) {
