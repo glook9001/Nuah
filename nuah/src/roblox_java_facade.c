@@ -81,6 +81,13 @@ jobject java_lang_Object_socModel(JNIEnv* env, jobject object, va_list args) {
   return string_value(env, "x86_64");
 }
 
+jobject com_roblox_engine_jni_locale_NativeLocaleJavaInterface_getLocale(
+    JNIEnv* env, jclass klass, va_list args) {
+  (void)klass;
+  (void)args;
+  return string_value(env, "en_US");
+}
+
 /* API-36 Configuration values observed by GameActivity_register. */
 #define NUAH_CONFIGURATION_INT(name, value)                              \
   jint android_content_res_Configuration_##name(JNIEnv* env,             \
