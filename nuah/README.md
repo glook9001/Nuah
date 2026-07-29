@@ -31,10 +31,15 @@ cmake --build build --target nuah nuah-services
 ./build/nuah native-run --apk /path/to/base.apk --split /path/to/split_config.x86_64.apk --uri 'roblox://placeId=1818'
 ```
 
-`native-run` is the supervisor's Sober-style handoff: it loads the x86_64
-Roblox image from a private temporary ELF file and stops with an explicit JNI-runtime status
-until the demand-driven JavaVM/JNIEnv table is complete. `atl-run` remains a
-legacy diagnostic command and is never selected by the Services supervisor.
+`native-run` is the supervisor's Sober-style handoff. It loads the host JDK's
+`libjvm.so`, loads the x86_64 Roblox image through libhybris, and passes the
+real OpenJDK `JavaVM` into `JNI_OnLoad`. Set `NUAH_JVM_LIBRARY` to an explicit
+`libjvm.so` when the JDK is not in a normal system location. This proves the
+JNI boundary without bundling ART, an Android system image, or a container.
+It does not yet provide Android framework classes or the final lifecycle.
+`NUAH_NATIVE_BIONIC_SMOKE=1` retains the separate API-36 Bionic-loader probe.
+`atl-run` remains a legacy diagnostic command and is never selected by the
+Services supervisor.
 
 For host-window/event-loop diagnostics, set `NUAH_NATIVE_WINDOW_LOOP=1`.
 `NUAH_NATIVE_LIFECYCLE=1` additionally attempts the observed GameActivity

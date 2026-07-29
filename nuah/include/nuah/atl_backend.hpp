@@ -39,8 +39,8 @@ bool forward_atl_cookie(const std::string& url, const std::string& value,
 [[noreturn]] void exec_atl(const AtlLaunchOptions& options);
 
 // Loads the x86_64 Roblox image through Nuah's native Sober-style boundary.
-// This path never boots ART or an Android container. It currently stops at
-// the JNI handoff until the demand-driven JavaVM table is complete.
+// This path never boots ART or an Android container: it starts the host's
+// libjvm.so and passes its real JavaVM to Roblox through libhybris.
 int run_native(const NativeLaunchOptions& options);
 
 }  // namespace nuah

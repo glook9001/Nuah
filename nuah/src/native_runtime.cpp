@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -11,6 +12,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+
+#include <jni.h>
 
 namespace nuah {
 namespace {
@@ -76,6 +79,103 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
   return path;
 }
 
+class HostJvm {
+ public:
+  HostJvm() = default;
+  ~HostJvm() {
+    // Unload the Android module before destroying this object.  Keeping the
+    // VM alive until process exit avoids running OpenJDK teardown while any
+    // Android-side thread may still be attached.
+    if (library_) ::dlclose(library_);
+  }
+  HostJvm(const HostJvm&) = delete;
+  HostJvm& operator=(const HostJvm&) = delete;
+  HostJvm(HostJvm&& other) noexcept
+      : library_(other.library_), vm_(other.vm_) {
+    other.library_ = nullptr;
+    other.vm_ = nullptr;
+  }
+  HostJvm& operator=(HostJvm&&) = delete;
+
+  JavaVM* vm() const { return vm_; }
+
+  static HostJvm create() {
+    HostJvm result;
+    result.library_ = open_library();
+    const auto create_vm = reinterpret_cast<jint (*)(JavaVM**, void**, void*)>(
+        ::dlsym(result.library_, "JNI_CreateJavaVM"));
+    if (!create_vm) {
+      throw std::runtime_error("libjvm.so does not export JNI_CreateJavaVM");
+    }
+
+    JavaVMOption option{};
+    option.optionString = const_cast<char*>("-Djava.awt.headless=true");
+    JavaVMInitArgs arguments{};
+    arguments.version = JNI_VERSION_1_8;
+    arguments.nOptions = 1;
+    arguments.options = &option;
+    arguments.ignoreUnrecognized = JNI_TRUE;
+    JNIEnv* environment = nullptr;
+    const jint status = create_vm(&result.vm_, reinterpret_cast<void**>(&environment),
+                                  &arguments);
+    if (status != JNI_OK || !result.vm_ || !environment) {
+      throw std::runtime_error("JNI_CreateJavaVM failed with status " +
+                               std::to_string(status));
+    }
+    return result;
+  }
+
+ private:
+  static void* open_library() {
+    std::vector<std::filesystem::path> candidates;
+    if (const char* configured = ::getenv("NUAH_JVM_LIBRARY"); configured && *configured) {
+      candidates.emplace_back(configured);
+    }
+    if (const char* java_home = ::getenv("JAVA_HOME"); java_home && *java_home) {
+      const std::filesystem::path home(java_home);
+      candidates.push_back(home / "lib/server/libjvm.so");
+      candidates.push_back(home / "jre/lib/amd64/server/libjvm.so");
+    }
+    // These are distribution defaults, not a bundled JDK.  A release can
+    // either rely on them or set NUAH_JVM_LIBRARY explicitly.
+    candidates.emplace_back("/usr/lib/jvm/default-java/lib/server/libjvm.so");
+    candidates.emplace_back("/usr/lib/jvm/java-25-openjdk/lib/server/libjvm.so");
+    candidates.emplace_back("/usr/lib/jvm/java-17-openjdk-amd64/lib/server/libjvm.so");
+    candidates.emplace_back("/usr/lib/jvm/java-17-temurin-jdk/lib/server/libjvm.so");
+    for (const auto& candidate : candidates) {
+      if (void* library = ::dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL)) {
+        return library;
+      }
+    }
+    const char* error = ::dlerror();
+    throw std::runtime_error(
+        "cannot load host libjvm.so; install a JDK or set NUAH_JVM_LIBRARY" +
+        std::string(error ? ": " : "") + (error ? error : ""));
+  }
+
+  void* library_ = nullptr;
+  JavaVM* vm_ = nullptr;
+};
+
+int run_openjdk_jni(const std::filesystem::path& apk) {
+  // libjvm is a glibc desktop library, so the Android image is loaded through
+  // libhybris in this host process.  Passing this VM into JNI_OnLoad exercises
+  // Roblox against an actual, complete JNI ABI rather than Nuah's old facade.
+  auto jvm = HostJvm::create();
+  auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
+  const auto on_load = reinterpret_cast<jint (*)(JavaVM*, void*)>(
+      image.symbol("JNI_OnLoad"));
+  if (!on_load) throw std::runtime_error("libroblox.so does not export JNI_OnLoad");
+  const jint version = on_load(jvm.vm(), nullptr);
+  if (version == JNI_ERR || version == JNI_EVERSION) {
+    throw std::runtime_error("libroblox.so JNI_OnLoad rejected host libjvm.so with status " +
+                             std::to_string(version));
+  }
+  std::cerr << "nuah native: libroblox.so accepted OpenJDK JNI version 0x"
+            << std::hex << version << std::dec << '\n';
+  return 0;
+}
+
 int run_bionic_loader(const std::filesystem::path& image) {
   const auto root = runtime_directory();
   const auto linker = root / "bionic/lib64/linker64";
@@ -122,22 +222,22 @@ int run_native(const NativeLaunchOptions& options) {
   }
 
   const auto image_apk = find_image(options);
-  constexpr const char* kMember = "lib/x86_64/libroblox.so";
-  const auto image = extract_roblox_image(image_apk);
-  try {
-    run_bionic_loader(image);
-  } catch (...) {
+  if (const char* smoke = ::getenv("NUAH_NATIVE_BIONIC_SMOKE"); smoke && *smoke) {
+    const auto image = extract_roblox_image(image_apk);
+    try {
+      run_bionic_loader(image);
+    } catch (...) {
+      std::error_code ignored;
+      std::filesystem::remove(image, ignored);
+      throw;
+    }
     std::error_code ignored;
     std::filesystem::remove(image, ignored);
-    throw;
+    std::cerr << "nuah native: API-36 bionic loader accepted libroblox.so from "
+              << image_apk << '\n';
+    return 0;
   }
-  std::error_code ignored;
-  std::filesystem::remove(image, ignored);
-  std::cerr << "nuah native: API-36 bionic loader accepted " << kMember << " from "
-            << image_apk << '\n';
-  // Lifecycle/JNI moves into the bionic helper once the Android API provider
-  // bridge is present.  This first slice proves the real-libc loader boundary.
-  return 0;
+  return run_openjdk_jni(image_apk);
 }
 
 }  // namespace nuah
