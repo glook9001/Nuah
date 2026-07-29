@@ -14,6 +14,13 @@ void nuah_jvm_destroy(NuahJvm* jvm);
 // C++ sources, which use Android's official libnativehelper declarations.
 void* nuah_jvm_java_vm(NuahJvm* jvm);
 
+// Returns the exact function pointer recorded by Roblox through
+// RegisterNatives, or NULL.  Callers must match on the complete JNI contract;
+// method-name-only lookup is deliberately not provided.
+void* nuah_jvm_find_registered_native(NuahJvm* jvm, const char* class_name,
+                                      const char* method_name,
+                                      const char* signature);
+
 #ifdef __cplusplus
 }
 #endif
