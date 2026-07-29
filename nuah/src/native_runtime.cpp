@@ -1,11 +1,13 @@
 #include "nuah/atl_backend.hpp"
 #include "nuah/apk_loader.hpp"
+#include "nuah/native_session.h"
 #include "nuah/nuah_jvm.h"
 
 #include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
@@ -80,9 +82,11 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
 }
 
 int run_nuah_jni(const std::filesystem::path& apk) {
-  NuahJvm* jvm = nuah_jvm_create();
-  if (!jvm) throw std::runtime_error("cannot create Nuah JVM");
   auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
+  std::unique_ptr<NuahNativeSession, decltype(&nuah_native_session_destroy)>
+      session(nuah_native_session_create(), nuah_native_session_destroy);
+  if (!session) throw std::runtime_error("cannot create Nuah native session");
+  NuahJvm* jvm = nuah_native_session_jvm(session.get());
   const auto on_load = reinterpret_cast<jint (*)(JavaVM*, void*)>(
       image.symbol("JNI_OnLoad"));
   if (!on_load) throw std::runtime_error("libroblox.so does not export JNI_OnLoad");
@@ -121,16 +125,14 @@ int run_nuah_jni(const std::filesystem::path& apk) {
     if (!nuah_jvm_find_registered_native(jvm, kGameActivity,
                                          requirement.member,
                                          requirement.signature)) {
-      nuah_jvm_destroy(jvm);
       throw std::runtime_error(
           "libroblox.so JNI_OnLoad did not register required GameActivity "
           "callback " +
           std::string(requirement.member) + " " + requirement.signature);
     }
   }
-  std::cerr << "nuah native: libroblox.so accepted Nuah JVM JNI version 0x"
+  std::cerr << "nuah native: libroblox.so accepted retained Nuah JVM JNI version 0x"
             << std::hex << version << std::dec << '\n';
-  nuah_jvm_destroy(jvm);
   return 0;
 }
 

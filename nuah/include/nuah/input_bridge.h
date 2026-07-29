@@ -41,10 +41,10 @@ struct NuahInputEvent {
 };
 
 typedef void (*NuahInputSink)(const NuahInputEvent* event, void* user_data);
-typedef struct NuahJniRuntime NuahJniRuntime;
+typedef struct NuahNativeSession NuahNativeSession;
 
 void nuah_input_set_sink(NuahInputSink sink, void* user_data);
-void nuah_input_bind_jni_runtime(NuahJniRuntime* runtime);
+void nuah_input_bind_native_session(NuahNativeSession* session);
 int nuah_input_quit_requested(void);
 void nuah_input_reset_quit(void);
 int nuah_input_pump(void);

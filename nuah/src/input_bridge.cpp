@@ -1,5 +1,5 @@
 #include "nuah/input_bridge.h"
-#include "nuah/jni_runtime.h"
+#include "nuah/native_session.h"
 
 #include <SDL3/SDL.h>
 
@@ -29,26 +29,26 @@ extern "C" void nuah_input_set_sink(NuahInputSink callback, void* user_data) {
 }
 
 namespace {
-void jni_sink(const NuahInputEvent* event, void* user_data) {
+void native_session_sink(const NuahInputEvent* event, void* user_data) {
   if (!event) return;
-  auto* runtime = static_cast<NuahJniRuntime*>(user_data);
+  auto* session = static_cast<NuahNativeSession*>(user_data);
   if (event->type == NUAH_INPUT_KEY) {
-    nuah_jni_runtime_dispatch_key(runtime, event->android_keycode,
-                                  event->action, event->repeat,
-                                  event->physical_scancode, event->modifiers,
-                                  event->timestamp_ns / 1000000ULL);
+    nuah_native_session_dispatch_key(session, event->android_keycode,
+                                     event->action, event->repeat,
+                                     event->physical_scancode, event->modifiers,
+                                     event->timestamp_ns / 1000000ULL);
   } else if (event->type == NUAH_INPUT_POINTER_MOTION ||
              event->type == NUAH_INPUT_POINTER_BUTTON ||
              event->type == NUAH_INPUT_POINTER_WHEEL) {
-    nuah_jni_runtime_dispatch_pointer(
-        runtime, event->action, event->button, event->x, event->y, event->dx,
+    nuah_native_session_dispatch_pointer(
+        session, event->action, event->button, event->x, event->y, event->dx,
         event->dy, event->timestamp_ns / 1000000ULL);
   }
 }
 }
 
-extern "C" void nuah_input_bind_jni_runtime(NuahJniRuntime* runtime) {
-  nuah_input_set_sink(jni_sink, runtime);
+extern "C" void nuah_input_bind_native_session(NuahNativeSession* session) {
+  nuah_input_set_sink(native_session_sink, session);
 }
 
 extern "C" int nuah_input_pump(void) {

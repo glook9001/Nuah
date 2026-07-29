@@ -18,9 +18,11 @@ Services/WebKit -> framed IPC -> supervisor -> native game runtime -> Roblox
 - Native Vulkan Android-surface translation to host Wayland.
 - An explicit Android ABI registry with fail-loud unsupported calls.
 
-The Sober-style JNI/object runtime, Android input callback path, and final game
-loader are still being implemented. The transitional ATL fork is disabled by
-default (`NUAH_BUILD_ATL=OFF`) and is not the target runtime.
+NuahJVM now retains the JNI runtime which Roblox accepted during `JNI_OnLoad`
+and routes SDL input into its registered GameActivity callbacks. Android
+framework façade coverage, surface lifecycle, and final game rendering remain
+in progress. The transitional ATL fork is disabled by default
+(`NUAH_BUILD_ATL=OFF`) and is not the target runtime.
 
 ## Build and run
 
@@ -45,11 +47,10 @@ dependency. This supplies the official Android JNI ABI declarations only;
 `libnativehelper`'s runtime invocation library delegates to ART and is not
 used as an ART substitute.
 
-For host-window/event-loop diagnostics, set `NUAH_NATIVE_WINDOW_LOOP=1`.
-`NUAH_NATIVE_LIFECYCLE=1` additionally attempts the observed GameActivity
-initialization callbacks; use `NUAH_NATIVE_MAX_FRAMES` to bound a diagnostic
-session. The normal supervisor keeps these opt-in until the remaining Android
-object and rendering contracts are implemented.
+The current native smoke path proves module loading, `JNI_OnLoad`, and
+registration on one retained NuahJVM. It intentionally does not claim a
+playable windowed game until the remaining Android object, surface lifecycle,
+and rendering contracts are implemented.
 
 ## JNI contract workflow
 
