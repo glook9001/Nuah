@@ -303,6 +303,9 @@ jobject com_roblox_engine_jni_model_PlatformParams_assetFolderPath(
       JNIEnv* env, jobject object) {                                     \
     (void)env;                                                           \
     (void)object;                                                        \
+    if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
+      fprintf(stderr, "nuah facade: PlatformParams.%s=%d\n", #name,     \
+              (int)(value));                                             \
     return value;                                                        \
   }
 #define PLATFORM_INT(name, value)                                       \
@@ -310,6 +313,9 @@ jobject com_roblox_engine_jni_model_PlatformParams_assetFolderPath(
       JNIEnv* env, jobject object) {                                     \
     (void)env;                                                           \
     (void)object;                                                        \
+    if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
+      fprintf(stderr, "nuah facade: PlatformParams.%s=%d\n", #name,     \
+              (int)(value));                                             \
     return value;                                                        \
   }
 
@@ -317,6 +323,8 @@ jfloat com_roblox_engine_jni_model_PlatformParams_dpiScale(
     JNIEnv* env, jobject object) {
   (void)env;
   (void)object;
+  if (getenv("NUAH_BOOTSTRAP_TRACE"))
+    fprintf(stderr, "nuah facade: PlatformParams.dpiScale=1.0\n");
   return 1.0f;
 }
 
