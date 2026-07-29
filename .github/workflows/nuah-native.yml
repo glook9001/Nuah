@@ -196,8 +196,19 @@ jobs:
 
       - name: Install host dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config \
+          set -euo pipefail
+          apt_options=(
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+            -o Dpkg::Use-Pty=0
+          )
+          # A runner-side mirror stall must fail this step promptly.  It is
+          # preferable to retry a fresh job than to leave the entire Nuah
+          # build blocked until the workflow-level timeout.
+          timeout 5m sudo apt-get "${apt_options[@]}" update
+          timeout 10m sudo apt-get "${apt_options[@]}" install -y \
+            --no-install-recommends cmake ninja-build pkg-config \
             default-jdk libegl-dev libgtk-4-dev libadwaita-1-dev \
             libwebkitgtk-6.0-dev libasound2-dev libpipewire-0.3-dev \
             libpulse-dev libsndio-dev libxss-dev libgbm-dev libdecor-0-dev \
