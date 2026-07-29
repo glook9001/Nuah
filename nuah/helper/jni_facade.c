@@ -98,7 +98,7 @@ static jint JNICALL facade_vm_get_env(JavaVM* ignored_vm, void** output, jint ve
   *output = &env;
   return JNI_OK;
 }
-static jint JNICALL facade_vm_attach(JavaVM* ignored_vm, void** output,
+static jint JNICALL facade_vm_attach(JavaVM* ignored_vm, JNIEnv** output,
                                      void* ignored_args) {
   (void)ignored_vm;
   (void)ignored_args;
