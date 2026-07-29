@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -19,6 +20,17 @@
 
 namespace nuah {
 namespace {
+
+int bootstrap_stage_fd = -1;
+
+void report_bootstrap_stage(const char* stage) {
+  if (bootstrap_stage_fd < 0 || !stage) return;
+  const std::size_t length = std::strlen(stage);
+  // Stage names are short fixed literals and fit in one pipe write.  A failed
+  // diagnostic write must never change the result of Roblox initialization.
+  (void)::write(bootstrap_stage_fd, stage, length);
+  (void)::write(bootstrap_stage_fd, "\n", 1);
+}
 
 std::vector<std::filesystem::path> image_candidates(
     const NativeLaunchOptions& options) {
@@ -82,7 +94,9 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
 }
 
 int run_nuah_jni(const std::filesystem::path& apk) {
+  report_bootstrap_stage("ANDROID_DLOPEN_CONSTRUCTORS");
   auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
+  report_bootstrap_stage("JNI_ONLOAD");
   std::unique_ptr<NuahNativeSession, decltype(&nuah_native_session_destroy)>
       session(nuah_native_session_create(), nuah_native_session_destroy);
   if (!session) throw std::runtime_error("cannot create Nuah native session");
@@ -131,6 +145,7 @@ int run_nuah_jni(const std::filesystem::path& apk) {
           std::string(requirement.member) + " " + requirement.signature);
     }
   }
+  report_bootstrap_stage("GAMEACTIVITY_REGISTRATION_COMPLETE");
   std::cerr << "nuah native: libroblox.so accepted retained Nuah JVM JNI version 0x"
             << std::hex << version << std::dec << '\n';
   return 0;
@@ -140,9 +155,19 @@ int run_nuah_jni_isolated(const std::filesystem::path& apk) {
   // Android constructors run while android_dlopen is still active. Isolate
   // them so a native abort is converted into a useful launch error rather
   // than taking down the supervisor with only a core-dump message.
+  int stage_pipe[2] = {-1, -1};
+  if (::pipe(stage_pipe) != 0) {
+    throw std::runtime_error("cannot create native bootstrap stage pipe");
+  }
   const pid_t child = ::fork();
-  if (child < 0) throw std::runtime_error("cannot start isolated native bootstrap");
+  if (child < 0) {
+    ::close(stage_pipe[0]);
+    ::close(stage_pipe[1]);
+    throw std::runtime_error("cannot start isolated native bootstrap");
+  }
   if (child == 0) {
+    ::close(stage_pipe[0]);
+    bootstrap_stage_fd = stage_pipe[1];
     try {
       _exit(run_nuah_jni(apk));
     } catch (const std::exception& error) {
@@ -151,20 +176,27 @@ int run_nuah_jni_isolated(const std::filesystem::path& apk) {
       _exit(70);
     }
   }
+  ::close(stage_pipe[1]);
   int status = 0;
   if (::waitpid(child, &status, 0) != child) {
+    ::close(stage_pipe[0]);
     throw std::runtime_error("cannot wait for isolated native bootstrap");
   }
+  std::array<char, 512> stage_buffer{};
+  const ssize_t received = ::read(stage_pipe[0], stage_buffer.data(), stage_buffer.size() - 1);
+  ::close(stage_pipe[0]);
+  std::string stage = received > 0 ? std::string(stage_buffer.data(), received) : "NO_STAGE";
+  while (!stage.empty() && (stage.back() == '\n' || stage.back() == '\r')) stage.pop_back();
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 0;
   if (WIFSIGNALED(status)) {
     throw std::runtime_error(
         "native bootstrap terminated by signal " +
         std::to_string(WTERMSIG(status)) +
-        " during libhybris android_dlopen (before JNI_OnLoad)");
+        " at " + stage);
   }
   throw std::runtime_error("native bootstrap exited with status " +
                            std::to_string(WEXITSTATUS(status)) +
-                           " before JNI_OnLoad");
+                           " at " + stage);
 }
 
 int run_bionic_loader(const std::filesystem::path& image) {
