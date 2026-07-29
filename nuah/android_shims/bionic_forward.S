@@ -63,6 +63,29 @@ NUAH_FORWARD pthread_key_create
 NUAH_FORWARD pthread_key_delete
 NUAH_FORWARD pthread_setspecific
 
+/*
+ * The dynamic loader uses these libc leaves internally.  A dlsym-based
+ * implementation can therefore recurse while it is trying to resolve itself.
+ */
+NUAH_FORWARD memcpy
+NUAH_FORWARD memmove
+NUAH_FORWARD memset
+NUAH_FORWARD memcmp
+NUAH_FORWARD memchr
+NUAH_FORWARD strlen
+NUAH_FORWARD strnlen
+NUAH_FORWARD strcmp
+NUAH_FORWARD strncmp
+NUAH_FORWARD strcpy
+NUAH_FORWARD strncpy
+NUAH_FORWARD strcat
+NUAH_FORWARD strncat
+NUAH_FORWARD strchr
+NUAH_FORWARD strrchr
+NUAH_FORWARD strstr
+NUAH_FORWARD strcasecmp
+NUAH_FORWARD strncasecmp
+
 NUAH_FORWARD accept
 NUAH_FORWARD bind
 NUAH_FORWARD connect

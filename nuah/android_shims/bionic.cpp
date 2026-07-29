@@ -359,18 +359,6 @@ __attribute__((constructor)) static void initialize_standard_streams() {
 }
 
 extern "C" {
-void* memcpy(void* destination, const void* source, size_t length) {
-  return host<void* (*)(void*, const void*, size_t)>("memcpy")(
-      destination, source, length);
-}
-void* memmove(void* destination, const void* source, size_t length) {
-  return host<void* (*)(void*, const void*, size_t)>("memmove")(
-      destination, source, length);
-}
-void* memset(void* destination, int value, size_t length) {
-  return host<void* (*)(void*, int, size_t)>("memset")(destination, value,
-                                                         length);
-}
 void* __memset_chk(void* destination, int value, size_t length,
                    size_t destination_size) {
   if (length > destination_size) std::abort();
@@ -386,77 +374,17 @@ void* __memmove_chk(void* destination, const void* source, size_t length,
   if (length > destination_size) std::abort();
   return memmove(destination, source, length);
 }
-int memcmp(const void* left, const void* right, size_t length) {
-  return host<int (*)(const void*, const void*, size_t)>("memcmp")(
-      left, right, length);
-}
-extern "C" const void* nuah_memchr(const void* data, int value, size_t length)
-    __asm__("memchr");
-const void* nuah_memchr(const void* data, int value, size_t length) {
-  return host<const void* (*)(const void*, int, size_t)>("memchr")(
-      data, value, length);
-}
-size_t strlen(const char* text) {
-  return host<size_t (*)(const char*)>("strlen")(text);
-}
-size_t strnlen(const char* text, size_t length) {
-  return host<size_t (*)(const char*, size_t)>("strnlen")(text, length);
-}
-int strcmp(const char* left, const char* right) {
-  return host<int (*)(const char*, const char*)>("strcmp")(left, right);
-}
-int strncmp(const char* left, const char* right, size_t length) {
-  return host<int (*)(const char*, const char*, size_t)>("strncmp")(
-      left, right, length);
-}
-char* strcpy(char* destination, const char* source) {
-  return host<char* (*)(char*, const char*)>("strcpy")(destination, source);
-}
 char* __strcpy_chk(char* destination, const char* source,
                    size_t destination_size) {
   const size_t length = strlen(source) + 1;
   if (length > destination_size) std::abort();
   return strcpy(destination, source);
 }
-char* strncpy(char* destination, const char* source, size_t length) {
-  return host<char* (*)(char*, const char*, size_t)>("strncpy")(
-      destination, source, length);
-}
-char* strcat(char* destination, const char* source) {
-  return host<char* (*)(char*, const char*)>("strcat")(destination, source);
-}
 char* __strcat_chk(char* destination, const char* source,
                    size_t destination_size) {
   const size_t length = strlen(destination) + strlen(source) + 1;
   if (length > destination_size) std::abort();
   return strcat(destination, source);
-}
-char* strncat(char* destination, const char* source, size_t length) {
-  return host<char* (*)(char*, const char*, size_t)>("strncat")(
-      destination, source, length);
-}
-extern "C" const char* nuah_strchr(const char* text, int value)
-    __asm__("strchr");
-const char* nuah_strchr(const char* text, int value) {
-  return host<const char* (*)(const char*, int)>("strchr")(text, value);
-}
-extern "C" const char* nuah_strrchr(const char* text, int value)
-    __asm__("strrchr");
-const char* nuah_strrchr(const char* text, int value) {
-  return host<const char* (*)(const char*, int)>("strrchr")(text, value);
-}
-extern "C" const char* nuah_strstr(const char* text, const char* needle)
-    __asm__("strstr");
-const char* nuah_strstr(const char* text, const char* needle) {
-  return host<const char* (*)(const char*, const char*)>("strstr")(
-      text, needle);
-}
-int strcasecmp(const char* left, const char* right) {
-  return host<int (*)(const char*, const char*)>("strcasecmp")(left, right);
-}
-int strncasecmp(const char* left, const char* right, size_t length) {
-  return host<int (*)(const char*, const char*, size_t)>("strncasecmp")(
-      left, right, length);
 }
 char* strerror(int error) {
   return host<char* (*)(int)>("strerror")(error);
