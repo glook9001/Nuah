@@ -10,6 +10,18 @@ struct NuahJvm {
   struct jvm core;
 };
 
+static int class_name_matches(const char* stored, const char* requested) {
+  if (!stored || !requested) return 0;
+  while (*stored && *requested) {
+    const char actual = *stored == '.' ? '/' : *stored;
+    const char expected = *requested == '.' ? '/' : *requested;
+    if (actual != expected) return 0;
+    ++stored;
+    ++requested;
+  }
+  return *stored == '\0' && *requested == '\0';
+}
+
 NuahJvm* nuah_jvm_create(void) {
   NuahJvm* jvm = calloc(1, sizeof(*jvm));
   if (!jvm) return NULL;
@@ -40,7 +52,7 @@ void* nuah_jvm_find_registered_native(NuahJvm* jvm, const char* class_name,
         jvm_get_class_name(&jvm->core, candidate->method.klass);
     if (candidate_class && candidate->method.name.data &&
         candidate->method.signature.data &&
-        strcmp(candidate_class, class_name) == 0 &&
+        class_name_matches(candidate_class, class_name) &&
         strcmp(candidate->method.name.data, method_name) == 0 &&
         strcmp(candidate->method.signature.data, signature) == 0) {
       return candidate->function;
