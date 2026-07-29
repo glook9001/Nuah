@@ -146,7 +146,7 @@ char* android_strncat_chk(char* destination, const char* source, std::size_t cou
   return std::strncat(destination, source, count);
 }
 
-void* resolve_host_provider_symbol(const char* symbol, const char*) {
+void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (!symbol) return nullptr;
   if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
   if (std::strcmp(symbol, "__stack_chk_fail") == 0) {
@@ -165,6 +165,13 @@ void* resolve_host_provider_symbol(const char* symbol, const char*) {
   if (std::strcmp(symbol, "__strncat_chk") == 0) return reinterpret_cast<void*>(android_strncat_chk);
   for (auto it = host_provider_handles.rbegin(); it != host_provider_handles.rend(); ++it) {
     if (void* resolved = ::dlsym(*it, symbol)) return resolved;
+  }
+  // libhybris may still satisfy this through one of its built-in host hooks,
+  // so keep this trace opt-in and never treat a callback miss as a loader
+  // failure by itself.
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::fprintf(stderr, "nuah bootstrap: provider miss symbol=%s requester=%s\n",
+                 symbol, requester ? requester : "(unknown)");
   }
   return nullptr;
 }
