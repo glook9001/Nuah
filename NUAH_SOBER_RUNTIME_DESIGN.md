@@ -147,6 +147,12 @@ The loader must preserve these useful properties:
    narrow platform imports from Nuah's provider directory.
 6. Keep the temporary-file path until the Android loader closes the module.
 
+Current evidence: the API-36 libhybris smoke test loads an x86_64 ELF with a
+host-backed `libandroid.so` DT_NEEDED dependency. A real Roblox image now
+relocates and reaches its constructor array. It aborts inside that constructor
+before `JNI_OnLoad`, so Nuah must complete the Android-native bootstrap before
+claiming JNI or input readiness.
+
 `libtrampoline.so` is treated as an optional Crashpad helper, not as the
 Android compatibility runtime.
 

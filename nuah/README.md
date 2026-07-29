@@ -35,9 +35,11 @@ cmake --build build --target nuah nuah-services
 
 `native-run` is the supervisor's Sober-style handoff. It uses NuahJVM, an
 isolated adapter around the licensed android2gnulinux JNI core, loads the
-x86_64 Roblox image through libhybris, and passes its JavaVM into
-`JNI_OnLoad`. It does not yet provide Android framework classes or the final
-lifecycle.
+x86_64 Roblox image through libhybris, and prepares the JavaVM that will be
+passed to `JNI_OnLoad`. The current loader reaches Roblox's constructor array;
+the Android-native bootstrap required for that constructor to complete is
+still in progress. It does not yet provide Android framework classes or the
+final lifecycle.
 `NUAH_NATIVE_BIONIC_SMOKE=1` retains the separate API-36 Bionic-loader probe.
 `atl-run` remains a legacy diagnostic command and is never selected by the
 Services supervisor.
@@ -47,10 +49,11 @@ dependency. This supplies the official Android JNI ABI declarations only;
 `libnativehelper`'s runtime invocation library delegates to ART and is not
 used as an ART substitute.
 
-The current native smoke path proves module loading, `JNI_OnLoad`, and
-registration on one retained NuahJVM. It intentionally does not claim a
-playable windowed game until the remaining Android object, surface lifecycle,
-and rendering contracts are implemented.
+The current native smoke path proves loading and relocation through the
+libhybris Android linker, including host-backed DT_NEEDED libraries. It does
+not yet claim `JNI_OnLoad`, native registration, or a playable windowed game;
+those require the remaining Android-native bootstrap, object, surface
+lifecycle, and rendering contracts.
 
 ## JNI contract workflow
 
