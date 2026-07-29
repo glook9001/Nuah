@@ -153,7 +153,7 @@ jint JNICALL vm_get_env(JavaVM*, void** output, jint version) {
   *output = nuah_jni_runtime_env(active_runtime);
   return JNI_OK;
 }
-jint JNICALL vm_attach(JavaVM*, void** output, void*) {
+jint JNICALL vm_attach(JavaVM*, JNIEnv** output, void*) {
   if (!output || !active_runtime) return JNI_ERR;
   *output = nuah_jni_runtime_env(active_runtime);
   return JNI_OK;
