@@ -26,6 +26,8 @@
 namespace nuah {
 namespace {
 
+extern "C" void nuah_roblox_java_facade_set_content_path(const char* path);
+
 void report_bootstrap_stage(const char* stage) {
   nuah_bootstrap_diagnostics_set_stage(stage);
 }
@@ -179,6 +181,50 @@ int run_nuah_jni(const NativeLaunchOptions& options,
                                            data_directory.c_str())) {
     throw std::runtime_error("GameActivity initializeNativeCode returned no native handle");
   }
+  std::filesystem::path content_directory;
+  if (const char* override_path = ::getenv("NUAH_CONTENT_PATH");
+      override_path && *override_path) {
+    content_directory = override_path;
+  } else {
+    const auto sober_content =
+        std::filesystem::path("/home/pepe/.var/app/org.vinegarhq.Sober/data/"
+                              "sober/assets/content");
+    content_directory = std::filesystem::is_directory(sober_content)
+                            ? sober_content
+                            : data_directory / "assets/content";
+  }
+  std::filesystem::create_directories(content_directory, data_error);
+  if (data_error) {
+    throw std::runtime_error("cannot create Roblox content directory: " +
+                             data_error.message());
+  }
+  auto content_path = std::filesystem::absolute(content_directory).string();
+  if (!content_path.ends_with('/')) content_path += '/';
+  nuah_roblox_java_facade_set_content_path(content_path.c_str());
+
+  auto* env = reinterpret_cast<JNIEnv*>(nuah_jvm_jni_env(jvm));
+  jclass main_activity =
+      env->FindClass("com/roblox/client/startup/MainGameActivity");
+  jclass init_params_class =
+      env->FindClass("com/roblox/engine/jni/autovalue/AutoValue_InitParams");
+  jobject init_params =
+      init_params_class ? env->AllocObject(init_params_class) : nullptr;
+  using SetAssetPath = void (*)(JNIEnv*, jclass, jstring);
+  using SetInitParams = void (*)(JNIEnv*, jclass, jobject);
+  const auto set_asset_path = reinterpret_cast<SetAssetPath>(image.symbol(
+      "Java_com_roblox_client_startup_MainGameActivity_nativeSetAssetPath"));
+  const auto set_init_params = reinterpret_cast<SetInitParams>(image.symbol(
+      "Java_com_roblox_client_startup_MainGameActivity_"
+      "nativeAppBridgeSetInitParams"));
+  if (!main_activity || !init_params || !set_asset_path || !set_init_params) {
+    throw std::runtime_error(
+        "Roblox MainGameActivity pre-start JNI contract is unavailable");
+  }
+  report_bootstrap_stage("ROBLOX_ASSET_PATH");
+  set_asset_path(env, main_activity, env->NewStringUTF(content_path.c_str()));
+  report_bootstrap_stage("ROBLOX_INIT_PARAMS");
+  set_init_params(env, main_activity, init_params);
+
   for (const auto& requirement : kInputLifecycleRequirements) {
     if (!nuah_jvm_find_registered_native(jvm, kGameActivity,
                                          requirement.member,
