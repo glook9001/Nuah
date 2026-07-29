@@ -2,6 +2,12 @@ diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
 index 2341109..c6360b5 100644
 --- a/hybris/common/q/dlfcn.cpp
 +++ b/hybris/common/q/dlfcn.cpp
+@@ -29,6 +29,7 @@
+ #include "linker.h"
++#include "linker_main.h"
+ #include "linker_cfi.h"
+ #include "linker_globals.h"
+ #include "linker_dlwarning.h"
 @@ -359,6 +359,32 @@ soinfo* get_libdl_info(const char* linker_path, const soinfo& linker_si) {
    return __libdl_info;
  }
@@ -19,7 +25,9 @@ index 2341109..c6360b5 100644
 +      strcmp(name, "liblog.so") != 0) {
 +    return nullptr;
 +  }
-+  soinfo* si = new soinfo(ns, name, nullptr, 0, RTLD_NOW);
++  // Keep synthetic entries on the normal linker allocation path. Besides
++  // ownership, soinfo_alloc() registers every linked DT_NEEDED entry in solist.
++  soinfo* si = soinfo_alloc(ns, name, nullptr, 0, RTLD_NOW);
 +  si->set_soname(name);
 +  // Host-hook entries bypass link_image(), which normally initializes this.
 +  // They still appear in DT_NEEDED reference counting, so root them locally.
@@ -27,8 +35,6 @@ index 2341109..c6360b5 100644
 +  si->set_host_hook_dependency();
 +  si->set_linked();
 +  si->set_nodelete();
-+  si->generate_handle();
-+  ns->add_soinfo(si);
 +  return si;
 +}
 +
