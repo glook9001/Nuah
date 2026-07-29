@@ -11,9 +11,12 @@
 static void jni_fault_handler(int signal_number, siginfo_t* info, void* context) {
   const ucontext_t* state = (const ucontext_t*)context;
 #if defined(__x86_64__)
-  fprintf(stderr, "bionic JNI fault: signal=%d address=%p rip=%#llx\n", signal_number,
-          info ? info->si_addr : 0,
-          (unsigned long long)state->uc_mcontext.gregs[REG_RIP]);
+  const unsigned long long stack = (unsigned long long)state->uc_mcontext.gregs[REG_RSP];
+  const unsigned long long caller = stack ? *(const unsigned long long*)stack : 0;
+  fprintf(stderr,
+          "bionic JNI fault: signal=%d address=%p rip=%#llx caller=%#llx\n",
+          signal_number, info ? info->si_addr : 0,
+          (unsigned long long)state->uc_mcontext.gregs[REG_RIP], caller);
 #else
   fprintf(stderr, "bionic JNI fault: signal=%d address=%p\n", signal_number,
           info ? info->si_addr : 0);
