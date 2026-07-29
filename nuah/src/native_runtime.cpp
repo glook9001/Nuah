@@ -91,6 +91,43 @@ int run_nuah_jni(const std::filesystem::path& apk) {
     throw std::runtime_error("libroblox.so JNI_OnLoad rejected Nuah JVM with status " +
                              std::to_string(version));
   }
+
+  // A JNI version alone only proves that the library accepted a table.  The
+  // Sober capture shows that the usable native boundary is the smaller
+  // GameActivity callback set registered by Roblox during JNI_OnLoad.  Keep
+  // this gate on the same NuahJvm instance that was passed to JNI_OnLoad; a
+  // second mock registry would make successful input delivery impossible.
+  constexpr const char* kGameActivity =
+      "com/google/androidgamesdk/GameActivity";
+  struct NativeRequirement {
+    const char* member;
+    const char* signature;
+  };
+  constexpr NativeRequirement kInputLifecycleRequirements[] = {
+      {"initializeNativeCode",
+       "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+       "Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J"},
+      {"onStartNative", "(J)V"},
+      {"onSurfaceCreatedNative", "(JLandroid/view/Surface;)V"},
+      {"onSurfaceChangedNative", "(JLandroid/view/Surface;III)V"},
+      {"onSurfaceDestroyedNative", "(J)V"},
+      {"onTouchEventNative", "(JLandroid/view/MotionEvent;IIIIIJJIIIIIIFF)Z"},
+      {"onKeyDownNative", "(JLandroid/view/KeyEvent;)Z"},
+      {"onKeyUpNative", "(JLandroid/view/KeyEvent;)Z"},
+      {"onTextInputEventNative",
+       "(JLcom/google/androidgamesdk/gametextinput/State;)V"},
+  };
+  for (const auto& requirement : kInputLifecycleRequirements) {
+    if (!nuah_jvm_find_registered_native(jvm, kGameActivity,
+                                         requirement.member,
+                                         requirement.signature)) {
+      nuah_jvm_destroy(jvm);
+      throw std::runtime_error(
+          "libroblox.so JNI_OnLoad did not register required GameActivity "
+          "callback " +
+          std::string(requirement.member) + " " + requirement.signature);
+    }
+  }
   std::cerr << "nuah native: libroblox.so accepted Nuah JVM JNI version 0x"
             << std::hex << version << std::dec << '\n';
   nuah_jvm_destroy(jvm);
