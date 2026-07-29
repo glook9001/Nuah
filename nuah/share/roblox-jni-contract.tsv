@@ -1,0 +1,37 @@
+# nuah-jni-contract-v1
+# kind<TAB>class<TAB>member<TAB>signature<TAB>evidence source
+#
+# This is an evidence ledger, not a hand-written Android API wishlist.  It is
+# seeded from Investigation/captures collected from a working Sober session.
+# Entries with class '*' were recovered from RegisterNatives records whose
+# owning jclass was not retained by the old capture.  A future dynamic trace
+# must resolve them before the façade claims them as implemented.
+lookup	com/roblox/universalapp/logging/LoggingProtocol	getProcessTimestamp	()J	sober-jni-onload
+register	com/google/androidgamesdk/GameActivity	initializeNativeCode	(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	getDlError	()Ljava/lang/String;	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	terminateNativeCode	(J)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onStartNative	(J)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onResumeNative	(J)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onSaveInstanceStateNative	(J)[B	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onPauseNative	(J)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onStopNative	(J)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onConfigurationChangedNative	(JLandroid/content/res/Configuration;)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onTrimMemoryNative	(JI)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onWindowFocusChangedNative	(JZ)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onSurfaceCreatedNative	(JLandroid/view/Surface;)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onSurfaceChangedNative	(JLandroid/view/Surface;III)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onSurfaceRedrawNeededNative	(JLandroid/view/Surface;)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onSurfaceDestroyedNative	(J)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onTouchEventNative	(JLandroid/view/MotionEvent;IIIIIJJIIIIIIFF)Z	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onKeyDownNative	(JLandroid/view/KeyEvent;)Z	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onKeyUpNative	(JLandroid/view/KeyEvent;)Z	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onTextInputEventNative	(JLcom/google/androidgamesdk/gametextinput/State;)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onWindowInsetsChangedNative	(J)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	setInputConnectionNative	(JLcom/google/androidgamesdk/gametextinput/InputConnection;)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onContentRectChangedNative	(JIIII)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onSoftwareKeyboardVisibilityChangedNative	(JZ)V	sober-register-natives
+register	com/google/androidgamesdk/GameActivity	onEditorActionNative	(JI)V	sober-register-natives
+register	*	nativeCacheAudioParameters	(IIIZZZZZZZIIJ)V	sober-register-natives-unresolved-class
+register	*	nativeCacheDirectBufferAddress	(Ljava/nio/ByteBuffer;J)V	sober-register-natives-unresolved-class
+register	*	nativeDataIsRecorded	(IJ)V	sober-register-natives-unresolved-class
+register	*	nativeGetPlayoutData	(IJ)V	sober-register-natives-unresolved-class

@@ -51,5 +51,15 @@ initialization callbacks; use `NUAH_NATIVE_MAX_FRAMES` to bound a diagnostic
 session. The normal supervisor keeps these opt-in until the remaining Android
 object and rendering contracts are implemented.
 
+## JNI contract workflow
+
+Nuah must not discover Android Java methods one CI failure at a time.  The
+versioned [`roblox-jni-contract.tsv`](share/roblox-jni-contract.tsv) is an
+evidence ledger seeded from a working Sober capture.  CI parses and validates
+it before any Roblox smoke test.  New façade work is admitted only after a
+Sober dynamic trace or a static Roblox analysis records the exact
+class/member/signature.  Entries with class `*` are deliberately unresolved
+and cannot be counted as implemented façade coverage.
+
 `nuah sober-cache-status` checks the Sober cache source. `nuah
 adopt-sober-cache <directory>` copies that APK pair into Nuah-managed storage.

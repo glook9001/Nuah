@@ -124,6 +124,7 @@ target_link_libraries(nuah_jvm_core PUBLIC dl pthread)
 add_library(nuah_core
   nuah/src/atl_backend.cpp
   nuah/src/jni_contract.cpp
+  nuah/src/jni_manifest.cpp
   nuah/src/jni_runtime.cpp
   nuah/src/input_bridge.cpp
   nuah/src/window_session.cpp
@@ -215,6 +216,14 @@ endif()
 target_compile_options(nuah_native_contract_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(nuah_native_contract_test PRIVATE nuah_core)
 add_test(NAME nuah-native-contract COMMAND nuah_native_contract_test)
+
+add_executable(nuah_jni_manifest_test nuah/tests/jni_manifest_test.cpp)
+target_include_directories(nuah_jni_manifest_test PRIVATE nuah/include)
+target_compile_options(nuah_jni_manifest_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(nuah_jni_manifest_test PRIVATE
+  NUAH_JNI_MANIFEST_PATH="${CMAKE_SOURCE_DIR}/nuah/share/roblox-jni-contract.tsv")
+target_link_libraries(nuah_jni_manifest_test PRIVATE nuah_core)
+add_test(NAME nuah-jni-manifest COMMAND nuah_jni_manifest_test)
 
 add_executable(nuah nuah/src/main.cpp)
 target_link_libraries(nuah PRIVATE nuah_core)
