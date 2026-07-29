@@ -54,3 +54,18 @@ void* SL_IID_ENGINE;
 void* SL_IID_PLAY;
 void* SL_IID_RECORD;
 void* SL_IID_VOLUME;
+
+/* Keep audio optional until the host audio bridge is connected.  Returning
+ * FEATURE_UNSUPPORTED lets Roblox choose its normal no-audio path instead of
+ * handing it an invalid OpenSL object. */
+int slCreateEngine(void** engine, unsigned int option_count, const void* options,
+                   unsigned int interface_count, const void* interfaces,
+                   const unsigned int* required) {
+  (void)option_count;
+  (void)options;
+  (void)interface_count;
+  (void)interfaces;
+  (void)required;
+  if (engine) *engine = 0;
+  return 12; /* SL_RESULT_FEATURE_UNSUPPORTED */
+}
