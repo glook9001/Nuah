@@ -1,5 +1,6 @@
 #include "nuah/nuah_jvm.h"
 
+#include <stddef.h>
 #include "jvm/jvm.h"
 
 #include <stdlib.h>
