@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "jvm/jni.h"
@@ -27,6 +28,8 @@ com_roblox_engine_jni_NativeGLJavaInterface_getDeviceStaticParams(
 }
 
 static jstring string_value(JNIEnv* env, const char* value) {
+  if (getenv("NUAH_BOOTSTRAP_TRACE"))
+    fprintf(stderr, "nuah facade: String \"%s\"\n", value);
   return (*env)->NewStringUTF(env, value);
 }
 
