@@ -116,6 +116,27 @@ index f0a31ea..8c8ac10 100644
    uint32_t hash = symbol_name.elf_hash();
  
    TRACE_TYPE(LOOKUP, "SEARCH %s in %s@%p h=%x(elf) %zd",
+@@ -455,4 +467,11 @@ void soinfo::call_constructors() {
+ void soinfo::call_constructors() {
++  // Host-hook dependencies are linker records, not mapped Android ELFs.
++  // They have no DT_INIT/DT_INIT_ARRAY and must never enter that walk.
++  if (is_host_hook_dependency()) {
++    constructors_called = true;
++    return;
++  }
++
+   if (constructors_called) {
+     return;
+   }
+@@ -506,4 +525,8 @@ void soinfo::call_destructors() {
+ void soinfo::call_destructors() {
++  if (is_host_hook_dependency()) {
++    return;
++  }
++
+   if (!constructors_called  || (soname_ != nullptr && (strcmp(soname_, "libc.so") == 0))) {
+     return;
+   }
 @@ -759,3 +771,7 @@
 +void soinfo::set_local_group_root(soinfo* root) {
 +  local_group_root_ = root;
