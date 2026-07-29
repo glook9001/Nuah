@@ -168,7 +168,8 @@ jobs:
             -std=c17 -O2 -Wall -Wextra -Werror \
             nuah/helper/bionic_loader_main.c -ldl \
             -o build-ci/bionic/nuah-bionic-loader
-          file build-ci/bionic/nuah-bionic-loader | grep -F 'Android'
+          readelf --program-headers build-ci/bionic/nuah-bionic-loader | \
+            grep -F '/system/bin/linker64'
 
       - name: Install host dependencies
         run: |
