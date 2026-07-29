@@ -82,12 +82,10 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
 class HostJvm {
  public:
   HostJvm() = default;
-  ~HostJvm() {
-    // Unload the Android module before destroying this object.  Keeping the
-    // VM alive until process exit avoids running OpenJDK teardown while any
-    // Android-side thread may still be attached.
-    if (library_) ::dlclose(library_);
-  }
+  // Deliberately do not dlclose libjvm.so.  Nuah does not call
+  // DestroyJavaVM while a loaded Android module could retain JNI state; the
+  // OS reclaims the VM at process exit.
+  ~HostJvm() = default;
   HostJvm(const HostJvm&) = delete;
   HostJvm& operator=(const HostJvm&) = delete;
   HostJvm(HostJvm&& other) noexcept
@@ -162,6 +160,7 @@ int run_openjdk_jni(const std::filesystem::path& apk) {
   // libhybris in this host process.  Passing this VM into JNI_OnLoad exercises
   // Roblox against an actual, complete JNI ABI rather than Nuah's old facade.
   auto jvm = HostJvm::create();
+  std::cerr << "nuah native: OpenJDK JavaVM created; loading libroblox.so through libhybris\n";
   auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
   const auto on_load = reinterpret_cast<jint (*)(JavaVM*, void*)>(
       image.symbol("JNI_OnLoad"));
