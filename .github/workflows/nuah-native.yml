@@ -149,7 +149,7 @@ jobs:
           test -s build-ci/bionic/lib64/libc.so
           # upload-artifact restores the contents of bionic-core directly,
           # while the manifest intentionally records its source-root prefix.
-          (cd build-ci/bionic && sed 's#^bionic-core/##' SHA256SUMS | sha256sum --check)
+          (cd build-ci/bionic && sed 's# bionic-core/# #' SHA256SUMS | sha256sum --check)
 
       - name: Build the Android-side bionic loader helper
         run: |
