@@ -236,12 +236,14 @@ add_test(NAME nuah-jvm-registration COMMAND nuah_jvm_registration_test)
 
 add_executable(nuah nuah/src/main.cpp)
 target_link_libraries(nuah PRIVATE nuah_core)
+set_target_properties(nuah PROPERTIES BUILD_RPATH "$ORIGIN")
 add_dependencies(nuah nuah_atl_runtime)
 add_dependencies(nuah nuah_atl_api_jar)
 add_dependencies(nuah nuah_android_abi_registry_test)
 
 add_executable(nuah-services nuah/src/services_main.cpp)
 target_link_libraries(nuah-services PRIVATE nuah_core PkgConfig::NUAH_UI)
+set_target_properties(nuah-services PROPERTIES BUILD_RPATH "$ORIGIN")
 add_dependencies(nuah-services nuah_atl_runtime)
 add_dependencies(nuah-services nuah_atl_api_jar)
 
