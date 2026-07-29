@@ -175,6 +175,11 @@ jobs:
           "$android_clang" -std=c17 -O2 -Wall -Wextra -Werror -shared -fPIC \
             -DNUAH_GLES_PROXY -Wl,-soname,libGLESv2.so \
             nuah/helper/graphics_proxy.c -o build-ci/bionic/lib64/libGLESv2.so
+          for provider in libandroid.so liblog.so libmediandk.so libOpenSLES.so libOpenMAXAL.so; do
+            "$android_clang" -std=c17 -O2 -Wall -Wextra -Werror -shared -fPIC \
+              -Wl,-soname,"$provider" nuah/helper/platform_proxy.c \
+              -o "build-ci/bionic/lib64/$provider"
+          done
           readelf --program-headers build-ci/bionic/nuah-bionic-loader | \
             grep -F '/system/bin/linker64'
 

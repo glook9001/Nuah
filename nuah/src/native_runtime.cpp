@@ -80,8 +80,9 @@ int run_bionic_loader(const std::filesystem::path& image) {
   const auto root = runtime_directory();
   const auto linker = root / "bionic/lib64/linker64";
   const auto helper = root / "bionic/nuah-bionic-loader";
-  const auto library_path = (root / "bionic/lib64").string() + ":" +
-                            (root / "android").string();
+  // This namespace must contain Android ELF only.  In particular, do not add
+  // Nuah's host-glibc android/ providers here: linker64 cannot load them.
+  const auto library_path = (root / "bionic/lib64").string();
   if (!std::filesystem::is_regular_file(linker) ||
       !std::filesystem::is_regular_file(helper)) {
     throw std::runtime_error("Nuah bionic runtime bundle is missing linker64 or helper");
