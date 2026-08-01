@@ -17,6 +17,8 @@ enum NuahAndroidKeyCode {
 };
 
 int nuah_android_keycode_from_ascii(int ascii);
+/* Translate physical SDL scancodes for layout-independent movement keys. */
+int nuah_android_keycode_from_scancode(int scancode);
 
 enum NuahInputEventType {
   NUAH_INPUT_KEY = 1,

@@ -62,6 +62,17 @@ using HybrisBuiltinHook = void* (*)(const char*, const char*);
 HybrisBuiltinHook hybris_builtin_hook = nullptr;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 
+// The production boundary is ATL/libhybris: it owns the Android libc and
+// pthread/TLS ABI.  Nuah's old bionic provider is retained only as an
+// explicitly requested diagnostic fallback because preloading it creates a
+// second TLS/DSO lifetime domain (the source of the startup crash).
+bool use_nuah_compat_runtime() {
+  const char* mode = ::getenv("NUAH_ANDROID_RUNTIME");
+  return mode && (std::strcmp(mode, "nuah") == 0 ||
+                  std::strcmp(mode, "compat") == 0 ||
+                  std::strcmp(mode, "diagnostic") == 0);
+}
+
 long android_sysconf(int name) {
   // bionic's sysconf names are ABI numbers, not portable source constants.
   // Forwarding the raw integer to glibc is wrong: for example Android 0x27
@@ -206,30 +217,33 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
       std::strcmp(symbol, "pthread_attr_setstacksize") == 0 ||
       std::strcmp(symbol, "pthread_create") == 0 ||
       std::strcmp(symbol, "pthread_getattr_np") == 0;
-  if (bionic_provider_handle && requires_bionic_provider) {
+  if (use_nuah_compat_runtime() && bionic_provider_handle &&
+      requires_bionic_provider) {
     if (void* resolved =
             ::dlvsym(bionic_provider_handle, symbol, "LIBC")) {
       return resolved;
     }
   }
-  if (std::strcmp(symbol, "sysconf") == 0) {
-    return reinterpret_cast<void*>(android_sysconf);
+  if (use_nuah_compat_runtime()) {
+    if (std::strcmp(symbol, "sysconf") == 0) {
+      return reinterpret_cast<void*>(android_sysconf);
+    }
+    if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
+    if (std::strcmp(symbol, "__stack_chk_fail") == 0) {
+      return ::dlsym(RTLD_DEFAULT, symbol);
+    }
+    if (std::strcmp(symbol, "__strlen_chk") == 0) {
+      return reinterpret_cast<void*>(android_strlen_chk);
+    }
+    if (std::strcmp(symbol, "__memcpy_chk") == 0) return reinterpret_cast<void*>(android_memcpy_chk);
+    if (std::strcmp(symbol, "__memmove_chk") == 0) return reinterpret_cast<void*>(android_memmove_chk);
+    if (std::strcmp(symbol, "__memset_chk") == 0) return reinterpret_cast<void*>(android_memset_chk);
+    if (std::strcmp(symbol, "__strcpy_chk") == 0) return reinterpret_cast<void*>(android_strcpy_chk);
+    if (std::strcmp(symbol, "__strncpy_chk") == 0) return reinterpret_cast<void*>(android_strncpy_chk);
+    if (std::strcmp(symbol, "__strncpy_chk2") == 0) return reinterpret_cast<void*>(android_strncpy_chk2);
+    if (std::strcmp(symbol, "__strcat_chk") == 0) return reinterpret_cast<void*>(android_strcat_chk);
+    if (std::strcmp(symbol, "__strncat_chk") == 0) return reinterpret_cast<void*>(android_strncat_chk);
   }
-  if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
-  if (std::strcmp(symbol, "__stack_chk_fail") == 0) {
-    return ::dlsym(RTLD_DEFAULT, symbol);
-  }
-  if (std::strcmp(symbol, "__strlen_chk") == 0) {
-    return reinterpret_cast<void*>(android_strlen_chk);
-  }
-  if (std::strcmp(symbol, "__memcpy_chk") == 0) return reinterpret_cast<void*>(android_memcpy_chk);
-  if (std::strcmp(symbol, "__memmove_chk") == 0) return reinterpret_cast<void*>(android_memmove_chk);
-  if (std::strcmp(symbol, "__memset_chk") == 0) return reinterpret_cast<void*>(android_memset_chk);
-  if (std::strcmp(symbol, "__strcpy_chk") == 0) return reinterpret_cast<void*>(android_strcpy_chk);
-  if (std::strcmp(symbol, "__strncpy_chk") == 0) return reinterpret_cast<void*>(android_strncpy_chk);
-  if (std::strcmp(symbol, "__strncpy_chk2") == 0) return reinterpret_cast<void*>(android_strncpy_chk2);
-  if (std::strcmp(symbol, "__strcat_chk") == 0) return reinterpret_cast<void*>(android_strcat_chk);
-  if (std::strcmp(symbol, "__strncat_chk") == 0) return reinterpret_cast<void*>(android_strncat_chk);
   const bool requires_hybris_synchronization =
       std::strncmp(symbol, "pthread_mutex", 13) == 0 ||
       std::strncmp(symbol, "pthread_cond", 12) == 0 ||
@@ -291,8 +305,20 @@ void configure_host_provider_hooks(void* hybris) {
   static bool configured = false;
   if (configured) return;
   const auto android = runtime_directory() / "android";
-  for (const auto* name : {"libbionic.so", "libm.so", "liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so",
-                           "libOpenSLES.so", "libOpenMAXAL.so"}) {
+  // Never load Nuah's libbionic in the normal path.  libhybris resolves the
+  // Android libc/libdl/libm/pthread ABI through its host hooks, keeping one
+  // native TLS domain.  Set NUAH_ANDROID_RUNTIME=nuah only for the old
+  // diagnostic provider path.
+  const std::vector<const char*> providers =
+      use_nuah_compat_runtime()
+          ? std::vector<const char*>{"libbionic.so", "libm.so", "liblog.so",
+                                    "libandroid.so", "libvulkan.so",
+                                    "libmediandk.so", "libOpenSLES.so",
+                                    "libOpenMAXAL.so"}
+          : std::vector<const char*>{"liblog.so", "libandroid.so",
+                                    "libvulkan.so", "libmediandk.so",
+                                    "libOpenSLES.so", "libOpenMAXAL.so"};
+  for (const auto* name : providers) {
     load_host_provider(android / name);
   }
   for (const auto* name : {"libEGL.so.1", "libGLESv2.so.2"}) {

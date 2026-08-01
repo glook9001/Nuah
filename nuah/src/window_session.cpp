@@ -55,6 +55,15 @@ extern "C" int nuah_window_session_should_close(
 
 extern "C" void nuah_window_session_pump(NuahWindowSession* session) {
   if (!session) return;
+  /* Keep the façade dimensions current even when the resize event is consumed
+   * by the input bridge. Roblox queries ANativeWindow geometry during surface
+   * and Vulkan setup, so this must be updated on every host pump. */
+  int width = 0;
+  int height = 0;
+  SDL_GetWindowSize(session->host, &width, &height);
+  if (width > 0 && height > 0) {
+    nuah_native_window_update_geometry(session->native, width, height);
+  }
   /* SDL_PumpEvents refreshes the host queue without consuming it. The input
    * bridge drains that queue exactly once, so key/button events cannot be
    * duplicated or dropped by the window owner. */
