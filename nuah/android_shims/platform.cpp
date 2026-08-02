@@ -41,16 +41,20 @@ struct NuahLooper {
   std::vector<NuahLooperRegistration> registrations;
 };
 struct NuahConfiguration { int unused = 0; };
-extern const char AMEDIAFORMAT_KEY_MIME[] = "mime";
-extern const char AMEDIAFORMAT_KEY_WIDTH[] = "width";
-extern const char AMEDIAFORMAT_KEY_HEIGHT[] = "height";
-extern const char AMEDIAFORMAT_KEY_COLOR_FORMAT[] = "color-format";
-extern const char AMEDIAFORMAT_KEY_STRIDE[] = "stride";
-extern const char AMEDIAFORMAT_KEY_BIT_RATE[] = "bitrate";
-extern const char AMEDIAFORMAT_KEY_FRAME_RATE[] = "frame-rate";
-extern const char AMEDIAFORMAT_KEY_I_FRAME_INTERVAL[] = "i-frame-interval";
-extern const char AMEDIAFORMAT_KEY_CHANNEL_COUNT[] = "channel-count";
-extern const char AMEDIAFORMAT_KEY_SAMPLE_RATE[] = "sample-rate";
+/* The NDK declares these as exported `const char*` variables.  Exporting
+ * arrays happens to satisfy a host ELF lookup but gives Android relocators a
+ * six-byte object where they expect an eight-byte pointer, so apkenv rejects
+ * the provider while resolving libroblox.so. */
+const char* AMEDIAFORMAT_KEY_MIME = "mime";
+const char* AMEDIAFORMAT_KEY_WIDTH = "width";
+const char* AMEDIAFORMAT_KEY_HEIGHT = "height";
+const char* AMEDIAFORMAT_KEY_COLOR_FORMAT = "color-format";
+const char* AMEDIAFORMAT_KEY_STRIDE = "stride";
+const char* AMEDIAFORMAT_KEY_BIT_RATE = "bitrate";
+const char* AMEDIAFORMAT_KEY_FRAME_RATE = "frame-rate";
+const char* AMEDIAFORMAT_KEY_I_FRAME_INTERVAL = "i-frame-interval";
+const char* AMEDIAFORMAT_KEY_CHANNEL_COUNT = "channel-count";
+const char* AMEDIAFORMAT_KEY_SAMPLE_RATE = "sample-rate";
 static int sl_engine, sl_android_configuration, sl_buffer_queue, sl_volume, sl_play, sl_android_simple_buffer_queue, sl_record;
 void* SL_IID_ENGINE = &sl_engine;
 void* SL_IID_ANDROIDCONFIGURATION = &sl_android_configuration;
