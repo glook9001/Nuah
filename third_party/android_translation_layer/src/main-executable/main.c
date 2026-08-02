@@ -237,6 +237,8 @@ struct jni_callback_data {
 static char *uri_option = NULL;
 static gboolean roblox_app_started = FALSE;
 
+extern jobject atl_current_activity(JNIEnv *env);
+
 void *bionic_dlopen(const char *filename, int flag);
 void *bionic_dlsym(void *handle, const char *symbol);
 
@@ -267,9 +269,31 @@ static gboolean roblox_direct_app_start(gpointer unused)
 				"Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeStartLuaAppDM");
 	}
 	jclass klass = (*env)->FindClass(env, "com/roblox/engine/jni/NativeGLInterface");
+	/* FindClass from ATL's native launcher uses the bootstrap loader and cannot
+	 * see APK classes. Resolve through the live activity's application loader. */
+	if (!klass) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		jobject activity = atl_current_activity(env);
+		jclass activity_class = activity ? (*env)->GetObjectClass(env, activity) : NULL;
+		jclass class_class = activity_class ? (*env)->GetObjectClass(env, activity_class) : NULL;
+		jmethodID get_loader = class_class ? (*env)->GetMethodID(env, class_class,
+			"getClassLoader", "()Ljava/lang/ClassLoader;") : NULL;
+		jobject loader = get_loader ? (*env)->CallObjectMethod(env, activity_class, get_loader) : NULL;
+		jclass loader_class = loader ? (*env)->GetObjectClass(env, loader) : NULL;
+		jmethodID load_class = loader_class ? (*env)->GetMethodID(env, loader_class,
+			"loadClass", "(Ljava/lang/String;)Ljava/lang/Class;") : NULL;
+		if (load_class)
+			klass = (jclass)(*env)->CallObjectMethod(env, loader, load_class,
+				(*env)->NewStringUTF(env, "com.roblox.engine.jni.NativeGLInterface"));
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		if (loader_class) (*env)->DeleteLocalRef(env, loader_class);
+		if (loader) (*env)->DeleteLocalRef(env, loader);
+		if (class_class) (*env)->DeleteLocalRef(env, class_class);
+		if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
+	}
 	jmethodID method = klass ? (*env)->GetStaticMethodID(env, klass,
 		"nativeAppBridgeStartLuaAppDM", "()V") : NULL;
-	if (!start && !method) {
+	if (!klass || (!start && !method)) {
 		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
 		if (handle && !bionic_handle) dlclose(handle);
 		return G_SOURCE_CONTINUE;

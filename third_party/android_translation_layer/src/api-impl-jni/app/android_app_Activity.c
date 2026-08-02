@@ -13,6 +13,14 @@
 static GList *activity_backlog = NULL;
 static jobject activity_current = NULL;
 
+/* Used by the standalone launcher to resolve APK classes through the active
+ * application class loader rather than the ATL/bootstrap loader. */
+jobject atl_current_activity(JNIEnv *env)
+{
+	(void)env;
+	return activity_current;
+}
+
 static void activity_close(JNIEnv *env, jobject activity)
 {
 	// in case some exception was left unhandled in native code, print it here so we don't confuse it with an exception thrown by onDestroy
