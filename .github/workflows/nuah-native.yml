@@ -229,6 +229,28 @@ jobs:
       - name: Install host dependencies
         run: |
           set -euo pipefail
+          packages=(
+            cmake ninja-build pkg-config default-jdk libegl-dev libgtk-4-dev
+            libadwaita-1-dev libwebkitgtk-6.0-dev libasound2-dev
+            libpipewire-0.3-dev libpulse-dev libsndio-dev libxss-dev libgbm-dev
+            libdecor-0-dev libavcodec-dev libcap-dev libdrm-dev libffi-dev
+            libglib2.0-dev libgudev-1.0-dev libportal-dev libsqlite3-dev
+            libvulkan-dev libopenxr-dev libunwind-dev libelf-dev libicu-dev
+            libssl-dev libexpat1-dev liblz4-dev liblzma-dev libarchive-dev
+            zlib1g-dev
+          )
+          missing=()
+          for package in "${packages[@]}"; do
+            if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null |
+                grep -q '^install ok installed$'; then
+              missing+=("$package")
+            fi
+          done
+          if ((${#missing[@]} == 0)); then
+            echo 'All host dependencies are already installed on this runner.'
+            exit 0
+          fi
+          printf 'Missing host packages: %s\n' "${missing[*]}"
           apt_options=(
             -o Acquire::Retries=3
             -o Acquire::http::Timeout=30
@@ -240,15 +262,7 @@ jobs:
           # build blocked until the workflow-level timeout.
           timeout 5m sudo apt-get "${apt_options[@]}" update
           timeout 10m sudo apt-get "${apt_options[@]}" install -y \
-            --no-install-recommends cmake ninja-build pkg-config \
-            default-jdk libegl-dev libgtk-4-dev libadwaita-1-dev \
-            libwebkitgtk-6.0-dev libasound2-dev libpipewire-0.3-dev \
-            libpulse-dev libsndio-dev libxss-dev libgbm-dev libdecor-0-dev \
-            libavcodec-dev libcap-dev libdrm-dev libffi-dev \
-            libglib2.0-dev libgudev-1.0-dev libportal-dev libsqlite3-dev \
-            libvulkan-dev libopenxr-dev libunwind-dev libelf-dev \
-            libicu-dev libssl-dev libexpat1-dev liblz4-dev liblzma-dev \
-            libarchive-dev zlib1g-dev
+            --no-install-recommends "${missing[@]}"
 
       - name: Install prebuilt SDL3 development package
         run: |
