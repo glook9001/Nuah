@@ -1,4 +1,6 @@
 #include <gtk/gtk.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include "../defines.h"
 #include "../util.h"
@@ -122,7 +124,34 @@ struct jni_callback_data {
 	gboolean surface_created;
 	gboolean surface_changed;
 	guint surface_ready_attempts;
+	gboolean late_dispatch_started;
 };
+
+static void *late_surface_dispatch(void *opaque)
+{
+	struct jni_callback_data *d = opaque;
+	sleep(2);
+	JNIEnv *env = NULL;
+	if ((*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) != JNI_OK)
+		return NULL;
+	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceCreated);
+	if ((*env)->ExceptionCheck(env)) {
+		(*env)->ExceptionDescribe(env);
+		(*env)->ExceptionClear(env);
+	}
+	d->surface_created = TRUE;
+	const gint width = d->resize_width > 0 ? d->resize_width : 1280;
+	const gint height = d->resize_height > 0 ? d->resize_height : 720;
+	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceChanged,
+	                       1 /* RGBA_8888 */, width, height);
+	if ((*env)->ExceptionCheck(env)) {
+		(*env)->ExceptionDescribe(env);
+		(*env)->ExceptionClear(env);
+	}
+	d->surface_changed = TRUE;
+	(*d->jvm)->DetachCurrentThread(d->jvm);
+	return NULL;
+}
 
 static gboolean dispatch_surface_changed(struct jni_callback_data *d)
 {
@@ -164,7 +193,10 @@ static void on_resize(GtkWidget *self, gint width, gint height, struct jni_callb
 	d->resize_width = width;
 	d->resize_height = height;
 
-	g_idle_add_full(G_PRIORITY_HIGH_IDLE + 20, G_SOURCE_FUNC(on_resize_delayed), d, NULL);
+	/* A high-priority idle can be starved by GTK's continuous frame work while
+	 * Roblox is booting.  Use a short timer so the Java surface callback is
+	 * delivered even during that redraw burst. */
+	g_timeout_add_full(G_PRIORITY_DEFAULT, 1, G_SOURCE_FUNC(on_resize_delayed), d, NULL);
 }
 
 static gboolean on_realize_delayed(struct jni_callback_data *d)
@@ -189,7 +221,18 @@ static gboolean on_realize_delayed(struct jni_callback_data *d)
 
 static void on_realize(GtkWidget *self, struct jni_callback_data *d)
 {
-	g_idle_add_full(G_PRIORITY_HIGH_IDLE + 20, G_SOURCE_FUNC(on_realize_delayed), d, NULL);
+	/* The ATL launcher may run GTK from a non-default GLib context, where
+	 * g_idle/g_timeout sources never execute.  The realize signal itself is on
+	 * GTK's UI thread, so deliver the Android surface callbacks synchronously. */
+	on_realize_delayed(d);
+	/* GameActivity may register its native callbacks after the first GTK
+	 * realization.  Replay the lifecycle once registration has completed. */
+	if (!d->late_dispatch_started) {
+		d->late_dispatch_started = TRUE;
+		pthread_t thread;
+		if (pthread_create(&thread, NULL, late_surface_dispatch, d) == 0)
+			pthread_detach(thread);
+	}
 }
 
 JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv *env, jobject this, jobject context, jobject attrs)
@@ -215,6 +258,7 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	callback_data->surface_created = FALSE;
 	callback_data->surface_changed = FALSE;
 	callback_data->surface_ready_attempts = 0;
+	callback_data->late_dispatch_started = FALSE;
 
 	g_signal_connect(dummy, "resize", G_CALLBACK(on_resize), callback_data);
 	g_signal_connect(dummy, "realize", G_CALLBACK(on_realize), callback_data);
