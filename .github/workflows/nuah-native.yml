@@ -45,7 +45,7 @@ jobs:
             "$GITHUB_WORKSPACE/nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch"
           test -f hybris-source/hybris/configure.ac
           test -f hybris-source/hybris/common/q/linker.cpp
-          grep -F 'xx86-64' hybris-source/hybris/configure.ac
+          grep -F 'x86-64' hybris-source/hybris/configure.ac
           grep -F "android_dlopen" hybris-source/hybris/common/hooks.c
 
       - name: Record upstream x86_64 compatibility warning
