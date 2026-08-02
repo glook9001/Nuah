@@ -1,5 +1,6 @@
 #include <gtk/gtk.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <unistd.h>
 
 #include "../defines.h"
@@ -125,30 +126,70 @@ struct jni_callback_data {
 	gboolean surface_changed;
 	guint surface_ready_attempts;
 	gboolean late_dispatch_started;
+	jmethodID get_holder;
+	jmethodID holder_get_surface;
+	jobject activity;
+	jclass game_activity_class;
+	jmethodID native_surface_created;
+	jmethodID native_surface_changed;
+	jfieldID native_handle;
 };
 
-static void *late_surface_dispatch(void *opaque)
+static void dispatch_activity_surface(struct jni_callback_data *d, JNIEnv *env,
+	                                  gint width, gint height)
 {
-	struct jni_callback_data *d = opaque;
-	sleep(2);
-	JNIEnv *env = NULL;
-	if ((*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) != JNI_OK)
-		return NULL;
-	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceCreated);
+	jobject holder = (*env)->CallObjectMethod(env, d->this, d->get_holder);
+	if ((*env)->ExceptionCheck(env)) {
+		(*env)->ExceptionDescribe(env);
+		(*env)->ExceptionClear(env);
+		return;
+	}
+	/* Call the SDK's registered native entry points directly.  This is the
+	 * exact boundary used by GameActivity after its callback wrapper and avoids
+	 * any timing dependence on SurfaceView's callback ArrayList. */
+	jlong native_handle = (*env)->GetStaticLongField(env, d->game_activity_class,
+	                                                  d->native_handle);
+	if (!d->holder_get_surface) {
+		jclass holder_class = (*env)->GetObjectClass(env, holder);
+		d->holder_get_surface = (*env)->GetMethodID(env, holder_class,
+		                                             "getSurface", "()Landroid/view/Surface;");
+		(*env)->DeleteLocalRef(env, holder_class);
+	}
+	jobject surface = (*env)->CallObjectMethod(env, holder, d->holder_get_surface);
+	(*env)->CallVoidMethod(env, d->activity, d->native_surface_created,
+	                       native_handle, surface);
 	if ((*env)->ExceptionCheck(env)) {
 		(*env)->ExceptionDescribe(env);
 		(*env)->ExceptionClear(env);
 	}
-	d->surface_created = TRUE;
-	const gint width = d->resize_width > 0 ? d->resize_width : 1280;
-	const gint height = d->resize_height > 0 ? d->resize_height : 720;
-	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceChanged,
+	(*env)->CallVoidMethod(env, d->activity, d->native_surface_changed,
+	                       native_handle, surface,
 	                       1 /* RGBA_8888 */, width, height);
 	if ((*env)->ExceptionCheck(env)) {
 		(*env)->ExceptionDescribe(env);
 		(*env)->ExceptionClear(env);
 	}
-	d->surface_changed = TRUE;
+	(*env)->DeleteLocalRef(env, holder);
+	(*env)->DeleteLocalRef(env, surface);
+}
+
+static void *late_surface_dispatch(void *opaque)
+{
+	struct jni_callback_data *d = opaque;
+	JNIEnv *env = NULL;
+	if ((*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) != JNI_OK)
+		return NULL;
+	/* GameActivity installs its SurfaceHolder callbacks asynchronously.  A
+	 * single replay can land before that registration; retry for a bounded
+	 * startup window so we don't make SurfaceView lifecycle timing fatal. */
+	for (int attempt = 0; attempt < 10; ++attempt) {
+		sleep(1);
+		d->surface_created = TRUE;
+		const gint width = d->resize_width > 0 ? d->resize_width : 1280;
+		const gint height = d->resize_height > 0 ? d->resize_height : 720;
+		dispatch_activity_surface(d, env, width, height);
+		d->surface_changed = TRUE;
+	}
 	(*d->jvm)->DetachCurrentThread(d->jvm);
 	return NULL;
 }
@@ -175,8 +216,7 @@ static gboolean dispatch_surface_changed(struct jni_callback_data *d)
 	d->resize_height = height;
 	JNIEnv *env;
 	(*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6);
-	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceChanged,
-	                       1 /* RGBA_8888 */, width, height);
+	dispatch_activity_surface(d, env, width, height);
 	d->surface_changed = TRUE;
 	return G_SOURCE_REMOVE;
 }
@@ -204,8 +244,6 @@ static gboolean on_realize_delayed(struct jni_callback_data *d)
 	JNIEnv *env;
 	(*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6);
 
-	// NOTE: we want to call the private method of android.view.SurfaceView, not the related method with this name in the API
-	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceCreated);
 	d->surface_created = TRUE;
 
 	/* The first size allocation can precede GTK realization.  In that case the
@@ -259,6 +297,28 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	callback_data->surface_changed = FALSE;
 	callback_data->surface_ready_attempts = 0;
 	callback_data->late_dispatch_started = FALSE;
+	jclass actual_class = (*env)->GetObjectClass(env, this);
+	callback_data->get_holder = (*env)->GetMethodID(env, actual_class,
+	                                                "getHolder", "()Landroid/view/SurfaceHolder;");
+	jmethodID get_context = (*env)->GetMethodID(env, actual_class,
+	                                            "getContext", "()Landroid/content/Context;");
+	jobject view_context = (*env)->CallObjectMethod(env, this, get_context);
+	callback_data->activity = (*env)->NewGlobalRef(env, view_context);
+	(*env)->DeleteLocalRef(env, view_context);
+	jclass activity_class = (*env)->GetObjectClass(env, callback_data->activity);
+	jclass game_activity_local = (*env)->GetSuperclass(env, activity_class);
+	callback_data->game_activity_class = (*env)->NewGlobalRef(env, game_activity_local);
+	callback_data->native_surface_created = (*env)->GetMethodID(
+		env, game_activity_local,
+		"onSurfaceCreatedNative", "(JLandroid/view/Surface;)V");
+	callback_data->native_surface_changed = (*env)->GetMethodID(
+		env, game_activity_local,
+		"onSurfaceChangedNative", "(JLandroid/view/Surface;III)V");
+	callback_data->native_handle = (*env)->GetStaticFieldID(
+		env, game_activity_local, "P", "J");
+	(*env)->DeleteLocalRef(env, activity_class);
+	(*env)->DeleteLocalRef(env, game_activity_local);
+	(*env)->DeleteLocalRef(env, actual_class);
 
 	g_signal_connect(dummy, "resize", G_CALLBACK(on_resize), callback_data);
 	g_signal_connect(dummy, "realize", G_CALLBACK(on_realize), callback_data);
