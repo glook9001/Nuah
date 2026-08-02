@@ -1,6 +1,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,14 @@ const unsigned char kSlIidVolume = 0;
 }  // namespace
 
 extern "C" {
+
+using AtlLooperWake = void (*)(void*);
+void _ZN7android6Looper4wakeEv(void* looper) {
+  if (std::getenv("NUAH_ATL_NOOP_LOOPER_WAKE")) return;
+  static AtlLooperWake original = reinterpret_cast<AtlLooperWake>(
+      ::dlsym(RTLD_NEXT, "_ZN7android6Looper4wakeEv"));
+  if (original) original(looper);
+}
 
 /* ATL's Android Looper can allocate its wake event on descriptor 0 when the
  * launcher inherits a closed stdin.  Roblox later closes stdin as part of its
