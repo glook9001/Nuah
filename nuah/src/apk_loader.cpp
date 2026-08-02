@@ -58,6 +58,7 @@ void configure_hybris_environment(const char* library) {
 
 std::vector<void*> host_provider_handles;
 void* bionic_provider_handle = nullptr;
+void* android_provider_handle = nullptr;
 using HybrisBuiltinHook = void* (*)(const char*, const char*);
 HybrisBuiltinHook hybris_builtin_hook = nullptr;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
@@ -195,6 +196,18 @@ char* android_strncat_chk(char* destination, const char* source, std::size_t cou
 
 void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (!symbol) return nullptr;
+  /* Native Roblox links libEGL.so directly.  ATL's EGL implementation lives
+   * in libandroid.so under bionic_ names, so route the Android-facing window
+   * entry points to it before falling back to host Mesa.  The latter cannot
+   * consume ATL's ANativeWindow object. */
+  if (android_provider_handle &&
+      (std::strncmp(symbol, "egl", 3) == 0 ||
+       std::strncmp(symbol, "gl", 2) == 0)) {
+    const std::string bionic_name = std::string("bionic_") + symbol;
+    if (void* resolved = ::dlsym(android_provider_handle, bionic_name.c_str())) {
+      return resolved;
+    }
+  }
   // A small audited set must precede libhybris: these objects have different
   // API-36 x86-64 layouts (pthread attributes and legacy Bionic FILE), or
   // carry Nuah's constructor diagnostics. Everything else delegates to
@@ -282,6 +295,7 @@ void load_host_provider(const std::filesystem::path& path) {
   void* handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
   if (handle) {
     if (path.filename() == "libbionic.so") bionic_provider_handle = handle;
+    if (path.filename() == "libandroid.so") android_provider_handle = handle;
     const auto callbacks = nuah_bootstrap_diagnostics_callbacks();
     if (auto setter = reinterpret_cast<void (*)(
             const NuahDiagnosticsCallbacks*)>(

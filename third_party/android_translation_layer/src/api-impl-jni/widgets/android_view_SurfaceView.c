@@ -126,6 +126,7 @@ struct jni_callback_data {
 	gboolean surface_changed;
 	guint surface_ready_attempts;
 	gboolean late_dispatch_started;
+	gboolean surface_replay_queued;
 	jclass game_activity_class;
 	jfieldID native_handle;
 	struct ANativeWindow *native_window;
@@ -150,44 +151,24 @@ static void dispatch_activity_surface(struct jni_callback_data *d, JNIEnv *env,
 	/* The realize signal can precede GameActivity.initializeNativeCode. */
 	if (native_handle == 0)
 		return;
-	/* GameActivity.P is the native handle consumed by its Java lifecycle
-	 * methods; it is not a C callback-table pointer.  Re-enter the actual
-	 * methods so Roblox's registered JNI implementation receives the same
-	 * Surface callbacks as on Android. */
-	jobject activity = (*env)->GetStaticObjectField(env, d->game_activity_class,
-	                                                (*env)->GetStaticFieldID(env,
-	                                                  d->game_activity_class, "O",
-	                                                  "Lcom/google/androidgamesdk/GameActivity;"));
-	if (!activity)
-		return;
-	jmethodID get_holder = (*env)->GetMethodID(env, d->this_class, "getHolder",
-	                                           "()Landroid/view/SurfaceHolder;");
-	jobject holder = get_holder ? (*env)->CallObjectMethod(env, d->this, get_holder) : NULL;
-	jclass holder_class = holder ? (*env)->GetObjectClass(env, holder) : NULL;
-	jmethodID get_surface = holder_class ? (*env)->GetMethodID(env, holder_class,
-		"getSurface", "()Landroid/view/Surface;") : NULL;
-	jobject surface = get_surface ? (*env)->CallObjectMethod(env, holder, get_surface) : NULL;
-	jmethodID created = (*env)->GetMethodID(env, d->game_activity_class,
-		"onSurfaceCreatedNative", "(JLandroid/view/Surface;)V");
-	jmethodID changed = (*env)->GetMethodID(env, d->game_activity_class,
-		"onSurfaceChangedNative", "(JLandroid/view/Surface;III)V");
-	if (surface && !d->native_window_notified && created) {
-		(*env)->CallVoidMethod(env, activity, created, native_handle, surface);
+	(void)native_handle;
+	/* SurfaceView.post() queues the callbacks on the Java UI thread.  Calling
+	 * GameActivity's native methods directly from the polling thread violates
+	 * ART's thread state contract and corrupts Roblox's render state. */
+	jmethodID dispatch = (*env)->GetMethodID(env, d->this_class,
+		"dispatchSurfaceLifecycle", "(II)V");
+	if (dispatch && !d->native_window_notified) {
 		d->native_window_notified = TRUE;
+		(*env)->CallVoidMethod(env, d->this, dispatch, width, height);
 	}
-	if (surface && d->native_window_notified && changed)
-		(*env)->CallVoidMethod(env, activity, changed, native_handle, surface, 1, width, height);
 	if ((*env)->ExceptionCheck(env))
 		(*env)->ExceptionClear(env);
-	if (surface) (*env)->DeleteLocalRef(env, surface);
-	if (holder_class) (*env)->DeleteLocalRef(env, holder_class);
-	if (holder) (*env)->DeleteLocalRef(env, holder);
-	(*env)->DeleteLocalRef(env, activity);
 }
 
 static gboolean surface_replay_on_main(gpointer opaque)
 {
 	struct jni_callback_data *d = opaque;
+	d->surface_replay_queued = FALSE;
 	JNIEnv *env = NULL;
 	jboolean detach = JNI_FALSE;
 	if ((*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
@@ -213,35 +194,14 @@ static void *late_surface_dispatch(void *opaque)
 	 * startup window so we don't make SurfaceView lifecycle timing fatal. */
 	for (int attempt = 0; attempt < 10; ++attempt) {
 		g_usleep(100000);
-		/* The ART looper owns the process main loop rather than GTK's default
-		 * loop.  Acquire that context around the small native-window creation
-		 * transaction so GTK allocation/lookups are serialized without posting
-		 * work that nobody pumps. */
-		GMainContext *context = g_main_context_default();
-		if (g_main_context_acquire(context)) {
-			(void)surface_replay_on_main(d);
-			g_main_context_release(context);
-			if (d->native_window_notified)
-				return NULL;
-		} else {
-			/* The GTK-backed window was already constructed by realize.  Once
-			 * that invariant holds, publishing the GameActivity callbacks is
-			 * JNI-only and safe from this attached ART thread. */
-			JNIEnv *env = NULL;
-			jboolean detach = JNI_FALSE;
-			if ((*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK &&
-			    (*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) == JNI_OK)
-				detach = JNI_TRUE;
-			if (env) {
-				d->surface_created = TRUE;
-				dispatch_activity_surface(d, env, 1280, 720);
-				d->surface_changed = TRUE;
-			}
-			if (d->native_window_notified)
-				return NULL;
-			if (detach)
-				(*d->jvm)->DetachCurrentThread(d->jvm);
+		/* Never execute JNI from this worker.  The ART/GTK main loop owns the
+		 * Java thread; invoke() transfers the callback to that thread. */
+		if (!d->surface_replay_queued && !d->native_window_notified) {
+			d->surface_replay_queued = TRUE;
+			g_main_context_invoke(NULL, surface_replay_on_main, d);
 		}
+		if (d->native_window_notified && d->surface_changed)
+			return NULL;
 	}
 	return NULL;
 }

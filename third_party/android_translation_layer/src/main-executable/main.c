@@ -338,8 +338,15 @@ static gboolean on_drop(GtkDropTarget *target, const GValue *value, double x, do
 char *find_jar_or_die(char *builddir_path, char *installed_path, char *install_prefix)
 {
 	char *path;
+	const char *override = NULL;
+	if (!strcmp(installed_path, REL_API_IMPL_JAR_INSTALL_PATH))
+		override = getenv("ATL_API_IMPL_JAR");
+	else if (!strcmp(installed_path, REL_FRAMEWORK_RES_INSTALL_PATH))
+		override = getenv("ATL_FRAMEWORK_RES_APK");
 
-	if (getenv("RUN_FROM_BUILDDIR")) {
+	if (override && *override) {
+		path = strdup(override);
+	} else if (getenv("RUN_FROM_BUILDDIR")) {
 		path = strdup(builddir_path); // for running out of builddir; using strdup so we can always safely call free on this
 	} else {
 		path = g_strdup_printf("%s/%s", install_prefix, installed_path);

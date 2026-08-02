@@ -41,6 +41,17 @@ public class SurfaceView extends View {
 		}
 	}
 
+	/** Deliver the first buffer lifecycle on the Android/GTK UI queue. */
+	public void dispatchSurfaceLifecycle(final int width, final int height) {
+		post(new Runnable() {
+			@Override
+			public void run() {
+				surfaceCreated();
+				surfaceChanged(1, width, height);
+			}
+		});
+	}
+
 	@Override
 	protected native long native_constructor(Context context, AttributeSet attrs);
 
