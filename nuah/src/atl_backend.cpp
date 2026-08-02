@@ -285,6 +285,29 @@ std::filesystem::path default_data_directory() {
          ("nuah-" + std::to_string(::getuid()));
 }
 
+std::optional<std::string> atl_jsse_bootclasspath() {
+  std::vector<std::filesystem::path> roots;
+  if (const char* home = std::getenv("NUAH_ATL_ANDROID16_HOME");
+      home && *home) {
+    const std::filesystem::path root(home);
+    roots.push_back(root / "lib/java/dex/art");
+    roots.push_back(root / "java/dex/art");
+    roots.push_back(root / "dex/art");
+  }
+  // The distro ATL install keeps ART's hostdex jars in this shared directory.
+  roots.emplace_back("/usr/local/lib64/java/dex/art");
+
+  for (const auto& root : roots) {
+    const auto wolfssl = root / "wolfssljni-hostdex.jar";
+    const auto bouncycastle = root / "bouncycastle-hostdex.jar";
+    if (std::filesystem::is_regular_file(wolfssl) &&
+        std::filesystem::is_regular_file(bouncycastle)) {
+      return wolfssl.string() + ":" + bouncycastle.string();
+    }
+  }
+  return std::nullopt;
+}
+
 void write_member(const ApkMember& member,
                   const std::filesystem::path& destination) {
   const auto temporary = destination.string() + ".nuah-new";
@@ -474,6 +497,14 @@ std::filesystem::path prepare_atl_native_libraries(
     arguments.push_back("-Djavax.net.ssl.trustStore=" + trust_store->string());
     arguments.emplace_back("-X");
     arguments.emplace_back("-Djavax.net.ssl.trustStoreType=JKS");
+  }
+  // Android's security.properties names WolfSSLProvider and BouncyCastle, but
+  // the standalone ATL launcher only boots core-oj/core-libart.  Append the
+  // already-installed hostdex provider jars so TrustManagerFactory.PKIX can
+  // resolve without adding a second JVM or compiling a provider.
+  if (const auto jsse = atl_jsse_bootclasspath()) {
+    arguments.emplace_back("-X");
+    arguments.push_back("-Xbootclasspath/a:" + *jsse);
   }
   if (options.activity && !options.activity->empty()) {
     arguments.emplace_back("-l");
