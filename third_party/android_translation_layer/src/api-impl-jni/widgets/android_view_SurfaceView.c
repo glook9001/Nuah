@@ -15,6 +15,7 @@
 /* Exported by the standalone ATL executable.  A weak declaration keeps this
  * JNI library usable by applications that do not use Nuah's direct launcher. */
 extern void atl_surface_ready(void) __attribute__((weak));
+extern GtkWindow *window;
 
 G_DEFINE_TYPE(SurfaceViewWidget, surface_view_widget, GTK_TYPE_WIDGET)
 
@@ -167,8 +168,6 @@ static void dispatch_activity_surface(struct jni_callback_data *d, JNIEnv *env,
 	}
 	if ((*env)->ExceptionCheck(env))
 		(*env)->ExceptionClear(env);
-	if (atl_surface_ready)
-		atl_surface_ready();
 }
 
 static gboolean surface_replay_on_main(gpointer opaque)
@@ -200,11 +199,22 @@ static void *late_surface_dispatch(void *opaque)
 	 * startup window so we don't make SurfaceView lifecycle timing fatal. */
 	for (int attempt = 0; attempt < 10; ++attempt) {
 		g_usleep(100000);
-		/* Never execute JNI from this worker.  The ART/GTK main loop owns the
-		 * Java thread; invoke() transfers the callback to that thread. */
-		if (!d->surface_replay_queued && !d->native_window_notified) {
-			d->surface_replay_queued = TRUE;
-			g_main_context_invoke(NULL, surface_replay_on_main, d);
+		/* This worker only invokes SurfaceView.post(), which transfers the
+		 * actual callbacks to Java's main Handler.  Do not call Roblox's native
+		 * lifecycle methods from here. */
+		if (!d->native_window_notified) {
+			JNIEnv *env = NULL;
+			jboolean detach = JNI_FALSE;
+			if ((*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK &&
+			    (*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) == JNI_OK)
+				detach = JNI_TRUE;
+			if (env) {
+				d->surface_created = TRUE;
+				dispatch_activity_surface(d, env, 1280, 720);
+				d->surface_changed = TRUE;
+			}
+			if (detach)
+				(*d->jvm)->DetachCurrentThread(d->jvm);
 		}
 		if (d->native_window_notified && d->surface_changed)
 			return NULL;
@@ -312,8 +322,7 @@ static void on_realize(GtkWidget *self, struct jni_callback_data *d)
 	if (!d->late_dispatch_started) {
 		d->late_dispatch_started = TRUE;
 		pthread_t thread;
-		int thread_rc = pthread_create(&thread, NULL, late_surface_dispatch, d);
-		if (thread_rc == 0)
+		if (pthread_create(&thread, NULL, late_surface_dispatch, d) == 0)
 			pthread_detach(thread);
 	}
 }
@@ -386,6 +395,13 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 
 	g_signal_connect(dummy, "resize", G_CALLBACK(on_resize), callback_data);
 	g_signal_connect(dummy, "realize", G_CALLBACK(on_realize), callback_data);
+	/* Start replay even when the host loop does not emit GTK realize. */
+	if (!callback_data->late_dispatch_started) {
+		callback_data->late_dispatch_started = TRUE;
+		pthread_t thread;
+		if (pthread_create(&thread, NULL, late_surface_dispatch, callback_data) == 0)
+			pthread_detach(thread);
+	}
 
 	return _INTPTR(graphics_offload);
 }
@@ -402,8 +418,6 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1createSnapshot(JNI
 {
 	return _INTPTR(gtk_snapshot_new());
 }
-
-extern GtkWindow *window;
 
 JNIEXPORT void JNICALL Java_android_view_SurfaceView_native_1postSnapshot(JNIEnv *env, jclass class, jlong surface_view, jlong snapshot_ptr)
 {

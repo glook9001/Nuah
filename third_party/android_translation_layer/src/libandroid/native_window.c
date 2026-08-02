@@ -55,6 +55,8 @@
 
 #include "native_window.h"
 
+extern GtkWindow *window;
+
 /**
  * Transforms that can be applied to buffers as they are displayed to a window.
  *
@@ -275,21 +277,31 @@ ANativeWindow *ANativeWindow_fromSurface(JNIEnv *env, jobject surface)
 	GtkWidget *surface_view_widget = gtk_widget_get_first_child(surface_wrapper);
 	if (!surface_view_widget || !GTK_IS_WIDGET(surface_view_widget))
 		return NULL;
-	GtkWidget *window = GTK_WIDGET(gtk_widget_get_native(surface_view_widget));
-	if (!window || !GTK_IS_WIDGET(window))
+	GtkWidget *host_window = GTK_WIDGET(gtk_widget_get_native(surface_view_widget));
+	gboolean detached_surface = FALSE;
+	if (!host_window || !GTK_IS_WIDGET(host_window)) {
+		host_window = window ? GTK_WIDGET(window) : NULL;
+		detached_surface = TRUE;
+	}
+	if (!host_window || !GTK_IS_WIDGET(host_window))
 		return NULL;
-	while ((width = gtk_widget_get_width(surface_view_widget)) == 0) {
+	while ((width = gtk_widget_get_width(surface_view_widget)) == 0 && !detached_surface) {
 		// FIXME: UGLY: this loop waits until the SurfaceView widget gets mapped
 		if (g_thread_self() == main_thread_id)
 			g_main_context_iteration(g_main_context_default(), false);
 	}
 	height = gtk_widget_get_height(surface_view_widget);
+	if (detached_surface) {
+		if (width <= 0) width = 1280;
+		if (height <= 0) height = 720;
+	}
 
 	// get position of the SurfaceView widget wrt the toplevel window
-	ret = gtk_widget_compute_point(surface_view_widget, window, &GRAPHENE_POINT_INIT(0, 0), &pos);
-	assert(ret);
+	ret = detached_surface ? FALSE : gtk_widget_compute_point(surface_view_widget, host_window, &GRAPHENE_POINT_INIT(0, 0), &pos);
+	if (!ret)
+		pos = GRAPHENE_POINT_INIT(0, 0);
 	// compensate for offset between the widget coordinates and the surface coordinates
-	gtk_native_get_surface_transform(GTK_NATIVE(window), &off_x, &off_y);
+	gtk_native_get_surface_transform(GTK_NATIVE(host_window), &off_x, &off_y);
 	pos.x += off_x;
 	pos.y += off_y;
 
@@ -303,7 +315,7 @@ ANativeWindow *ANativeWindow_fromSurface(JNIEnv *env, jobject surface)
 	native_window->width = width;
 	native_window->height = height;
 
-	GdkDisplay *display = gtk_root_get_display(GTK_ROOT(window));
+	GdkDisplay *display = gtk_root_get_display(GTK_ROOT(host_window));
 
 	if (!getenv("ATL_DIRECT_EGL")) {
 		// nothing to do
