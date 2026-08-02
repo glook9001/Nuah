@@ -149,14 +149,14 @@ static void ensure_native_window(struct jni_callback_data *d, GtkWidget *widget)
 static void dispatch_activity_surface(struct jni_callback_data *d, JNIEnv *env,
 	                                  gint width, gint height)
 {
-	if (!d->game_activity_class || !d->native_handle)
+	/* SurfaceView callbacks must not be gated on GameActivity's native P
+	 * handle.  P is installed by initializeNativeCode after the view is
+	 * constructed; waiting for it here drops the only surfaceCreated event and
+	 * leaves Roblox's SurfaceController with a null window forever.  The
+	 * callback remains queued on the Java UI thread, by which time GameActivity
+	 * has normally published P. */
+	if (!d->this_class)
 		return;
-	jlong native_handle = (*env)->GetStaticLongField(env, d->game_activity_class,
-	                                                  d->native_handle);
-	/* The realize signal can precede GameActivity.initializeNativeCode. */
-	if (native_handle == 0)
-		return;
-	(void)native_handle;
 	/* SurfaceView.post() queues the callbacks on the Java UI thread.  Calling
 	 * GameActivity's native methods directly from the polling thread violates
 	 * ART's thread state contract and corrupts Roblox's render state. */

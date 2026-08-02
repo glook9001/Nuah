@@ -10,6 +10,12 @@ import java.util.ArrayList;
 public class SurfaceView extends View {
 
 	final ArrayList<SurfaceHolder.Callback> mCallbacks = new ArrayList<SurfaceHolder.Callback>();
+	/* SurfaceView can be realized before Roblox registers its holder callback.
+	 * Keep the first lifecycle state so a late callback gets the same
+	 * surfaceCreated/surfaceChanged pair instead of silently missing it. */
+	private boolean mSurfaceReady = false;
+	private int mSurfaceWidth = 0;
+	private int mSurfaceHeight = 0;
 
 	public SurfaceView(Context context) {
 		super(context);
@@ -46,6 +52,9 @@ public class SurfaceView extends View {
 
 	/** Deliver the first buffer lifecycle on the Android/GTK UI queue. */
 	public void dispatchSurfaceLifecycle(final int width, final int height) {
+		mSurfaceReady = true;
+		mSurfaceWidth = width;
+		mSurfaceHeight = height;
 		post(new Runnable() {
 			@Override
 			public void run() {
@@ -93,6 +102,19 @@ public class SurfaceView extends View {
 			synchronized (mCallbacks) {
 				if (mCallbacks.contains(callback) == false) {
 					mCallbacks.add(callback);
+					if (mSurfaceReady) {
+						final int width = mSurfaceWidth;
+						final int height = mSurfaceHeight;
+						/* Registration may happen off the UI thread.  Match
+						 * Android's callback ordering on the main queue. */
+						new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+							@Override
+							public void run() {
+								callback.surfaceCreated(mSurfaceHolder);
+								callback.surfaceChanged(mSurfaceHolder, 1, width, height);
+							}
+						});
+					}
 				}
 			}
 		}
