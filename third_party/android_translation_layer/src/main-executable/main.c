@@ -397,7 +397,14 @@ static void open(GtkApplication *app, GFile **files, gint nfiles, const gchar *h
 	if (d->apk_instrumentation_class)
 		test_runner_jar = find_jar_or_die(TEST_RUNNER_JAR_PATH_LOCAL, REL_TEST_RUNNER_JAR_INSTALL_PATH, dex_install_dir);
 
-	char *api_impl_natives_dir = g_strdup_printf("%s/%s", dex_install_dir, REL_API_IMPL_NATIVES_INSTALL_PATH);
+	/* A Nuah runtime may supply a rebuilt ATL native set.  Prefer it over the
+	 * system dex install path; otherwise ART loads a second stale
+	 * libtranslation_layer_main.so from /usr/local and the JNI callbacks split
+	 * across two libraries. */
+	const char *native_override = getenv("ATL_NATIVE_DIR");
+	char *api_impl_natives_dir = native_override && *native_override
+		? g_strdup(native_override)
+		: g_strdup_printf("%s/%s", dex_install_dir, REL_API_IMPL_NATIVES_INSTALL_PATH);
 
 	char *app_lib_dir = malloc(strlen(app_data_dir) + strlen("/lib") + 1); // +1 for NULL
 	strcpy(app_lib_dir, app_data_dir);

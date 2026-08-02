@@ -1,4 +1,5 @@
 #include <gtk/gtk.h>
+#include <stdio.h>
 
 #include "defines.h"
 #include "util.h"
@@ -8,7 +9,14 @@
 JNIEXPORT void JNICALL Java_android_view_Window_set_1widget_1as_1root(JNIEnv *env, jobject this, jlong window, jlong widget)
 {
 	GtkWindow *gtk_window = GTK_WINDOW(_PTR(window));
-	GtkWidget *gtk_widget = gtk_widget_get_parent(GTK_WIDGET(_PTR(widget)));
+	/* Window.setContentView passes a decor widget that may already be nested
+	 * in Android's content wrappers.  GTK can only attach an unparented
+	 * widget to a GtkWindow, so promote the supplied widget to its highest
+	 * unparented ancestor rather than trying to reparent the nested decor. */
+	GtkWidget *gtk_widget = GTK_WIDGET(_PTR(widget));
+	while (gtk_widget_get_parent(gtk_widget) &&
+	       gtk_widget_get_parent(gtk_widget) != GTK_WIDGET(gtk_window))
+		gtk_widget = gtk_widget_get_parent(gtk_widget);
 	if (gtk_widget != gtk_window_get_child(gtk_window)) {
 		gtk_window_set_child(gtk_window, gtk_widget);
 	}
