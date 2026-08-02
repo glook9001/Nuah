@@ -51,6 +51,14 @@ int __android_log_print(int, const char* tag, const char* format, ...) {
   record(message);
   return result;
 }
+int __android_log_vprint(int priority, const char* tag, const char* format,
+                         va_list arguments) {
+  char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
+  const int result =
+      std::vsnprintf(message, sizeof(message), format ? format : "", arguments);
+  __android_log_write(priority, tag, message);
+  return result;
+}
 void __android_log_assert(const char* condition, const char* tag, const char* format, ...) {
   char detail[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   if (format) {

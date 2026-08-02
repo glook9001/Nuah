@@ -1,4 +1,6 @@
 #include <sys/socket.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +19,16 @@ const unsigned char kSlIidVolume = 0;
 }  // namespace
 
 extern "C" {
+
+/* ATL's Android Looper can allocate its wake event on descriptor 0 when the
+ * launcher inherits a closed stdin.  Roblox later closes stdin as part of its
+ * Android process setup, invalidating that event.  Keep descriptor 0 open only
+ * for the explicit ATL diagnostic launch; normal Nuah processes retain the
+ * host close semantics. */
+int close(int fd) {
+  if (fd == 0 && std::getenv("NUAH_ATL_KEEP_STDIN_FD")) return 0;
+  return static_cast<int>(::syscall(SYS_close, fd));
+}
 
 // Android NDK MediaFormat exports these as pointer-valued data symbols.
 const char* AMEDIAFORMAT_KEY_AAC_PROFILE = "aac-profile";
