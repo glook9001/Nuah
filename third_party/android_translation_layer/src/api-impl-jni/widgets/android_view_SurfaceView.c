@@ -119,18 +119,44 @@ struct jni_callback_data {
 	GtkWidget *surface_view_widget;
 	gint resize_width;
 	gint resize_height;
+	gboolean surface_created;
+	gboolean surface_changed;
+	guint surface_ready_attempts;
 };
+
+static gboolean dispatch_surface_changed(struct jni_callback_data *d)
+{
+	if (!d->surface_created)
+		return G_SOURCE_CONTINUE;
+
+	const gint width = d->resize_width > 0 ? d->resize_width :
+		gtk_widget_get_width(d->surface_view_widget);
+	const gint height = d->resize_height > 0 ? d->resize_height :
+		gtk_widget_get_height(d->surface_view_widget);
+	if (width <= 0 || height <= 0) {
+		/* GTK may realize the widget before its first allocation.  Keep
+		 * polling briefly instead of allowing Roblox to observe a null
+		 * ANativeWindow and permanently discard the surface. */
+		if (++d->surface_ready_attempts < 300)
+			return G_SOURCE_CONTINUE;
+		return G_SOURCE_REMOVE;
+	}
+
+	d->resize_width = width;
+	d->resize_height = height;
+	JNIEnv *env;
+	(*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6);
+	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceChanged,
+	                       1 /* RGBA_8888 */, width, height);
+	d->surface_changed = TRUE;
+	return G_SOURCE_REMOVE;
+}
 
 static gboolean on_resize_delayed(struct jni_callback_data *d)
 {
-	JNIEnv *env;
-	(*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6);
-
-	// TODO: are there cases where returning RGBA_8888 is a bad idea?
-	// NOTE: we want to call the private method of android.view.SurfaceView, not the related method with this name in the API
-	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceChanged, 1 /*RGBA_8888*/, d->resize_width, d->resize_height);
-
-	return G_SOURCE_REMOVE;
+	if (d->surface_changed)
+		return G_SOURCE_REMOVE;
+	return dispatch_surface_changed(d);
 }
 
 static void on_resize(GtkWidget *self, gint width, gint height, struct jni_callback_data *d)
@@ -148,16 +174,15 @@ static gboolean on_realize_delayed(struct jni_callback_data *d)
 
 	// NOTE: we want to call the private method of android.view.SurfaceView, not the related method with this name in the API
 	(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceCreated);
+	d->surface_created = TRUE;
 
 	/* The first size allocation can precede GTK realization.  In that case the
 	 * resize signal records dimensions but its Java callback is never delivered,
 	 * leaving Roblox's SurfaceController with a null native window. */
-	const gint width = gtk_widget_get_width(d->surface_view_widget);
-	const gint height = gtk_widget_get_height(d->surface_view_widget);
-	if (width > 0 && height > 0) {
-		(*env)->CallVoidMethod(env, d->this, handle_cache.surface_view.surfaceChanged,
-		                       1 /* RGBA_8888 */, width, height);
-	}
+	d->surface_ready_attempts = 0;
+	if (dispatch_surface_changed(d) != G_SOURCE_REMOVE)
+		g_timeout_add_full(G_PRIORITY_HIGH_IDLE + 20, 16,
+		                   G_SOURCE_FUNC(dispatch_surface_changed), d, NULL);
 
 	return G_SOURCE_REMOVE;
 }
@@ -187,6 +212,9 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	callback_data->this = _REF(this);
 	callback_data->this_class = _REF((*env)->FindClass(env, "android/view/SurfaceView"));
 	callback_data->surface_view_widget = dummy;
+	callback_data->surface_created = FALSE;
+	callback_data->surface_changed = FALSE;
+	callback_data->surface_ready_attempts = 0;
 
 	g_signal_connect(dummy, "resize", G_CALLBACK(on_resize), callback_data);
 	g_signal_connect(dummy, "realize", G_CALLBACK(on_realize), callback_data);
