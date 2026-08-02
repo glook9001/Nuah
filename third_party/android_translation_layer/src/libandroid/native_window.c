@@ -267,8 +267,17 @@ ANativeWindow *ANativeWindow_fromSurface(JNIEnv *env, jobject surface)
 		.global_remove = wl_registry_global_remove_handler
 	};
 
-	GtkWidget *surface_view_widget = gtk_widget_get_first_child(_PTR(_GET_LONG_FIELD(surface, "widget")));
+	GtkWidget *surface_wrapper = env
+		? _PTR(_GET_LONG_FIELD(surface, "widget"))
+		: (GtkWidget *)surface;
+	if (!surface_wrapper || !GTK_IS_WIDGET(surface_wrapper))
+		return NULL;
+	GtkWidget *surface_view_widget = gtk_widget_get_first_child(surface_wrapper);
+	if (!surface_view_widget || !GTK_IS_WIDGET(surface_view_widget))
+		return NULL;
 	GtkWidget *window = GTK_WIDGET(gtk_widget_get_native(surface_view_widget));
+	if (!window || !GTK_IS_WIDGET(window))
+		return NULL;
 	while ((width = gtk_widget_get_width(surface_view_widget)) == 0) {
 		// FIXME: UGLY: this loop waits until the SurfaceView widget gets mapped
 		if (g_thread_self() == main_thread_id)

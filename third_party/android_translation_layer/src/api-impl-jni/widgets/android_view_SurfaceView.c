@@ -10,6 +10,7 @@
 
 #include "../generated_headers/android_view_SurfaceView.h"
 #include "android_view_SurfaceView.h"
+#include "../../libandroid/native_window.h"
 
 G_DEFINE_TYPE(SurfaceViewWidget, surface_view_widget, GTK_TYPE_WIDGET)
 
@@ -125,71 +126,123 @@ struct jni_callback_data {
 	gboolean surface_changed;
 	guint surface_ready_attempts;
 	gboolean late_dispatch_started;
-	jmethodID get_holder;
-	jmethodID holder_get_surface;
-	jobject activity;
 	jclass game_activity_class;
-	jmethodID native_surface_created;
-	jmethodID native_surface_changed;
 	jfieldID native_handle;
+	struct ANativeWindow *native_window;
+	gboolean native_window_notified;
 };
+
+/* Prefix of the AGDK GameActivity native object.  Roblox's initializeNativeCode
+ * returns this object and fills the callback table during GameActivity_register. */
+struct atl_game_activity_callbacks {
+	void (*on_start)(void *);
+	void (*on_resume)(void *);
+	void (*on_save_state)(void *, void *, void *);
+	void (*on_pause)(void *);
+	void (*on_stop)(void *);
+	void (*on_destroy)(void *);
+	void (*on_focus)(void *, gboolean);
+	void (*on_native_window_created)(void *, struct ANativeWindow *);
+	void (*on_native_window_resized)(void *, struct ANativeWindow *, gint32, gint32);
+	void (*on_native_window_redraw)(void *, struct ANativeWindow *);
+	void (*on_native_window_destroyed)(void *, struct ANativeWindow *);
+};
+
+struct atl_game_activity {
+	struct atl_game_activity_callbacks *callbacks;
+};
+
+static void ensure_native_window(struct jni_callback_data *d, GtkWidget *widget)
+{
+	if (d->native_window)
+		return;
+	GtkWidget *parent = gtk_widget_get_parent(widget);
+	g_printerr("ATL Surface realize self=%p parent=%p\\n", (void *)widget, (void *)parent);
+	d->native_window = ANativeWindow_fromSurface(NULL, (jobject)parent);
+}
 
 static void dispatch_activity_surface(struct jni_callback_data *d, JNIEnv *env,
 	                                  gint width, gint height)
 {
-	jobject holder = (*env)->CallObjectMethod(env, d->this, d->get_holder);
-	if ((*env)->ExceptionCheck(env)) {
-		(*env)->ExceptionDescribe(env);
-		(*env)->ExceptionClear(env);
-		return;
-	}
-	/* Call the SDK's registered native entry points directly.  This is the
-	 * exact boundary used by GameActivity after its callback wrapper and avoids
-	 * any timing dependence on SurfaceView's callback ArrayList. */
 	jlong native_handle = (*env)->GetStaticLongField(env, d->game_activity_class,
 	                                                  d->native_handle);
-	if (!d->holder_get_surface) {
-		jclass holder_class = (*env)->GetObjectClass(env, holder);
-		d->holder_get_surface = (*env)->GetMethodID(env, holder_class,
-		                                             "getSurface", "()Landroid/view/Surface;");
-		(*env)->DeleteLocalRef(env, holder_class);
+	/* The realize signal can precede GameActivity.initializeNativeCode. */
+	if (native_handle == 0)
+		return;
+	/* ATL's ANativeWindow_fromSurface waits for a mapped GTK allocation. */
+	struct atl_game_activity *activity = (struct atl_game_activity *)(intptr_t)native_handle;
+	struct atl_game_activity_callbacks *callbacks = activity->callbacks;
+	if (!callbacks)
+		return;
+	if (!d->native_window) {
+		d->native_window = ANativeWindow_fromSurface(NULL,
+	                                               (jobject)gtk_widget_get_parent(d->surface_view_widget));
 	}
-	jobject surface = (*env)->CallObjectMethod(env, holder, d->holder_get_surface);
-	(*env)->CallVoidMethod(env, d->activity, d->native_surface_created,
-	                       native_handle, surface);
-	if ((*env)->ExceptionCheck(env)) {
-		(*env)->ExceptionDescribe(env);
-		(*env)->ExceptionClear(env);
+	if (d->native_window && !d->native_window_notified &&
+	    callbacks->on_native_window_created) {
+		callbacks->on_native_window_created(activity, d->native_window);
+		d->native_window_notified = TRUE;
 	}
-	(*env)->CallVoidMethod(env, d->activity, d->native_surface_changed,
-	                       native_handle, surface,
-	                       1 /* RGBA_8888 */, width, height);
-	if ((*env)->ExceptionCheck(env)) {
-		(*env)->ExceptionDescribe(env);
-		(*env)->ExceptionClear(env);
+	if (d->native_window && d->native_window_notified &&
+	    callbacks->on_native_window_resized) {
+		callbacks->on_native_window_resized(activity, d->native_window, width, height);
 	}
-	(*env)->DeleteLocalRef(env, holder);
-	(*env)->DeleteLocalRef(env, surface);
+}
+
+static gboolean surface_replay_on_main(gpointer opaque)
+{
+	struct jni_callback_data *d = opaque;
+	JNIEnv *env = NULL;
+	jboolean detach = JNI_FALSE;
+	if ((*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+		if ((*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) != JNI_OK)
+			return G_SOURCE_REMOVE;
+		detach = JNI_TRUE;
+	}
+	d->surface_created = TRUE;
+	const gint width = d->resize_width > 0 ? d->resize_width : 1280;
+	const gint height = d->resize_height > 0 ? d->resize_height : 720;
+	dispatch_activity_surface(d, env, width, height);
+	d->surface_changed = TRUE;
+	if (detach)
+		(*d->jvm)->DetachCurrentThread(d->jvm);
+	return G_SOURCE_REMOVE;
 }
 
 static void *late_surface_dispatch(void *opaque)
 {
 	struct jni_callback_data *d = opaque;
-	JNIEnv *env = NULL;
-	if ((*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) != JNI_OK)
-		return NULL;
 	/* GameActivity installs its SurfaceHolder callbacks asynchronously.  A
 	 * single replay can land before that registration; retry for a bounded
 	 * startup window so we don't make SurfaceView lifecycle timing fatal. */
 	for (int attempt = 0; attempt < 10; ++attempt) {
 		sleep(1);
-		d->surface_created = TRUE;
-		const gint width = d->resize_width > 0 ? d->resize_width : 1280;
-		const gint height = d->resize_height > 0 ? d->resize_height : 720;
-		dispatch_activity_surface(d, env, width, height);
-		d->surface_changed = TRUE;
+		/* The ART looper owns the process main loop rather than GTK's default
+		 * loop.  Acquire that context around the small native-window creation
+		 * transaction so GTK allocation/lookups are serialized without posting
+		 * work that nobody pumps. */
+		GMainContext *context = g_main_context_default();
+		if (g_main_context_acquire(context)) {
+			(void)surface_replay_on_main(d);
+			g_main_context_release(context);
+		} else {
+			/* The GTK-backed window was already constructed by realize.  Once
+			 * that invariant holds, publishing the GameActivity callbacks is
+			 * JNI-only and safe from this attached ART thread. */
+			JNIEnv *env = NULL;
+			jboolean detach = JNI_FALSE;
+			if ((*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK &&
+			    (*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) == JNI_OK)
+				detach = JNI_TRUE;
+			if (env) {
+				d->surface_created = TRUE;
+				dispatch_activity_surface(d, env, 1280, 720);
+				d->surface_changed = TRUE;
+			}
+			if (detach)
+				(*d->jvm)->DetachCurrentThread(d->jvm);
+		}
 	}
-	(*d->jvm)->DetachCurrentThread(d->jvm);
 	return NULL;
 }
 
@@ -258,6 +311,22 @@ static gboolean on_realize_delayed(struct jni_callback_data *d)
 
 static void on_realize(GtkWidget *self, struct jni_callback_data *d)
 {
+	if (gtk_widget_get_width(self) <= 0 || gtk_widget_get_height(self) <= 0)
+		gtk_widget_size_allocate(self,
+		                         &(GtkAllocation){.x = 0, .y = 0,
+		                                           .width = 1280, .height = 720}, -1);
+	JNIEnv *env = NULL;
+	jboolean detach = JNI_FALSE;
+	if ((*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+		if ((*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) != JNI_OK)
+			return;
+		detach = JNI_TRUE;
+	}
+	/* Build the GTK-backed native window while this signal is on GTK's UI
+	 * thread.  The later GameActivity replay only publishes this object. */
+	ensure_native_window(d, self);
+	if (detach)
+		(*d->jvm)->DetachCurrentThread(d->jvm);
 	/* The ATL launcher may run GTK from a non-default GLib context, where
 	 * g_idle/g_timeout sources never execute.  The realize signal itself is on
 	 * GTK's UI thread, so deliver the Android surface callbacks synchronously. */
@@ -277,12 +346,21 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	GtkWidget *wrapper = g_object_ref(wrapper_widget_new());
 	GtkWidget *dummy = surface_view_widget_new();
 	gtk_widget_set_name(dummy, "dummy widget for SurfaceView");
+	/* The Android SurfaceView has a real buffer size before the first
+	 * SurfaceHolder callback.  Give GTK the same host dimensions so
+	 * ANativeWindow_fromSurface cannot wait forever for its allocation. */
+	gtk_widget_set_size_request(dummy, 1280, 720);
 	GtkWidget *graphics_offload = gtk_graphics_offload_new(dummy);
+	gtk_widget_set_hexpand(graphics_offload, true);
+	gtk_widget_set_vexpand(graphics_offload, true);
+	gtk_widget_set_hexpand(dummy, true);
+	gtk_widget_set_vexpand(dummy, true);
 	wrapper_widget_set_child(WRAPPER_WIDGET(wrapper), graphics_offload);
 	wrapper_widget_set_jobject(WRAPPER_WIDGET(wrapper), env, this);
 	// TODO: is this correct for all usecases? how do we know when it's not?
 	gtk_widget_set_hexpand(wrapper, true);
 	gtk_widget_set_vexpand(wrapper, true);
+	wrapper_widget_set_layout_params(WRAPPER_WIDGET(wrapper), 1280, 720);
 
 	JavaVM *jvm;
 	(*env)->GetJavaVM(env, &jvm);
@@ -296,28 +374,19 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	callback_data->surface_changed = FALSE;
 	callback_data->surface_ready_attempts = 0;
 	callback_data->late_dispatch_started = FALSE;
-	jclass actual_class = (*env)->GetObjectClass(env, this);
-	callback_data->get_holder = (*env)->GetMethodID(env, actual_class,
-	                                                "getHolder", "()Landroid/view/SurfaceHolder;");
-	jmethodID get_context = (*env)->GetMethodID(env, actual_class,
+	jmethodID get_context = (*env)->GetMethodID(env, callback_data->this_class,
 	                                            "getContext", "()Landroid/content/Context;");
 	jobject view_context = (*env)->CallObjectMethod(env, this, get_context);
-	callback_data->activity = (*env)->NewGlobalRef(env, view_context);
-	(*env)->DeleteLocalRef(env, view_context);
-	jclass activity_class = (*env)->GetObjectClass(env, callback_data->activity);
+	jclass activity_class = (*env)->GetObjectClass(env, view_context);
 	jclass game_activity_local = (*env)->GetSuperclass(env, activity_class);
 	callback_data->game_activity_class = (*env)->NewGlobalRef(env, game_activity_local);
-	callback_data->native_surface_created = (*env)->GetMethodID(
-		env, game_activity_local,
-		"onSurfaceCreatedNative", "(JLandroid/view/Surface;)V");
-	callback_data->native_surface_changed = (*env)->GetMethodID(
-		env, game_activity_local,
-		"onSurfaceChangedNative", "(JLandroid/view/Surface;III)V");
 	callback_data->native_handle = (*env)->GetStaticFieldID(
 		env, game_activity_local, "P", "J");
 	(*env)->DeleteLocalRef(env, activity_class);
 	(*env)->DeleteLocalRef(env, game_activity_local);
-	(*env)->DeleteLocalRef(env, actual_class);
+	(*env)->DeleteLocalRef(env, view_context);
+	callback_data->native_window = NULL;
+	callback_data->native_window_notified = FALSE;
 
 	g_signal_connect(dummy, "resize", G_CALLBACK(on_resize), callback_data);
 	g_signal_connect(dummy, "realize", G_CALLBACK(on_realize), callback_data);
