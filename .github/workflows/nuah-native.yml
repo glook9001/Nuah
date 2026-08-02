@@ -230,7 +230,7 @@ jobs:
         run: |
           set -euo pipefail
           packages=(
-            cmake ninja-build pkg-config default-jdk libegl-dev libgtk-4-dev
+            cmake ninja-build ccache pkg-config default-jdk libegl-dev libgtk-4-dev
             libadwaita-1-dev libwebkitgtk-6.0-dev libasound2-dev
             libpipewire-0.3-dev libpulse-dev libsndio-dev libxss-dev libgbm-dev
             libdecor-0-dev libavcodec-dev libcap-dev libdrm-dev libffi-dev
@@ -264,6 +264,22 @@ jobs:
           timeout 10m sudo apt-get "${apt_options[@]}" install -y \
             --no-install-recommends "${missing[@]}"
 
+      - name: Restore C/C++ compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: nuah-ccache-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'third_party/libhybris.lock', 'third_party/android2gnulinux/**', 'third_party/libnativehelper/**') }}
+          restore-keys: |
+            nuah-ccache-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.ccache"
+          ccache --set-config=cache_dir="$GITHUB_WORKSPACE/.ccache"
+          ccache --set-config=max_size=1G
+          ccache --zero-stats
+
       - name: Install prebuilt SDL3 development package
         run: |
           set -euo pipefail
@@ -287,7 +303,9 @@ jobs:
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DNUAH_BUILD_ATL=OFF \
-            -DNUAH_SDL3_ROOT="$GITHUB_WORKSPACE/.ci/sdl3/root"
+            -DNUAH_SDL3_ROOT="$GITHUB_WORKSPACE/.ci/sdl3/root" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build native providers and supervisor
         run: cmake --build build-ci --parallel
@@ -304,6 +322,9 @@ jobs:
             echo 'Android-facing provider imports a fortified libc ABI symbol.' >&2
             exit 1
           fi
+
+      - name: Report compiler cache statistics
+        run: ccache --show-stats
 
       - name: Publish native runtime artifacts
         uses: actions/upload-artifact@v4
