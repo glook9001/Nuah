@@ -533,6 +533,13 @@ std::filesystem::path prepare_atl_native_libraries(
   if (options.activity && !options.activity->empty()) {
     arguments.emplace_back("-l");
     arguments.push_back(*options.activity);
+  } else if (options.uri && !options.uri->empty()) {
+    /* ATL's manifest resolver routes roblox:// through ActivityProtocolLaunch,
+     * but that activity intentionally strips the data URI when it forwards to
+     * the splash screen.  Launch the real GameActivity directly so the URI
+     * remains attached to MainGameActivity and Roblox can consume placeId. */
+    arguments.emplace_back("-l");
+    arguments.emplace_back("com.roblox.client.startup.MainGameActivity");
   }
   if (options.uri && !options.uri->empty()) {
     arguments.emplace_back("--uri");

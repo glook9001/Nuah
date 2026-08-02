@@ -15,6 +15,10 @@
 #include <dirent.h>
 #include <glib.h>
 
+/* PathClassLoader does not consistently enumerate the primary APK on host
+ * ART. Keep its real path in every native asset set as a fallback. */
+extern char *apk_path;
+
 #define JAVA_ENUM_CLASS android_content_res_AssetManager
 enum {
 	JAVA_ENUM(STYLE_TYPE),
@@ -146,7 +150,8 @@ JNIEXPORT void JNICALL Java_android_content_res_AssetManager_native_1setApkAsset
 {
 	struct AssetManager *asset_manager = _PTR(_GET_LONG_FIELD(this, "mObject"));
 	AM_SCOPEDLOCK(asset_manager)
-	const struct ApkAssets *apk_assets[num_assets];
+	const int extra_asset = (apk_path && *apk_path) ? 1 : 0;
+	const struct ApkAssets *apk_assets[num_assets + extra_asset];
 	for (int i = 0; i < num_assets; i++) {
 		jstring path_jstr = (jstring)((*env)->GetObjectArrayElement(env, paths, i));
 		const char *path = (*env)->GetStringUTFChars(env, path_jstr, NULL);
@@ -156,7 +161,9 @@ JNIEXPORT void JNICALL Java_android_content_res_AssetManager_native_1setApkAsset
 			apk_assets[i] = ApkAssets_load(strdup(path), false);
 		(*env)->ReleaseStringUTFChars(env, path_jstr, path);
 	}
-	AssetManager_setApkAssets(asset_manager, apk_assets, num_assets, true, true);
+	if (extra_asset)
+		apk_assets[num_assets] = ApkAssets_load(strdup(apk_path), false);
+	AssetManager_setApkAssets(asset_manager, apk_assets, num_assets + extra_asset, true, true);
 }
 
 JNIEXPORT jint JNICALL Java_android_content_res_AssetManager_loadResourceValue(JNIEnv *env, jobject this, jint ident, jshort density, jobject outValue, jboolean resolve)
