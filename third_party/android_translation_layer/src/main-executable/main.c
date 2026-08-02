@@ -235,6 +235,59 @@ struct jni_callback_data {
 };
 
 static char *uri_option = NULL;
+static gboolean roblox_app_started = FALSE;
+
+void *bionic_dlopen(const char *filename, int flag);
+void *bionic_dlsym(void *handle, const char *symbol);
+
+/* MainGameActivity is normally launched by ActivityNativeMain, which invokes
+ * this entry point after its app-shell setup.  A direct roblox:// launch is
+ * intentionally routed to MainGameActivity so the place URI survives, so
+ * reproduce that one app-start edge after the synthetic activity lifecycle. */
+static gboolean roblox_direct_app_start(gpointer unused)
+{
+	(void)unused;
+	if (roblox_app_started)
+		return G_SOURCE_REMOVE;
+	JNIEnv *env = get_jni_env();
+	void *handle = dlopen("libroblox.so", RTLD_NOLOAD | RTLD_NOW);
+	gboolean bionic_handle = FALSE;
+	void (*start)(JNIEnv *, jclass) = handle
+		? (void (*)(JNIEnv *, jclass))dlsym(handle,
+			"Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeStartLuaAppDM")
+		: (void (*)(JNIEnv *, jclass))dlsym(RTLD_DEFAULT,
+			"Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeStartLuaAppDM");
+	if (!start) {
+		if (!handle) {
+			handle = bionic_dlopen("libroblox.so", RTLD_LAZY);
+			bionic_handle = handle != NULL;
+		}
+		if (handle)
+			start = (void (*)(JNIEnv *, jclass))bionic_dlsym(handle,
+				"Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeStartLuaAppDM");
+	}
+	jclass klass = (*env)->FindClass(env, "com/roblox/engine/jni/NativeGLInterface");
+	jmethodID method = klass ? (*env)->GetStaticMethodID(env, klass,
+		"nativeAppBridgeStartLuaAppDM", "()V") : NULL;
+	if (!start && !method) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		if (handle && !bionic_handle) dlclose(handle);
+		return G_SOURCE_CONTINUE;
+	}
+	fprintf(stderr, "ATL: starting Roblox app bridge\n");
+	if (method)
+		(*env)->CallStaticVoidMethod(env, klass, method);
+	else
+		start(env, klass);
+	roblox_app_started = TRUE;
+	if ((*env)->ExceptionCheck(env)) {
+		(*env)->ExceptionDescribe(env);
+		(*env)->ExceptionClear(env);
+	}
+	(*env)->DeleteLocalRef(env, klass);
+	if (handle && !bionic_handle) dlclose(handle);
+	return G_SOURCE_REMOVE;
+}
 
 static void parse_string_extras(JNIEnv *env, char **extra_string_keys, jobject intent)
 {
@@ -696,8 +749,15 @@ static void open(GtkApplication *app, GFile **files, gint nfiles, const gchar *h
 
 	if (!d->apk_instrumentation_class) {
 		activity_start(env, activity_object);
-
 		g_timeout_add(10, G_SOURCE_FUNC(hacky_on_window_focus_changed_callback), env);
+	}
+	if (d->apk_main_activity_class) {
+		/* MainGameActivity normally receives this call from the shell's
+		 * ActivityNativeMain.  Direct roblox:// launches skip that shell, so
+		 * invoke it now and retain a retry timer for late JNI registration. */
+		fprintf(stderr, "ATL: dispatching direct app bridge for %s\n", d->apk_main_activity_class);
+		roblox_direct_app_start(NULL);
+		g_timeout_add(500, G_SOURCE_FUNC(roblox_direct_app_start), NULL);
 	}
 
 	jobject input_queue_callback = g_object_get_data(G_OBJECT(window), "input_queue_callback");
