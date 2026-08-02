@@ -244,29 +244,33 @@ jobject com_roblox_engine_jni_autovalue_AutoValue_InitParams_vrContext(
 
 #define DEVICE_STRING(name, value)                                      \
   jobject com_roblox_engine_jni_model_DeviceParams_##name(              \
-      JNIEnv* env, jobject object) {                                     \
+      JNIEnv* env, jobject object, va_list args) {                        \
     (void)object;                                                        \
+    (void)args;                                                          \
     return string_value(env, value);                                    \
   }
 #define DEVICE_INT(name, value)                                         \
   jint com_roblox_engine_jni_model_DeviceParams_##name(                 \
-      JNIEnv* env, jobject object) {                                     \
+      JNIEnv* env, jobject object, va_list args) {                        \
     (void)env;                                                           \
     (void)object;                                                        \
+    (void)args;                                                          \
     return value;                                                        \
   }
 #define DEVICE_LONG(name, value)                                        \
   jlong com_roblox_engine_jni_model_DeviceParams_##name(                \
-      JNIEnv* env, jobject object) {                                     \
+      JNIEnv* env, jobject object, va_list args) {                        \
     (void)env;                                                           \
     (void)object;                                                        \
+    (void)args;                                                          \
     return value;                                                        \
   }
 #define DEVICE_BOOLEAN(name, value)                                     \
   jboolean com_roblox_engine_jni_model_DeviceParams_##name(             \
-      JNIEnv* env, jobject object) {                                     \
+      JNIEnv* env, jobject object, va_list args) {                        \
     (void)env;                                                           \
     (void)object;                                                        \
+    (void)args;                                                          \
     return value;                                                        \
   }
 
@@ -293,16 +297,18 @@ DEVICE_STRING(socModel, "x86_64")
 DEVICE_STRING(testDeviceName, "")
 
 jobject com_roblox_engine_jni_model_PlatformParams_assetFolderPath(
-    JNIEnv* env, jobject object) {
+    JNIEnv* env, jobject object, va_list args) {
   (void)object;
+  (void)args;
   return string_value(env, nuah_content_path);
 }
 
 #define PLATFORM_BOOLEAN(name, value)                                   \
   jboolean com_roblox_engine_jni_model_PlatformParams_##name(           \
-      JNIEnv* env, jobject object) {                                     \
+      JNIEnv* env, jobject object, va_list args) {                        \
     (void)env;                                                           \
     (void)object;                                                        \
+    (void)args;                                                          \
     if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
       fprintf(stderr, "nuah facade: PlatformParams.%s=%d\n", #name,     \
               (int)(value));                                             \
@@ -310,9 +316,10 @@ jobject com_roblox_engine_jni_model_PlatformParams_assetFolderPath(
   }
 #define PLATFORM_INT(name, value)                                       \
   jint com_roblox_engine_jni_model_PlatformParams_##name(               \
-      JNIEnv* env, jobject object) {                                     \
+      JNIEnv* env, jobject object, va_list args) {                        \
     (void)env;                                                           \
     (void)object;                                                        \
+    (void)args;                                                          \
     if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
       fprintf(stderr, "nuah facade: PlatformParams.%s=%d\n", #name,     \
               (int)(value));                                             \
@@ -320,9 +327,10 @@ jobject com_roblox_engine_jni_model_PlatformParams_assetFolderPath(
   }
 
 jfloat com_roblox_engine_jni_model_PlatformParams_dpiScale(
-    JNIEnv* env, jobject object) {
+    JNIEnv* env, jobject object, va_list args) {
   (void)env;
   (void)object;
+  (void)args;
   if (getenv("NUAH_BOOTSTRAP_TRACE"))
     fprintf(stderr, "nuah facade: PlatformParams.dpiScale=1.0\n");
   return 1.0f;

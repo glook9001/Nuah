@@ -138,12 +138,23 @@ struct jni_callback_data {
 	gboolean native_window_notified;
 };
 
-static void ensure_native_window(struct jni_callback_data *d, GtkWidget *widget)
+static void ensure_native_window(struct jni_callback_data *d, JNIEnv *env,
+                                 GtkWidget *widget)
 {
 	if (d->native_window)
 		return;
-	GtkWidget *parent = gtk_widget_get_parent(widget);
-	d->native_window = ANativeWindow_fromSurface(NULL, (jobject)parent);
+	/* Resolve the Java SurfaceView itself.  Casting a GTK parent to jobject
+	 * happened to work with the old wrapper layout, but produces a null or
+	 * foreign widget once ATL owns the Surface object.  The Android bridge
+	 * already stores the GTK widget in SurfaceView.widget, so use the normal
+	 * JNI path and keep one authoritative ANativeWindow. */
+	d->native_window = ANativeWindow_fromSurface(env, d->this);
+	if (!d->native_window) {
+		/* Keep a narrow fallback for standalone ATL callers whose fake view has
+		 * no Java widget field yet. */
+		GtkWidget *parent = gtk_widget_get_parent(widget);
+		d->native_window = ANativeWindow_fromSurface(NULL, (jobject)parent);
+	}
 }
 
 static void dispatch_activity_surface(struct jni_callback_data *d, JNIEnv *env,
@@ -310,7 +321,7 @@ static void on_realize(GtkWidget *self, struct jni_callback_data *d)
 	}
 	/* Build the GTK-backed native window while this signal is on GTK's UI
 	 * thread.  The later GameActivity replay only publishes this object. */
-	ensure_native_window(d, self);
+	ensure_native_window(d, env, self);
 	if (detach)
 		(*d->jvm)->DetachCurrentThread(d->jvm);
 	/* The ATL launcher may run GTK from a non-default GLib context, where
