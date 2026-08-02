@@ -302,7 +302,22 @@ std::optional<std::string> atl_jsse_bootclasspath() {
     const auto bouncycastle = root / "bouncycastle-hostdex.jar";
     if (std::filesystem::is_regular_file(wolfssl) &&
         std::filesystem::is_regular_file(bouncycastle)) {
-      return wolfssl.string() + ":" + bouncycastle.string();
+      // The Roblox telemetry client uses Android's jar-jar'd okhttp URL
+      // handler (com.android.okhttp.HttpsHandler).  Host ART does not ship
+      // that framework jar in core-oj, so include it when available.  Keep
+      // this discovery local and optional: providers remain usable on
+      // installations that already expose the class through their runtime.
+      std::vector<std::filesystem::path> okhttp_candidates = {
+          root / "okhttp-hostdex.jar",
+          "/home/pepe/.local/share/Trash/files/art_standalone/out/host/common/obj/JAVA_LIBRARIES/okhttp-hostdex_intermediates/classes-jarjar.jar"};
+      std::string result = wolfssl.string() + ":" + bouncycastle.string();
+      for (const auto& okhttp : okhttp_candidates) {
+        if (std::filesystem::is_regular_file(okhttp)) {
+          result += ":" + okhttp.string();
+          break;
+        }
+      }
+      return result;
     }
   }
   return std::nullopt;
