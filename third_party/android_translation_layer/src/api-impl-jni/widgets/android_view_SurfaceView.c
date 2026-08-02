@@ -12,6 +12,10 @@
 #include "android_view_SurfaceView.h"
 #include "../../libandroid/native_window.h"
 
+/* Exported by the standalone ATL executable.  A weak declaration keeps this
+ * JNI library usable by applications that do not use Nuah's direct launcher. */
+extern void atl_surface_ready(void) __attribute__((weak));
+
 G_DEFINE_TYPE(SurfaceViewWidget, surface_view_widget, GTK_TYPE_WIDGET)
 
 static void surface_view_widget_init(SurfaceViewWidget *surface_view_widget)
@@ -163,6 +167,8 @@ static void dispatch_activity_surface(struct jni_callback_data *d, JNIEnv *env,
 	}
 	if ((*env)->ExceptionCheck(env))
 		(*env)->ExceptionClear(env);
+	if (atl_surface_ready)
+		atl_surface_ready();
 }
 
 static gboolean surface_replay_on_main(gpointer opaque)
@@ -244,6 +250,16 @@ static void on_resize(GtkWidget *self, gint width, gint height, struct jni_callb
 {
 	d->resize_width = width;
 	d->resize_height = height;
+	/* A size allocation is the earliest reliable point at which the activity
+	 * has a real window.  Use it to release the direct-launch bridge even if
+	 * the realize signal was consumed by a parent offload widget. */
+	JNIEnv *env = NULL;
+	if (atl_surface_ready &&
+	    (*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) == JNI_OK &&
+	    d->game_activity_class && d->native_handle &&
+	    (*env)->GetStaticLongField(env, d->game_activity_class,
+                               d->native_handle) != 0)
+		atl_surface_ready();
 
 	/* A high-priority idle can be starved by GTK's continuous frame work while
 	 * Roblox is booting.  Use a short timer so the Java surface callback is
@@ -316,11 +332,14 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	gtk_widget_set_vexpand(graphics_offload, true);
 	gtk_widget_set_hexpand(dummy, true);
 	gtk_widget_set_vexpand(dummy, true);
+	gtk_widget_set_visible(dummy, TRUE);
+	gtk_widget_set_visible(graphics_offload, TRUE);
 	wrapper_widget_set_child(WRAPPER_WIDGET(wrapper), graphics_offload);
 	wrapper_widget_set_jobject(WRAPPER_WIDGET(wrapper), env, this);
 	// TODO: is this correct for all usecases? how do we know when it's not?
 	gtk_widget_set_hexpand(wrapper, true);
 	gtk_widget_set_vexpand(wrapper, true);
+	gtk_widget_set_visible(wrapper, TRUE);
 	wrapper_widget_set_layout_params(WRAPPER_WIDGET(wrapper), 1280, 720);
 
 	JavaVM *jvm;
@@ -369,6 +388,14 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	g_signal_connect(dummy, "realize", G_CALLBACK(on_realize), callback_data);
 
 	return _INTPTR(graphics_offload);
+}
+
+JNIEXPORT void JNICALL Java_android_view_SurfaceView_nativeDirectAppStart(JNIEnv *env, jclass klass)
+{
+	(void)env;
+	(void)klass;
+	if (atl_surface_ready)
+		atl_surface_ready();
 }
 
 JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1createSnapshot(JNIEnv *env, jclass class)

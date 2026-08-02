@@ -289,6 +289,14 @@ static gboolean roblox_direct_app_start(gpointer unused)
 	return G_SOURCE_REMOVE;
 }
 
+/* Called by ATL's SurfaceView realize path once the Android surface exists.
+ * Direct roblox:// launches cannot rely on ActivityNativeMain to make this
+ * call, and the standalone ATL loop does not service ordinary GLib timers. */
+__attribute__((visibility("default"))) void atl_surface_ready(void)
+{
+	roblox_direct_app_start(NULL);
+}
+
 static void parse_string_extras(JNIEnv *env, char **extra_string_keys, jobject intent)
 {
 	GError *error = NULL;
@@ -760,11 +768,20 @@ static void open(GtkApplication *app, GFile **files, gint nfiles, const gchar *h
 	}
 	if (d->apk_main_activity_class) {
 		/* MainGameActivity normally receives this call from the shell's
-		 * ActivityNativeMain.  Direct roblox:// launches skip that shell, so
-		 * invoke it now and retain a retry timer for late JNI registration. */
+		 * ActivityNativeMain.  Direct roblox:// launches skip that shell.  Let
+		 * GTK realize the GameActivity SurfaceView first; starting Lua in the
+		 * same stack frame races the first surface callback and leaves Roblox's
+		 * SurfaceController with a null window. */
 		fprintf(stderr, "ATL: dispatching direct app bridge for %s\n", d->apk_main_activity_class);
-		roblox_direct_app_start(NULL);
-		g_timeout_add(500, G_SOURCE_FUNC(roblox_direct_app_start), NULL);
+		jclass surface_view = (*env)->FindClass(env, "android/view/SurfaceView");
+		jmethodID schedule = surface_view ? (*env)->GetStaticMethodID(env,
+			surface_view, "scheduleDirectAppStart", "()V") : NULL;
+		if (schedule)
+			(*env)->CallStaticVoidMethod(env, surface_view, schedule);
+		if ((*env)->ExceptionCheck(env))
+			(*env)->ExceptionClear(env);
+		if (surface_view)
+			(*env)->DeleteLocalRef(env, surface_view);
 	}
 
 	jobject input_queue_callback = g_object_get_data(G_OBJECT(window), "input_queue_callback");

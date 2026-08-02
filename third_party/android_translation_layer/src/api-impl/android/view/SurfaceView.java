@@ -14,18 +14,21 @@ public class SurfaceView extends View {
 	public SurfaceView(Context context) {
 		super(context);
 
+		this.widget = native_constructor(context, null);
 		mSurface.widget = this.widget;
 	}
 
 	public SurfaceView(Context context, AttributeSet attrs) {
 		super(context, attrs);
 
+		this.widget = native_constructor(context, attrs);
 		mSurface.widget = this.widget;
 	}
 
 	public SurfaceView(Context context, AttributeSet attrs, int defStyleAttr) {
 		super(context, attrs, defStyleAttr);
 
+		this.widget = native_constructor(context, attrs);
 		mSurface.widget = this.widget;
 	}
 
@@ -51,6 +54,18 @@ public class SurfaceView extends View {
 			}
 		});
 	}
+
+	/** Start a direct roblox:// launch after the Java/GTK surface has settled. */
+	public static void scheduleDirectAppStart() {
+		new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+			@Override
+			public void run() {
+				nativeDirectAppStart();
+			}
+		}, 250);
+	}
+
+	private static native void nativeDirectAppStart();
 
 	@Override
 	protected native long native_constructor(Context context, AttributeSet attrs);
