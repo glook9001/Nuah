@@ -503,6 +503,15 @@ std::filesystem::path prepare_atl_native_libraries(
   // already-installed hostdex provider jars so TrustManagerFactory.PKIX can
   // resolve without adding a second JVM or compiling a provider.
   if (const auto jsse = atl_jsse_bootclasspath()) {
+    if (const char* existing = std::getenv("BOOTCLASSPATH");
+        existing && *existing) {
+      std::string bootclasspath(existing);
+      bootclasspath.push_back(':');
+      bootclasspath += *jsse;
+      if (::setenv("BOOTCLASSPATH", bootclasspath.c_str(), 1) != 0) {
+        throw std::runtime_error("cannot append ATL security providers");
+      }
+    }
     arguments.emplace_back("-X");
     arguments.push_back("-Xbootclasspath/a:" + *jsse);
   }
