@@ -28,6 +28,17 @@ int __android_log_write(int priority, const char* tag, const char* text) {
 int __android_log_buf_write(int, int priority, const char* tag, const char* text) {
   return __android_log_write(priority, tag, text);
 }
+int __android_log_buf_print(int, int priority, const char* tag,
+                            const char* format, ...) {
+  char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
+  va_list arguments;
+  va_start(arguments, format);
+  const int result =
+      std::vsnprintf(message, sizeof(message), format ? format : "", arguments);
+  va_end(arguments);
+  __android_log_write(priority, tag, message);
+  return result;
+}
 int __android_log_print(int, const char* tag, const char* format, ...) {
   char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   va_list arguments;
