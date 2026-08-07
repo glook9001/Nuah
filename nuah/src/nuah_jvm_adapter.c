@@ -473,11 +473,18 @@ int nuah_jvm_dispatch_key(NuahJvm* jvm, int keycode, int action, int repeat,
                           unsigned long long event_time_ms) {
   static const char* signature = "(JLandroid/view/KeyEvent;)Z";
   typedef jboolean (*callback_t)(JNIEnv*, jobject, jlong, jobject);
+  /* The SDL-facing Nuah contract is 1=down/0=up, while Android's
+   * KeyEvent.ACTION_DOWN is 0 and ACTION_UP is 1.  Convert once here so the
+   * callback name and KeyEvent.getAction() remain consistent in this
+   * compatibility backend too. */
+  const int key_down = action != 0;
+  const int android_action = key_down ? 0 : 1;
   callback_t callback = (callback_t)nuah_jvm_find_registered_native(
       jvm, "com/google/androidgamesdk/GameActivity",
-      action ? "onKeyDownNative" : "onKeyUpNative", signature);
-  jobject event = (jobject)nuah_jvm_key_event(jvm, keycode, action, repeat, scancode,
-                                               modifiers, event_time_ms);
+      key_down ? "onKeyDownNative" : "onKeyUpNative", signature);
+  jobject event = (jobject)nuah_jvm_key_event(
+      jvm, keycode, android_action, repeat, scancode, modifiers,
+      event_time_ms);
   return callback && event && callback(&jvm->core.env, jvm->activity, jvm->native_handle, event) == JNI_TRUE;
 }
 

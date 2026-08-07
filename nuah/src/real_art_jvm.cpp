@@ -123,6 +123,11 @@ bool trace_enabled() {
   return value && *value;
 }
 
+bool input_trace_enabled() {
+  const char* value = std::getenv("NUAH_INPUT_TRACE");
+  return value && *value;
+}
+
 void clear_exception(JNIEnv* env, const char* boundary) {
   if (!env || !env->ExceptionCheck()) return;
   if (trace_enabled()) {
@@ -1489,12 +1494,25 @@ extern "C" int nuah_jvm_dispatch_key(
     NuahJvm* jvm, int keycode, int action, int repeat, int scancode,
     unsigned int modifiers, unsigned long long event_time_ms) {
   if (!jvm) return 0;
-  const char* name = action == 0 ? "onKeyDownNative" : "onKeyUpNative";
+  // Nuah's SDL bridge uses 1=down and 0=up.  Android KeyEvent uses the
+  // opposite numeric values (ACTION_DOWN=0, ACTION_UP=1), and the callback
+  // name must agree with the object action.  Keeping this conversion at the
+  // JNI boundary prevents Roblox from seeing an up event as a down event.
+  const bool key_down = action != 0;
+  const char* name = key_down ? "onKeyDownNative" : "onKeyUpNative";
+  const int android_action = key_down ? 0 : 1;
+  if (input_trace_enabled()) {
+    std::fprintf(stderr,
+                 "nuah input: keycode=%d action=%s android_action=%d "
+                 "scancode=%d repeat=%d modifiers=0x%x\n",
+                 keycode, name, android_action, scancode, repeat, modifiers);
+  }
   jmethodID method = find_instance_method(
       jvm->env, "com/google/androidgamesdk/GameActivity", name,
       "(JLandroid/view/KeyEvent;)Z");
   jobject event = static_cast<jobject>(nuah_jvm_key_event(
-      jvm, keycode, action, repeat, scancode, modifiers, event_time_ms));
+      jvm, keycode, android_action, repeat, scancode, modifiers,
+      event_time_ms));
   if (!method || !event) return 0;
   const jboolean result = jvm->env->CallBooleanMethod(
       jvm->activity, method, jvm->native_handle, event);

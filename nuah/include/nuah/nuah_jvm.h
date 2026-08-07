@@ -59,6 +59,9 @@ int nuah_jvm_dispatch_surface_created(NuahJvm* jvm, void* surface);
 int nuah_jvm_dispatch_surface_changed(NuahJvm* jvm, void* surface,
                                       int format, int width, int height);
 int nuah_jvm_dispatch_surface_destroyed(NuahJvm* jvm, void* surface);
+// action is Nuah's host convention: 1=key down, 0=key up. The implementation
+// converts it to Android KeyEvent.ACTION_DOWN/ACTION_UP before invoking the
+// GameActivity callback.
 int nuah_jvm_dispatch_key(NuahJvm* jvm, int keycode, int action, int repeat,
                           int scancode, unsigned int modifiers,
                           unsigned long long event_time_ms);
