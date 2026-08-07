@@ -1085,6 +1085,13 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       "nativeSetFilesDirectory", "(Ljava/lang/String;)V",
       "Java_com_roblox_engine_jni_NativeSettingsInterface_"
       "nativeSetFilesDirectory");
+  // MainGameActivity routes BACK/VOLUME keys through this direct native
+  // method. Register the APK export explicitly because libroblox was loaded
+  // by libhybris rather than ART's Java class-loader lookup.
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeGLInterface", "nativePassKeyEvent",
+      "(ZIIZ)V",
+      "Java_com_roblox_engine_jni_NativeGLInterface_nativePassKeyEvent");
   g_roblox_set_multiple_cookies =
       reinterpret_cast<RobloxSetMultipleCookies>(image.symbol(
           "Java_com_roblox_engine_jni_NativeSettingsInterface_"
@@ -1417,6 +1424,11 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   if (!nuah_native_session_dispatch_lifecycle(session.get(), "onResumeNative")) {
     throw std::runtime_error("GameActivity resume callback is unavailable");
   }
+  // Android delivers the focus transition after resume. Sober's Java
+  // GameActivity uses it to notify Roblox and focus its SurfaceView; without
+  // this, SDL can receive keys while the app-side input target remains
+  // unfocused.
+  (void)nuah_native_session_dispatch_window_focus(session.get(), 1);
   const auto* native_window = nuah_window_session_native_window(window.get());
   const int width = nuah_native_window_width(native_window);
   const int height = nuah_native_window_height(native_window);

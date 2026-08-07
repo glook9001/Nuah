@@ -34,6 +34,11 @@ extern "C" int nuah_native_session_dispatch_lifecycle(
   return session ? nuah_jvm_dispatch_lifecycle(session->jvm, method_name) : 0;
 }
 
+extern "C" int nuah_native_session_dispatch_window_focus(
+    NuahNativeSession* session, int has_focus) {
+  return session ? nuah_jvm_dispatch_window_focus(session->jvm, has_focus) : 0;
+}
+
 extern "C" void* nuah_native_session_surface(NuahNativeSession* session,
                                                NuahNativeWindow* window) {
   return session ? nuah_jvm_surface(session->jvm, window) : nullptr;

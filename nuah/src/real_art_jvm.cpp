@@ -1444,6 +1444,24 @@ extern "C" int nuah_jvm_dispatch_lifecycle(NuahJvm* jvm,
   return 1;
 }
 
+extern "C" int nuah_jvm_dispatch_window_focus(NuahJvm* jvm, int has_focus) {
+  if (!jvm || !jvm->activity) return 0;
+  // This is the Java Activity callback Sober receives from Android. It then
+  // invokes GameActivity.onWindowFocusChangedNative and requests focus for
+  // the SurfaceView, making subsequent KeyEvents visible to Roblox.
+  jmethodID method = find_instance_method(
+      jvm->env, "com/google/androidgamesdk/GameActivity",
+      "onWindowFocusChanged", "(Z)V");
+  if (!method) return 0;
+  jvm->env->CallVoidMethod(jvm->activity, method,
+                           has_focus ? JNI_TRUE : JNI_FALSE);
+  if (jvm->env->ExceptionCheck()) {
+    clear_exception(jvm->env, "onWindowFocusChanged");
+    return 0;
+  }
+  return 1;
+}
+
 extern "C" int nuah_jvm_dispatch_surface_created(NuahJvm* jvm, void* surface) {
   if (!jvm || !surface) return 0;
   jmethodID method = find_instance_method(
@@ -1494,32 +1512,63 @@ extern "C" int nuah_jvm_dispatch_key(
     NuahJvm* jvm, int keycode, int action, int repeat, int scancode,
     unsigned int modifiers, unsigned long long event_time_ms) {
   if (!jvm) return 0;
-  // Nuah's SDL bridge uses 1=down and 0=up.  Android KeyEvent uses the
-  // opposite numeric values (ACTION_DOWN=0, ACTION_UP=1), and the callback
-  // name must agree with the object action.  Keeping this conversion at the
-  // JNI boundary prevents Roblox from seeing an up event as a down event.
+  // Nuah's SDL bridge uses 1=down and 0=up. Android KeyEvent uses the
+  // opposite numeric values (ACTION_DOWN=0, ACTION_UP=1).
   const bool key_down = action != 0;
-  const char* name = key_down ? "onKeyDownNative" : "onKeyUpNative";
+  const char* activity_name = key_down ? "onKeyDown" : "onKeyUp";
+  const char* native_name = key_down ? "onKeyDownNative" : "onKeyUpNative";
   const int android_action = key_down ? 0 : 1;
   if (input_trace_enabled()) {
     std::fprintf(stderr,
                  "nuah input: keycode=%d action=%s android_action=%d "
                  "scancode=%d repeat=%d modifiers=0x%x\n",
-                 keycode, name, android_action, scancode, repeat, modifiers);
+                 keycode, activity_name, android_action, scancode, repeat,
+                 modifiers);
   }
+
+  /* Sober does not inject directly into GameActivity's native method. Its
+   * Android path sends the event through MainGameActivity.onKeyDown/Up. That
+   * override handles the small set of system keys itself and delegates
+   * ordinary keyboard input to GameActivity, which then calls Roblox's
+   * registered onKeyDownNative/onKeyUpNative callback. Keeping this Java
+   * boundary is important: it preserves the app's filtering, repeat and
+   * focus semantics instead of only making a callback-shaped JNI call. */
+  jmethodID activity_method = find_instance_method(
+      jvm->env, "com/roblox/client/startup/MainGameActivity", activity_name,
+      "(ILandroid/view/KeyEvent;)Z");
   jmethodID method = find_instance_method(
-      jvm->env, "com/google/androidgamesdk/GameActivity", name,
+      jvm->env, "com/google/androidgamesdk/GameActivity", native_name,
       "(JLandroid/view/KeyEvent;)Z");
   jobject event = static_cast<jobject>(nuah_jvm_key_event(
       jvm, keycode, android_action, repeat, scancode, modifiers,
       event_time_ms));
-  if (!method || !event) return 0;
+  if (!event) return 0;
+
+  if (activity_method) {
+    const jboolean result = jvm->env->CallBooleanMethod(
+        jvm->activity, activity_method, keycode, event);
+    if (!jvm->env->ExceptionCheck()) {
+      if (input_trace_enabled())
+        std::fprintf(stderr, "nuah input: %s result=%d\n", activity_name,
+                     result == JNI_TRUE ? 1 : 0);
+      return result == JNI_TRUE;
+    }
+    // A missing optional NativeGLInterface binding should not permanently
+    // drop input. Clear it and use the registered GameActivity callback as a
+    // diagnostic fallback; normal keys never take this branch.
+    clear_exception(jvm->env, activity_name);
+  }
+
+  if (!method) return 0;
   const jboolean result = jvm->env->CallBooleanMethod(
       jvm->activity, method, jvm->native_handle, event);
   if (jvm->env->ExceptionCheck()) {
-    clear_exception(jvm->env, name);
+    clear_exception(jvm->env, native_name);
     return 0;
   }
+  if (input_trace_enabled())
+    std::fprintf(stderr, "nuah input: %s fallback result=%d\n", native_name,
+                 result == JNI_TRUE ? 1 : 0);
   return result == JNI_TRUE;
 }
 

@@ -16,6 +16,8 @@ long long nuah_native_session_initialize_game(NuahNativeSession* session,
                                               const char* data_path);
 int nuah_native_session_dispatch_lifecycle(NuahNativeSession* session,
                                            const char* method_name);
+int nuah_native_session_dispatch_window_focus(NuahNativeSession* session,
+                                              int has_focus);
 void* nuah_native_session_surface(NuahNativeSession* session,
                                   NuahNativeWindow* window);
 void nuah_native_session_clear_surface(NuahNativeSession* session);

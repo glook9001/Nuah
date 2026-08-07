@@ -436,6 +436,17 @@ int nuah_jvm_dispatch_lifecycle(NuahJvm* jvm, const char* method_name) {
   return 1;
 }
 
+int nuah_jvm_dispatch_window_focus(NuahJvm* jvm, int has_focus) {
+  typedef void (*callback_t)(JNIEnv*, jobject, jlong, jboolean);
+  callback_t callback = (callback_t)nuah_jvm_find_registered_native(
+      jvm, "com/google/androidgamesdk/GameActivity",
+      "onWindowFocusChangedNative", "(JZ)V");
+  if (!callback) return 0;
+  callback(&jvm->core.env, jvm->activity, jvm->native_handle,
+           has_focus ? JNI_TRUE : JNI_FALSE);
+  return 1;
+}
+
 int nuah_jvm_dispatch_surface_created(NuahJvm* jvm, void* surface) {
   typedef void (*callback_t)(JNIEnv*, jobject, jlong, jobject);
   callback_t callback = (callback_t)nuah_jvm_find_registered_native(
