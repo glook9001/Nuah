@@ -55,15 +55,6 @@ NUAH_FORWARD signal
 NUAH_FORWARD sigaltstack
 
 /*
- * dlsym itself uses pthread TLS.  These ABI-identical tail calls must not use
- * the generic C++ dlsym forwarder or they recurse inside glibc's loader.
- */
-NUAH_FORWARD pthread_getspecific
-NUAH_FORWARD pthread_key_create
-NUAH_FORWARD pthread_key_delete
-NUAH_FORWARD pthread_setspecific
-
-/*
  * The dynamic loader uses these libc leaves internally.  A dlsym-based
  * implementation can therefore recurse while it is trying to resolve itself.
  */

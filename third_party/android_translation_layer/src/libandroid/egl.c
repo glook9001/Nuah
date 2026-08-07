@@ -18,6 +18,18 @@
 
 extern GtkWindow *window; // TODO: how do we get rid of this? the app won't pass anything useful to eglGetDisplay
 
+/* Native Nuah launches own the host window through SDL rather than ATL's
+ * optional GtkWindow.  In that path `window` is unset (or is not a GTK root),
+ * but GTK has already initialized the process display.  Keep the ATL window
+ * when it is valid and otherwise use the default display so EGL can create a
+ * Wayland/X11 context instead of passing an invalid root to GTK. */
+static GdkDisplay *atl_egl_display(void)
+{
+	if (window && GTK_IS_ROOT(window))
+		return gtk_root_get_display(GTK_ROOT(window));
+	return gdk_display_get_default();
+}
+
 static GHashTable *egl_surface_hashtable;
 
 // temporary for debugging
@@ -99,7 +111,7 @@ EGLDisplay bionic_eglGetDisplay(EGLNativeDisplayType native_display)
 	 * We obviously want to make the app use the correct display, which may happen to be a different one
 	 * than the "default" display (especially on Wayland)
 	 */
-	GdkDisplay *display = gtk_root_get_display(GTK_ROOT(window));
+	GdkDisplay *display = atl_egl_display();
 
 	if (GDK_IS_WAYLAND_DISPLAY(display)) {
 		struct wl_display *wl_display = gdk_wayland_display_get_wl_display(display);
@@ -117,7 +129,7 @@ EGLDisplay bionic_eglGetDisplay(EGLNativeDisplayType native_display)
 
 EGLBoolean bionic_eglChooseConfig(EGLDisplay display, EGLint *attrib_list, EGLConfig *configs, EGLint config_size, EGLint *num_config)
 {
-	GdkDisplay *gdk_display = gtk_root_get_display(GTK_ROOT(window));
+	GdkDisplay *gdk_display = atl_egl_display();
 
 	if (GDK_IS_X11_DISPLAY(gdk_display)) {
 		/* X11 supports pbuffers just fine */
@@ -153,7 +165,7 @@ EGLBoolean bionic_eglChooseConfig(EGLDisplay display, EGLint *attrib_list, EGLCo
 
 EGLSurface bionic_eglCreatePbufferSurface(EGLDisplay display, EGLConfig config, EGLint const *attrib_list)
 {
-	GdkDisplay *gdk_display = gtk_root_get_display(GTK_ROOT(window));
+	GdkDisplay *gdk_display = atl_egl_display();
 
 	if (GDK_IS_X11_DISPLAY(gdk_display)) {
 		/* X11 supports pbuffers just fine */

@@ -20,6 +20,14 @@ public class JobScheduler {
 	}
 
 	/**
+	 * API 35+ namespace view.  ATL has one in-process scheduler, so all
+	 * namespaces share the same lightweight pending-job table.
+	 */
+	public JobScheduler forNamespace(String namespace) {
+		return this;
+	}
+
+	/**
 	 * Retrieve all jobs that have been scheduled by the calling application.
 	 *
 	 * @return a list of all of the app's scheduled jobs.  This includes jobs that are

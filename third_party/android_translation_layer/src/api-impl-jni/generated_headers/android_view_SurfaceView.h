@@ -213,6 +213,14 @@ extern "C" {
 #define android_view_SurfaceView_TEXT_DIRECTION_RTL 4L
 /*
  * Class:     android_view_SurfaceView
+ * Method:    nativeDirectAppStart
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL Java_android_view_SurfaceView_nativeDirectAppStart
+  (JNIEnv *, jclass);
+
+/*
+ * Class:     android_view_SurfaceView
  * Method:    native_constructor
  * Signature: (Landroid/content/Context;Landroid/util/AttributeSet;)J
  */

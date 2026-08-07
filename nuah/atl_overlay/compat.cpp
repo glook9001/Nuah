@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -20,6 +21,26 @@ const unsigned char kSlIidVolume = 0;
 }  // namespace
 
 extern "C" {
+
+// libroblox asks the Android linker for this property during
+// GameActivity initialization.  The host libc_bio shipped with older ATL
+// bundles reports its compile-time API (21), even when the Java façade and
+// libhybris are configured for API 36.  Keep the value at the single host
+// boundary so native feature gates (notably Vulkan) see the same API level as
+// the rest of Nuah.
+int __system_property_get(const char* key, char* value) {
+  const char* result = "";
+  if (key && std::strcmp(key, "ro.build.version.sdk") == 0)
+    result = "36";
+  else if (key && std::strcmp(key, "ro.build.version.release") == 0)
+    result = "16";
+  else if (key && std::strcmp(key, "ro.product.cpu.abi") == 0)
+    result = "x86_64";
+  if (value) {
+    std::snprintf(value, 93, "%s", result);
+  }
+  return static_cast<int>(std::strlen(result));
+}
 
 using AtlLooperWake = void (*)(void*);
 void _ZN7android6Looper4wakeEv(void* looper) {

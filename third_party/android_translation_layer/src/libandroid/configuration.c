@@ -228,7 +228,11 @@ void AConfiguration_setNavHidden(AConfiguration *config, int32_t navHidden)
  */
 int32_t AConfiguration_getSdkVersion(AConfiguration *config)
 {
-	return -1;
+	/* Nuah runs the Android 16/API 36 ATL profile.  ATL's original stub
+	 * returned ACONFIGURATION_SDK_VERSION_ANY (-1), which makes Roblox reject
+	 * Vulkan before it even asks the host WSI for a surface. */
+	(void)config;
+	return 36;
 }
 
 /**

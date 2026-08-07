@@ -47,14 +47,13 @@ extracted API-36 x86_64 **bionic core** (`linker`, `libc.so`, `libdl.so`, and
 plugin can load it. The release contains those extracted ELF files, not an
 APEX, system image, ART, or an Android root filesystem.
 
-The pinned libhybris source carries one small Nuah patch. Its Q-era linker
-models the bionic and Android-facing names required by Roblox as in-memory,
-hook-only dependency records when they appear in `DT_NEEDED`. This is
-necessary because upstream otherwise requires files for every dependency
-before it reaches its hook resolver. Nuah loads its narrow providers with the
-normal host loader and registers their symbols through libhybris' hook
-callback; the Android linker never maps those host ELF files. The records
-contain no ELF image, code, symbols, bionic library, or Android payload.
+The pinned libhybris source carries one small Nuah patch which exposes its
+built-in hook resolver without recursively re-entering Nuah's callback. Nuah
+does not alter libhybris' linker data structures. Instead, the bundle contains
+ten tiny dependency-free ELF records under `android/linker-deps/`, one for
+each Android soname in Roblox's `DT_NEEDED` list. The Android linker maps only
+those empty records; the real Nuah providers are loaded by the host loader and
+their symbols are returned by the libhybris hook callback.
 
 ## Implementation order
 

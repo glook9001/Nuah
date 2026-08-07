@@ -2,6 +2,7 @@
 #include "nuah/apk_loader.hpp"
 #include "nuah/bootstrap_diagnostics.h"
 #include "nuah/input_bridge.h"
+#include "nuah/launch_uri.hpp"
 #include "nuah/native_session.h"
 #include "nuah/nuah_jvm.h"
 #include "nuah/window_session.h"
@@ -10,14 +11,21 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <pthread.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+#include <signal.h>
 #include <unistd.h>
 #include <vector>
 
@@ -27,9 +35,879 @@ namespace nuah {
 namespace {
 
 extern "C" void nuah_roblox_java_facade_set_content_path(const char* path);
+extern "C" void nuah_roblox_java_facade_set_launch_place_id(jlong place_id);
+extern "C" void nuah_roblox_java_facade_set_launch_surface(jobject surface);
+
+using RobloxSetMultipleCookies = void (*)(JNIEnv*, jclass, jstring, jstring);
+using RobloxGetCookiesForDomain = jstring (*)(JNIEnv*, jclass, jstring);
+RobloxSetMultipleCookies g_roblox_set_multiple_cookies = nullptr;
+RobloxGetCookiesForDomain g_roblox_get_cookies_for_domain = nullptr;
 
 void report_bootstrap_stage(const char* stage) {
   nuah_bootstrap_diagnostics_set_stage(stage);
+}
+
+/* Nuah has never had a working alternate native runtime.  The direct
+ * NativeGLInterface path is therefore the product path by default; setting
+ * NUAH_FAST_MVP=0 only keeps the older setter sequence available as an ABI
+ * comparison experiment while the boundary is being debugged. */
+bool fast_mvp_enabled() {
+  const char* value = ::getenv("NUAH_FAST_MVP");
+  return !value || std::strcmp(value, "0") != 0;
+}
+
+void clear_java_exception(JNIEnv* env, const char* boundary) {
+  if (!env || !env->ExceptionCheck()) return;
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::cerr << "nuah native: Java exception at " << boundary << '\n';
+    env->ExceptionDescribe();
+  }
+  env->ExceptionClear();
+}
+
+/* The current x86_64 Roblox image's implementation is a six-byte function
+ * that returns the constant 3.  libhybris does not expose that versioned
+ * symbol through android_dlsym, so register the observed contract directly
+ * instead of adding a general native-method emulator. */
+extern "C" jint nuah_native_get_running_architecture(JNIEnv*, jclass) {
+  return 3;
+}
+
+/* Cookie persistence belongs to the WebKit/session supervisor.  A Roblox
+ * Android build asks for two different representations: the engine bootstrap
+ * parses a Netscape cookie file, while the HTTP cookie bridge wants a normal
+ * `name=value` header.  Returning one representation for both calls makes the
+ * bootstrap report "Invalid cookie format" and silently drops authentication.
+ * Keep the source deliberately narrow: NUAH_ROBLOX_COOKIES contains only the
+ * .ROBLOSECURITY value (or the same value prefixed with its cookie name). */
+std::string nuah_roblox_cookie_value() {
+  const char* raw = ::getenv("NUAH_ROBLOX_COOKIES");
+  if (!raw || !*raw) return {};
+  std::string value(raw);
+  constexpr std::string_view prefix = ".ROBLOSECURITY=";
+  if (value.starts_with(prefix)) value.erase(0, prefix.size());
+  return value;
+}
+
+std::string nuah_roblox_cookie_header() {
+  if (const char* header = ::getenv("NUAH_ROBLOX_COOKIE_HEADER");
+      header && *header) {
+    return header;
+  }
+  const std::string value = nuah_roblox_cookie_value();
+  return value.empty() ? std::string() : ".ROBLOSECURITY=" + value;
+}
+
+jlong nuah_roblox_user_id() {
+  const char* raw = ::getenv("NUAH_ROBLOX_USER_ID");
+  if (!raw || !*raw) return 0;
+  char* end = nullptr;
+  const long long value = std::strtoll(raw, &end, 10);
+  if (end == raw || *end != '\0' || value <= 0) return 0;
+  return static_cast<jlong>(value);
+}
+
+std::string jstring_utf8(JNIEnv* env, jstring value) {
+  if (!env || !value) return {};
+  const char* raw = env->GetStringUTFChars(value, nullptr);
+  if (!raw) {
+    clear_java_exception(env, "GetStringUTFChars(cookie)");
+    return {};
+  }
+  std::string result(raw);
+  env->ReleaseStringUTFChars(value, raw);
+  return result;
+}
+
+void adopt_cookie_header(std::string_view header) {
+  constexpr std::string_view marker = ".ROBLOSECURITY=";
+  const std::size_t marker_pos = header.find(marker);
+  if (marker_pos == std::string_view::npos) return;
+  const std::size_t value_begin = marker_pos + marker.size();
+  const std::size_t value_end = header.find_first_of(";\t\r\n", value_begin);
+  const std::string_view value = header.substr(
+      value_begin, value_end == std::string_view::npos
+                      ? std::string_view::npos
+                      : value_end - value_begin);
+  if (value.empty() || value.size() > 4096 ||
+      value.find_first_of("\t\r\n") != std::string_view::npos) {
+    return;
+  }
+  const std::string cookie = std::string(marker) + std::string(value);
+  (void)::setenv("NUAH_ROBLOX_COOKIES", cookie.c_str(), 1);
+  if (header.size() <= 16384 &&
+      header.find_first_of("\r\n") == std::string_view::npos) {
+    const std::string full(header);
+    (void)::setenv("NUAH_ROBLOX_COOKIE_HEADER", full.c_str(), 1);
+  }
+}
+
+void prime_roblox_cookie_store(JNIEnv* env) {
+  if (!env || !g_roblox_set_multiple_cookies) return;
+  const std::string cookie = nuah_roblox_cookie_header();
+  if (cookie.empty()) return;
+  jstring url = env->NewStringUTF("https://roblox.com/");
+  jstring header = env->NewStringUTF(cookie.c_str());
+  if (!url || !header) {
+    clear_java_exception(env, "NewStringUTF(cookie prime)");
+    if (url) env->DeleteLocalRef(url);
+    if (header) env->DeleteLocalRef(header);
+    return;
+  }
+  g_roblox_set_multiple_cookies(env, nullptr, url, header);
+  if (env->ExceptionCheck()) clear_java_exception(env, "nativeSetMultipleCookies(prime)");
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace &&
+      g_roblox_get_cookies_for_domain) {
+    jstring stored = g_roblox_get_cookies_for_domain(env, nullptr, url);
+    const std::string stored_header = jstring_utf8(env, stored);
+    if (stored) env->DeleteLocalRef(stored);
+    std::cerr << "nuah cookie: Roblox native store header_bytes="
+              << stored_header.size() << '\n';
+  }
+  env->DeleteLocalRef(url);
+  env->DeleteLocalRef(header);
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::cerr << "nuah cookie: primed native store header_bytes=" << cookie.size()
+              << '\n';
+  }
+}
+
+/* Direct native-run has no WebKit supervisor to press the explicit
+ * "use-browser-session" button.  Sober already persists the live session in
+ * a mode-600 one-line cookie file, so adopt that file at the process boundary
+ * when the caller did not supply a session explicitly.  This keeps the
+ * runtime launchable from the normal Nuah command as well as from Services;
+ * the token never enters argv or a log line. */
+bool discover_sober_session_cookie() {
+  if (const char* existing = ::getenv("NUAH_ROBLOX_COOKIES");
+      existing && *existing) {
+    return true;
+  }
+  std::vector<std::filesystem::path> candidates;
+  if (const char* configured = ::getenv("NUAH_SOBER_COOKIE_FILE");
+      configured && *configured) {
+    candidates.emplace_back(configured);
+  }
+  if (const char* home = ::getenv("HOME"); home && *home) {
+    const std::filesystem::path home_path(home);
+    candidates.push_back(home_path / ".var/app/org.vinegarhq.Sober/data/sober/cookies");
+    candidates.push_back(home_path / ".config/sober/cookies");
+  }
+  for (const auto& path : candidates) {
+    std::error_code status_error;
+    const auto status = std::filesystem::status(path, status_error);
+    if (status_error || !std::filesystem::is_regular_file(status)) continue;
+    std::ifstream file(path, std::ios::in | std::ios::binary);
+    std::string line;
+    while (std::getline(file, line)) {
+      /* Sober stores one combined Cookie header (GuestData; ...;
+       * .ROBLOSECURITY=token), rather than a Netscape table.  Accept that
+       * format as well as a line containing only the Roblox cookie. */
+      constexpr std::string_view marker = ".ROBLOSECURITY=";
+      const std::size_t marker_pos = line.find(marker);
+      if (marker_pos == std::string::npos) continue;
+      const std::size_t value_begin = marker_pos + marker.size();
+      const std::size_t value_end = line.find_first_of(";\t\r\n", value_begin);
+      const std::string value = line.substr(
+          value_begin, value_end == std::string::npos ? std::string::npos
+                                                        : value_end - value_begin);
+      if (value.empty() || value.find_first_of("\r\n\t") !=
+                               std::string::npos || value.size() > 4096) {
+        continue;
+      }
+      const std::string cookie = ".ROBLOSECURITY=" + value;
+      if (::setenv("NUAH_ROBLOX_COOKIES", cookie.c_str(), 1) != 0) {
+        throw std::runtime_error("cannot import Sober session cookie");
+      }
+      if (line.size() <= 16384 &&
+          line.find_first_of("\r\n") == std::string::npos) {
+        (void)::setenv("NUAH_ROBLOX_COOKIE_HEADER", line.c_str(), 1);
+      }
+      const std::string_view user_marker = "rbxuid=";
+      const std::size_t user_pos = line.find(user_marker);
+      if (user_pos != std::string::npos) {
+        const std::size_t user_begin = user_pos + user_marker.size();
+        const std::size_t user_end =
+            line.find_first_not_of("0123456789", user_begin);
+        const std::string user_id = line.substr(
+            user_begin, user_end == std::string::npos
+                           ? std::string::npos
+                           : user_end - user_begin);
+        if (!user_id.empty() && user_id.size() <= 20) {
+          (void)::setenv("NUAH_ROBLOX_USER_ID", user_id.c_str(), 1);
+        }
+      }
+      std::cerr << "nuah native: adopted Sober browser session from "
+                << path << '\n';
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Sober's one-line export intentionally keeps only the authentication cookie;
+ * the WebKit SQLite jar also contains RBXEventTrackerV2, whose rbxuid field
+ * is the account id the Android launch JSON normally supplies.  Recover that
+ * non-secret numeric field locally so a bare roblox://placeId URI follows the
+ * same authenticated request-type path as Sober. */
+bool discover_webkit_user_id() {
+  if (nuah_roblox_user_id() > 0) return true;
+  std::vector<std::filesystem::path> candidates;
+  if (const char* configured = ::getenv("NUAH_WEBKIT_COOKIE_DATABASE");
+      configured && *configured) {
+    candidates.emplace_back(configured);
+  }
+  if (const char* home = ::getenv("HOME"); home && *home) {
+    candidates.emplace_back(std::filesystem::path(home) /
+                            ".local/share/nuah/webkit/cookies.sqlite");
+  }
+  for (const auto& path : candidates) {
+    std::error_code status_error;
+    const auto status = std::filesystem::status(path, status_error);
+    const auto size = status_error || !std::filesystem::is_regular_file(status)
+                          ? 0
+                          : std::filesystem::file_size(path, status_error);
+    if (status_error || !std::filesystem::is_regular_file(status) ||
+        size > 4 * 1024 * 1024) {
+      continue;
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) continue;
+    const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+    constexpr std::string_view marker = "rbxuid=";
+    const std::size_t marker_pos = bytes.find(marker);
+    if (marker_pos == std::string::npos) continue;
+    const std::size_t begin = marker_pos + marker.size();
+    std::size_t end = begin;
+    while (end < bytes.size() && bytes[end] >= '0' && bytes[end] <= '9' &&
+           end - begin <= 20) {
+      ++end;
+    }
+    if (end == begin || end - begin > 20) continue;
+    const std::string user_id = bytes.substr(begin, end - begin);
+    char* parse_end = nullptr;
+    const long long parsed = std::strtoll(user_id.c_str(), &parse_end, 10);
+    if (!parse_end || *parse_end != '\0' || parsed <= 0) continue;
+    (void)::setenv("NUAH_ROBLOX_USER_ID", user_id.c_str(), 1);
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+        trace && *trace) {
+      std::cerr << "nuah native: adopted Roblox user id from WebKit session\n";
+    }
+    return true;
+  }
+  return false;
+}
+
+extern "C" jstring nuah_native_get_cookies_netscape(JNIEnv* env, jclass,
+                                                      jstring) {
+  const std::string header = nuah_roblox_cookie_header();
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::cerr << "nuah cookie: Netscape getter header_bytes=" << header.size()
+              << '\n';
+  }
+  if (!env || header.empty() ||
+      header.find_first_of("\r\n") != std::string::npos) {
+    return env ? env->NewStringUTF("") : nullptr;
+  }
+  /* The APK's updateCookiesFromEngine parser splits this return value on
+   * semicolons, then expects one tab-delimited Netscape record.  Keep the
+   * record self-contained (no comment/newline) so it survives that Android
+   * boundary and is copied into the engine cookie store. */
+  std::string netscape;
+  std::size_t offset = 0;
+  while (offset < header.size()) {
+    const std::size_t next = header.find(';', offset);
+    std::string_view pair(
+        header.data() + offset,
+        (next == std::string::npos ? header.size() : next) - offset);
+    while (!pair.empty() && (pair.front() == ' ' || pair.front() == '\t')) {
+      pair.remove_prefix(1);
+    }
+    const std::size_t equal = pair.find('=');
+    if (equal != std::string_view::npos && equal > 0) {
+      const std::string_view name = pair.substr(0, equal);
+      const std::string_view value = pair.substr(equal + 1);
+      if (!value.empty() &&
+          value.find_first_of("\r\n\t") == std::string_view::npos) {
+        if (!netscape.empty()) netscape.push_back(';');
+        netscape += "roblox.com\tTRUE\t/\tTRUE\t0\t";
+        netscape.append(name.data(), name.size());
+        netscape.push_back('\t');
+        netscape.append(value.data(), value.size());
+      }
+    }
+    if (next == std::string::npos) break;
+    offset = next + 1;
+  }
+  return env->NewStringUTF(netscape.c_str());
+}
+
+extern "C" jstring nuah_native_get_cookies_for_domain(JNIEnv* env, jclass,
+                                                        jstring) {
+  const std::string header = nuah_roblox_cookie_header();
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::cerr << "nuah cookie: domain getter header_bytes=" << header.size()
+              << '\n';
+  }
+  return env ? env->NewStringUTF(header.c_str()) : nullptr;
+}
+
+extern "C" void nuah_native_set_cookies(JNIEnv* env, jclass, jstring domain,
+                                          jstring cookies) {
+  const std::string domain_value = jstring_utf8(env, domain);
+  const std::string cookie_value = jstring_utf8(env, cookies);
+  adopt_cookie_header(cookie_value);
+  /* Keep Roblox's own native cookie store in the path.  Nuah only supplies
+   * the session boundary; the exported implementation owns the HTTP client
+   * state used by gamejoin.roblox.com. */
+  /* Sober's migration callback can be empty even when its live browser
+   * session was adopted at process start.  Do not let that empty callback
+   * erase the already-primed native cookie store. */
+  const bool preserve_primed_session =
+      cookie_value.empty() && !nuah_roblox_cookie_header().empty();
+  if (g_roblox_set_multiple_cookies && !preserve_primed_session) {
+    g_roblox_set_multiple_cookies(env, nullptr, domain, cookies);
+  }
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::cerr << "nuah cookie: setter domain_bytes=" << domain_value.size()
+              << " header_bytes=" << cookie_value.size()
+              << " adopted="
+              << (nuah_roblox_cookie_value().empty() ? "no" : "yes")
+              << " forwarded=" << (preserve_primed_session ? "no" : "yes")
+              << '\n';
+  }
+}
+
+/* InitParams is an AutoValue contract, not a plain data blob.  AllocObject()
+ * leaves all final fields null and is exactly what caused the V2 path to
+ * abort in GetObjectClass.  Build the object through the app's own builder so
+ * ART and Roblox see the same typed object Android would construct. */
+jobject make_real_init_params(JNIEnv* env, jobject activity) {
+  if (!env) return nullptr;
+  constexpr const char* kBuilderClass =
+      "com/roblox/engine/jni/autovalue/InitParams$Builder";
+  constexpr const char* kBuilderReturn =
+      "Lcom/roblox/engine/jni/autovalue/InitParams$Builder;";
+  const auto builder_signature = [&](const char* prefix) {
+    return std::string(prefix) + kBuilderReturn;
+  };
+  jclass init_class = env->FindClass("com/roblox/engine/jni/autovalue/InitParams");
+  jclass builder_class = env->FindClass(kBuilderClass);
+  jclass platform_class =
+      env->FindClass("com/roblox/engine/jni/model/PlatformParams");
+  jclass device_class =
+      env->FindClass("com/roblox/engine/jni/model/DeviceParams");
+  if (!init_class || !builder_class || !platform_class || !device_class) {
+    clear_java_exception(env, "InitParams classes");
+    return nullptr;
+  }
+  const jmethodID builder_method = env->GetStaticMethodID(
+      init_class, "builder", "()Lcom/roblox/engine/jni/autovalue/InitParams$Builder;");
+  const jmethodID platform_ctor =
+      env->GetMethodID(platform_class, "<init>", "()V");
+  const jmethodID device_ctor = env->GetMethodID(device_class, "<init>", "()V");
+  if (!builder_method || !platform_ctor || !device_ctor) {
+    clear_java_exception(env, "InitParams constructors");
+    return nullptr;
+  }
+  jobject builder = env->CallStaticObjectMethod(init_class, builder_method);
+  jobject platform = env->NewObject(platform_class, platform_ctor);
+  jobject device = env->NewObject(device_class, device_ctor);
+  if (!builder || !platform || !device || env->ExceptionCheck()) {
+    clear_java_exception(env, "InitParams builder allocation");
+    return nullptr;
+  }
+
+  auto set_string_field = [&](jobject object, jclass klass, const char* name,
+                              const char* value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "Ljava/lang/String;");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    const jstring text = env->NewStringUTF(value ? value : "");
+    env->SetObjectField(object, field, text);
+    env->DeleteLocalRef(text);
+    return !env->ExceptionCheck();
+  };
+  auto set_bool_field = [&](jobject object, jclass klass, const char* name,
+                            jboolean value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "Z");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    env->SetBooleanField(object, field, value);
+    return !env->ExceptionCheck();
+  };
+  auto set_int_field = [&](jobject object, jclass klass, const char* name,
+                           jint value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "I");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    env->SetIntField(object, field, value);
+    return !env->ExceptionCheck();
+  };
+  auto set_long_field = [&](jobject object, jclass klass, const char* name,
+                            jlong value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "J");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    env->SetLongField(object, field, value);
+    return !env->ExceptionCheck();
+  };
+  auto set_float_field = [&](jobject object, jclass klass, const char* name,
+                             jfloat value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "F");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    env->SetFloatField(object, field, value);
+    return !env->ExceptionCheck();
+  };
+
+  const char* content = ::getenv("NUAH_CONTENT_PATH");
+  if (!content || !*content) content = "";
+  const bool fields_ok =
+      set_string_field(platform, platform_class, "assetFolderPath", content) &&
+      set_float_field(platform, platform_class, "dpiScale", 1.0f) &&
+      set_bool_field(platform, platform_class, "isKeyboardDevice", JNI_TRUE) &&
+      set_bool_field(platform, platform_class, "isMouseDevice", JNI_TRUE) &&
+      set_bool_field(platform, platform_class, "isTouchDevice", JNI_FALSE) &&
+      set_int_field(platform, platform_class, "viewportHeightMm", 190) &&
+      set_int_field(platform, platform_class, "viewportWidthMm", 340) &&
+      set_string_field(device, device_class, "appBuildVariant", "release") &&
+      set_string_field(device, device_class, "appVersion", "Roblox") &&
+      set_string_field(device, device_class, "country", "US") &&
+      set_bool_field(device, device_class, "cpu64Bit", JNI_TRUE) &&
+      set_string_field(device, device_class, "deviceName", "Nuah Linux PC") &&
+      set_string_field(device, device_class, "deviceSku", "x86_64") &&
+      set_int_field(device, device_class, "deviceTotalMemoryMB", 4096) &&
+      set_int_field(device, device_class, "displayPhysicalHeightPixels", 720) &&
+      set_int_field(device, device_class, "displayPhysicalWidthPixels", 1280) &&
+      set_string_field(device, device_class, "displayResolution", "1280x720") &&
+      set_bool_field(device, device_class, "isChrome", JNI_FALSE) &&
+      set_bool_field(device, device_class, "isLowRamDevice", JNI_FALSE) &&
+      set_int_field(device, device_class, "largeMemoryClass", 512) &&
+      set_long_field(device, device_class,
+                     "lowMemoryKillerBackgroundAppThreshold", 0) &&
+      set_long_field(device, device_class,
+                     "lowMemoryKillerForegroundAppThreshold", 0) &&
+      set_string_field(device, device_class, "manufacturer", "Nuah") &&
+      set_int_field(device, device_class, "memoryClass", 256) &&
+      set_string_field(device, device_class, "networkType", "WIFI") &&
+      set_string_field(device, device_class, "osVersion", "16") &&
+      set_string_field(device, device_class, "socModel", "x86_64") &&
+      set_string_field(device, device_class, "testDeviceName", "");
+  if (!fields_ok || env->ExceptionCheck()) {
+    clear_java_exception(env, "InitParams field population");
+    return nullptr;
+  }
+
+  auto set_object = [&](const char* name, const char* signature,
+                        jobject value) -> bool {
+    const jmethodID method = env->GetMethodID(builder_class, name, signature);
+    if (!method) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    builder = env->CallObjectMethod(builder, method, value);
+    if (!builder || env->ExceptionCheck()) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    return true;
+  };
+  auto set_string = [&](const char* name, const char* value) -> bool {
+    const jstring text = env->NewStringUTF(value);
+    const std::string signature = builder_signature("(Ljava/lang/String;)");
+    const bool result = set_object(name, signature.c_str(), text);
+    env->DeleteLocalRef(text);
+    return result;
+  };
+  auto set_bool = [&](const char* name, jboolean value) -> bool {
+    const std::string signature = builder_signature("(Z)");
+    const jmethodID method =
+        env->GetMethodID(builder_class, name, signature.c_str());
+    if (!method) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    builder = env->CallObjectMethod(builder, method, value);
+    if (!builder || env->ExceptionCheck()) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    return true;
+  };
+
+  if (!set_object("setPlatformParams",
+                  builder_signature(
+                      "(Lcom/roblox/engine/jni/model/PlatformParams;)")
+                      .c_str(),
+                  platform) ||
+      !set_object("setDeviceParams",
+                  builder_signature(
+                      "(Lcom/roblox/engine/jni/model/DeviceParams;)")
+                      .c_str(),
+                  device) ||
+      !set_string("setBaseURL", "https://www.roblox.com/") ||
+      !set_string("setUserAgent", "Roblox/Android Nuah") ||
+      !set_bool("setIsPotato", JNI_FALSE) ||
+      !set_bool("setIsTablet", JNI_FALSE) ||
+      !set_bool("setIsVrDevice", JNI_FALSE) ||
+      !set_string("setBuildVariant", "release") ||
+      !set_object("setVrContext",
+                  builder_signature("(Landroid/app/Activity;)").c_str(),
+                  activity)) {
+    return nullptr;
+  }
+  const jmethodID build = env->GetMethodID(
+      builder_class, "build", "()Lcom/roblox/engine/jni/autovalue/InitParams;");
+  if (!build) {
+    clear_java_exception(env, "InitParams.build");
+    return nullptr;
+  }
+  jobject result = env->CallObjectMethod(builder, build);
+  if (!result || env->ExceptionCheck()) {
+    clear_java_exception(env, "InitParams.build");
+    return nullptr;
+  }
+  return result;
+}
+
+/* StartGameParams is another AutoValue contract.  AllocObject() is not a
+ * valid substitute here: every final field remains null and Roblox's native
+ * entry point immediately dereferences deviceParams/platformParams (ART
+ * aborts with "java_object == null").  Use the APK's own builder so this
+ * direct native launch has the same typed object that MainGameActivity would
+ * pass. */
+jobject make_real_start_game_params(JNIEnv* env, jobject surface,
+                                    jobject activity, const LaunchRequest& request,
+                                    const char* content_path) {
+  if (!env || !surface || !activity) return nullptr;
+  jclass params_class =
+      env->FindClass("com/roblox/engine/jni/autovalue/StartGameParams");
+  jclass builder_class =
+      env->FindClass("com/roblox/engine/jni/autovalue/StartGameParams$Builder");
+  jclass platform_class =
+      env->FindClass("com/roblox/engine/jni/model/PlatformParams");
+  jclass game_platform_class = env->FindClass("ml/a");
+  jclass device_class =
+      env->FindClass("com/roblox/engine/jni/model/DeviceParams");
+  if (!params_class || !builder_class || !platform_class ||
+      !game_platform_class || !device_class) {
+    clear_java_exception(env, "StartGameParams classes");
+    return nullptr;
+  }
+  const jmethodID builder_method = env->GetStaticMethodID(
+      params_class, "builder",
+      "()Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;");
+  const jmethodID platform_ctor = env->GetMethodID(platform_class, "<init>", "()V");
+  const jmethodID game_platform_ctor = env->GetMethodID(
+      game_platform_class, "<init>",
+      "(Lcom/roblox/engine/jni/model/PlatformParams;)V");
+  if (!builder_method || !platform_ctor || !game_platform_ctor) {
+    clear_java_exception(env, "StartGameParams constructors");
+    return nullptr;
+  }
+  jobject builder = env->CallStaticObjectMethod(params_class, builder_method);
+  jobject base_platform = env->NewObject(platform_class, platform_ctor);
+  jobject platform = base_platform
+                         ? env->NewObject(game_platform_class,
+                                         game_platform_ctor, base_platform)
+                         : nullptr;
+  if (!builder || !platform || env->ExceptionCheck()) {
+    clear_java_exception(env, "StartGameParams allocation");
+    return nullptr;
+  }
+
+  const char* content = content_path ? content_path : "";
+  auto call_object = [&](const char* name, const char* signature,
+                         jobject value) -> bool {
+    const jmethodID method = env->GetMethodID(builder_class, name, signature);
+    if (!method) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    builder = env->CallObjectMethod(builder, method, value);
+    if (!builder || env->ExceptionCheck()) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    return true;
+  };
+  auto call_string = [&](const char* name, const char* value) -> bool {
+    jstring text = env->NewStringUTF(value ? value : "");
+    if (!text) return false;
+    const bool ok = call_object(name, "(Ljava/lang/String;)"
+                                       "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;",
+                                text);
+    env->DeleteLocalRef(text);
+    return ok;
+  };
+  auto call_long = [&](const char* name, jlong value) -> bool {
+    const jmethodID method = env->GetMethodID(
+        builder_class, name,
+        "(J)Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;");
+    if (!method) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    builder = env->CallObjectMethod(builder, method, value);
+    if (!builder || env->ExceptionCheck()) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    return true;
+  };
+  auto call_int = [&](const char* name, jint value) -> bool {
+    const jmethodID method = env->GetMethodID(
+        builder_class, name,
+        "(I)Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;");
+    if (!method) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    builder = env->CallObjectMethod(builder, method, value);
+    if (!builder || env->ExceptionCheck()) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    return true;
+  };
+  auto call_bool = [&](const char* name, jboolean value) -> bool {
+    const jmethodID method = env->GetMethodID(
+        builder_class, name,
+        "(Z)Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;");
+    if (!method) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    builder = env->CallObjectMethod(builder, method, value);
+    if (!builder || env->ExceptionCheck()) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    return true;
+  };
+
+  const jfieldID platform_asset =
+      env->GetFieldID(platform_class, "assetFolderPath", "Ljava/lang/String;");
+  if (!platform_asset) {
+    clear_java_exception(env, "StartGameParams platform asset path");
+    return nullptr;
+  }
+  jstring asset = env->NewStringUTF(content);
+  env->SetObjectField(platform, platform_asset, asset);
+  env->DeleteLocalRef(asset);
+  const jfieldID tablet = env->GetFieldID(game_platform_class, "isTablet", "Z");
+  if (!tablet) {
+    clear_java_exception(env, "StartGameParams platform tablet flag");
+    return nullptr;
+  }
+  env->SetBooleanField(platform, tablet, JNI_FALSE);
+  if (env->ExceptionCheck()) {
+    clear_java_exception(env, "StartGameParams platform fields");
+    return nullptr;
+  }
+
+  const char* const empty = "";
+  /* rh.n.b -> vi.j0.a maps URI gameInstanceId to accessCode (the native
+   * join-private-game contract), while gameId is a separate field. */
+  const std::string access_code = request.game_instance_id.value_or("");
+  const std::string reserved_server_access_code =
+      request.reserved_server_access_code.value_or("");
+  const std::string launch_data = request.launch_data.value_or("");
+  const std::string call_id = request.call_id.value_or("");
+  /* The APK's vi.j0 builder uses request type 1 when an authenticated user
+   * id is present and type 2 for the anonymous place-only WebView route.
+   * Nuah receives a bare roblox://placeId URI, so recover the signed-in id
+   * from Sober's cookie jar instead of accidentally taking the anonymous
+   * path (which returns Join Error 524/401). */
+  const jint join_request_type =
+      nuah_roblox_user_id() > 0 && access_code.empty() ? 1 : 2;
+  const jlong place_id = static_cast<jlong>(std::stoll(request.place_id));
+  const bool fields_ok =
+      call_object("setSurface", "(Landroid/view/Surface;)"
+                               "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;",
+                  surface) &&
+      call_object("setPlatformParams", "(Lcom/roblox/engine/jni/model/PlatformParams;)"
+                                           "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;",
+                  platform) &&
+      /* vi/i0.C() deliberately passes null here.  The native bridge treats a
+       * fabricated DeviceParams as a different contract and leaves its game
+       * session adapter uninitialised. */
+      call_object("setDeviceParams", "(Lcom/roblox/engine/jni/model/DeviceParams;)"
+                                         "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;",
+                  nullptr) &&
+      call_long("setConversationId", 0) &&
+      call_long("setReferredByPlayerId", 0) &&
+      call_string("setAccessCode", access_code.c_str()) &&
+      call_string("setCallId", call_id.c_str()) &&
+      call_string("setEventId", empty) &&
+      call_string("setGameId", empty) &&
+      call_string("setGameJoinContext", empty) &&
+      call_bool("setIsUnder13", JNI_FALSE) &&
+      call_string("setIsoContext", empty) &&
+      call_string("setJoinAttemptId", empty) &&
+      call_string("setJoinAttemptOrigin", empty) &&
+      call_int("setJoinRequestType", join_request_type) &&
+      call_string("setLaunchData", launch_data.c_str()) &&
+      call_string("setLinkCode", empty) &&
+      call_long("setPlaceId", place_id) &&
+      call_string("setReferralPage", "WebView") &&
+      call_string("setReservedServerAccessCode",
+                  reserved_server_access_code.c_str()) &&
+      call_long("setUserId", nuah_roblox_user_id()) &&
+      call_string("setUsername", empty) &&
+      /* rh.y0.D0() is false for the normal desktop session, so the APK does
+       * not set a VR activity.  Keep this nullable unless explicitly testing
+       * the VR path. */
+      call_object("setVrContext", "(Landroid/app/Activity;)"
+                                  "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;",
+                  (::getenv("NUAH_ENABLE_VR") ? activity : nullptr));
+  if (!fields_ok) return nullptr;
+  const jmethodID build = env->GetMethodID(
+      builder_class, "build",
+      "()Lcom/roblox/engine/jni/autovalue/StartGameParams;");
+  if (!build) {
+    clear_java_exception(env, "StartGameParams.build");
+    return nullptr;
+  }
+  jobject result = env->CallObjectMethod(builder, build);
+  if (!result || env->ExceptionCheck()) {
+    clear_java_exception(env, "StartGameParams.build");
+    return nullptr;
+  }
+  return result;
+}
+
+jobject make_real_platform_params(JNIEnv* env, const char* content_path) {
+  if (!env) return nullptr;
+  jclass klass =
+      env->FindClass("com/roblox/engine/jni/model/PlatformParams");
+  const jmethodID ctor = klass ? env->GetMethodID(klass, "<init>", "()V")
+                               : nullptr;
+  if (!klass || !ctor) {
+    clear_java_exception(env, "PlatformParams constructor");
+    return nullptr;
+  }
+  jobject params = env->NewObject(klass, ctor);
+  if (!params) {
+    clear_java_exception(env, "PlatformParams allocation");
+    return nullptr;
+  }
+  auto set_string = [&](const char* name, const char* value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "Ljava/lang/String;");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    jstring text = env->NewStringUTF(value ? value : "");
+    env->SetObjectField(params, field, text);
+    env->DeleteLocalRef(text);
+    return !env->ExceptionCheck();
+  };
+  auto set_bool = [&](const char* name, jboolean value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "Z");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    env->SetBooleanField(params, field, value);
+    return !env->ExceptionCheck();
+  };
+  auto set_int = [&](const char* name, jint value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "I");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    env->SetIntField(params, field, value);
+    return !env->ExceptionCheck();
+  };
+  auto set_float = [&](const char* name, jfloat value) -> bool {
+    const jfieldID field = env->GetFieldID(klass, name, "F");
+    if (!field) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    env->SetFloatField(params, field, value);
+    return !env->ExceptionCheck();
+  };
+  const bool ok =
+      set_string("assetFolderPath", content_path) &&
+      set_float("dpiScale", 1.0f) &&
+      set_bool("isKeyboardDevice", JNI_TRUE) &&
+      set_bool("isMouseDevice", JNI_TRUE) &&
+      set_bool("isTouchDevice", JNI_FALSE) &&
+      set_int("viewportHeightMm", 190) &&
+      set_int("viewportWidthMm", 340);
+  if (!ok || env->ExceptionCheck()) {
+    clear_java_exception(env, "PlatformParams fields");
+    return nullptr;
+  }
+  return params;
+}
+
+bool install_device_static_params(JNIEnv* env) {
+  if (!env) return false;
+  jclass bridge = env->FindClass(
+      "com/roblox/engine/jni/NativeGLJavaInterface");
+  jclass params_class = env->FindClass(
+      "com/roblox/engine/jni/model/DeviceStaticParams");
+  if (!bridge || !params_class) {
+    clear_java_exception(env, "DeviceStaticParams classes");
+    return false;
+  }
+  const jmethodID ctor = env->GetMethodID(params_class, "<init>", "()V");
+  const jmethodID setter = env->GetStaticMethodID(
+      bridge, "setDeviceStaticParams",
+      "(Lcom/roblox/engine/jni/model/DeviceStaticParams;)V");
+  if (!ctor || !setter) {
+    clear_java_exception(env, "DeviceStaticParams methods");
+    return false;
+  }
+  jobject params = env->NewObject(params_class, ctor);
+  if (!params) {
+    clear_java_exception(env, "DeviceStaticParams allocation");
+    return false;
+  }
+  auto string_field = [&](const char* name, const char* value) {
+    const jfieldID field = env->GetFieldID(params_class, name,
+                                           "Ljava/lang/String;");
+    if (!field) return false;
+    const jstring text = env->NewStringUTF(value);
+    env->SetObjectField(params, field, text);
+    env->DeleteLocalRef(text);
+    return !env->ExceptionCheck();
+  };
+  const jfieldID cpu = env->GetFieldID(params_class, "cpu64Bit", "Z");
+  const bool fields_ok =
+      string_field("appBuildVariant", "release") &&
+      string_field("appVersion", "Roblox") &&
+      cpu && string_field("deviceName", "Nuah Linux PC") &&
+      string_field("deviceSku", "x86_64") &&
+      string_field("manufacturer", "Nuah") &&
+      string_field("osVersion", "16") &&
+      string_field("socModel", "x86_64");
+  if (!fields_ok || env->ExceptionCheck()) {
+    clear_java_exception(env, "DeviceStaticParams fields");
+    return false;
+  }
+  env->SetBooleanField(params, cpu, JNI_TRUE);
+  env->CallStaticVoidMethod(bridge, setter, params);
+  if (env->ExceptionCheck()) {
+    clear_java_exception(env, "DeviceStaticParams setter");
+    return false;
+  }
+  return true;
 }
 
 std::vector<std::filesystem::path> image_candidates(
@@ -95,6 +973,11 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
 
 int run_nuah_jni(const NativeLaunchOptions& options,
                  const std::filesystem::path& apk) {
+  const bool fast_mvp = fast_mvp_enabled();
+  const bool init_only = [] {
+    const char* value = ::getenv("NUAH_INIT_ONLY");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
   std::string asset_apks;
   for (const auto& candidate : image_candidates(options)) {
     if (!std::filesystem::is_regular_file(candidate)) continue;
@@ -104,21 +987,154 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   if (asset_apks.empty() || ::setenv("NUAH_APK_PATHS", asset_apks.c_str(), 1) != 0) {
     throw std::runtime_error("cannot configure Android asset APK paths");
   }
+  // ATL's Android API provider expects the same per-APK app-private root that
+  // its normal launcher creates (<data>/<apk-name>_/).  Set it before ART is
+  // created so Environment/AssetManager native initialization sees a real
+  // directory.  Passing the parent data directory here makes the provider
+  // fall back to /tmp/nuah and its AssetManager then dereferences an empty
+  // ApkAssets list.
+  const auto app_data_directory =
+      std::filesystem::absolute(options.data_directory.value_or(
+          std::filesystem::temp_directory_path() / "nuah-data")) /
+      (options.apk.filename().string() + "_");
+  std::error_code app_data_error;
+  std::filesystem::create_directories(app_data_directory, app_data_error);
+  if (app_data_error ||
+      ::setenv("ANDROID_APP_DATA_DIR", app_data_directory.c_str(), 1) != 0) {
+    throw std::runtime_error("cannot configure Android app-private data directory");
+  }
+  // Reuse ATL's APK-native extraction routine. This is the Android contract
+  // System.loadLibrary expects; do not fabricate host substitutes for app
+  // libraries such as libzstd-jni.
+  (void)prepare_atl_native_libraries(options);
+  const auto app_library_directory = app_data_directory / "lib";
+  const std::string bionic_library_path =
+      app_library_directory.string() + ":" + app_data_directory.string() + "**";
+  if (::setenv("BIONIC_LD_LIBRARY_PATH", bionic_library_path.c_str(), 1) != 0) {
+    throw std::runtime_error("cannot configure Android app native-library path");
+  }
   report_bootstrap_stage("ANDROID_DLOPEN_CONSTRUCTORS");
   auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
-  report_bootstrap_stage("JNI_ONLOAD");
+  // Do not invoke JNI_OnLoad here.  The same app image is opened by ATL's
+  // System.loadLibrary from GameActivity; ART invokes JNI_OnLoad as part of
+  // that call.  Calling it manually first initializes Roblox/WebRTC twice
+  // (the second pass aborts on its global JavaVM guard).  The small settings
+  // contract below is bound explicitly until ART performs the one real load.
+  report_bootstrap_stage("PRE_JNI_BIND");
   std::unique_ptr<NuahNativeSession, decltype(&nuah_native_session_destroy)>
-      session(nuah_native_session_create(), nuah_native_session_destroy);
+      session(nullptr, nuah_native_session_destroy);
+  session.reset(nuah_native_session_create());
   if (!session) throw std::runtime_error("cannot create Nuah native session");
   NuahJvm* jvm = nuah_native_session_jvm(session.get());
-  const auto on_load = reinterpret_cast<jint (*)(JavaVM*, void*)>(
-      image.symbol("JNI_OnLoad"));
-  if (!on_load) throw std::runtime_error("libroblox.so does not export JNI_OnLoad");
-  const jint version = on_load(reinterpret_cast<JavaVM*>(nuah_jvm_java_vm(jvm)), nullptr);
-  if (version == JNI_ERR || version == JNI_EVERSION) {
-    throw std::runtime_error("libroblox.so JNI_OnLoad rejected Nuah JVM with status " +
-                             std::to_string(version));
+  // MainGameActivity.onCreate runs Roblox's own AppManager before the
+  // GameActivity native handoff. Its settings methods are exported by this
+  // image but are not discoverable through ART's class-loader lookup because
+  // libroblox was loaded through libhybris. Register the small pre-create
+  // contract explicitly; the later graphics/input methods remain Roblox's
+  // own JNI_OnLoad registrations.
+  const auto bind_roblox_native = [&](const char* klass, const char* name,
+                                      const char* signature,
+                                      const char* symbol) {
+    if (void* function = image.symbol(symbol)) {
+      (void)nuah_jvm_bind_native(jvm, klass, name, signature, function);
+    }
+  };
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface", "nativeSetBaseUrl",
+      "(Ljava/lang/String;Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetBaseUrl");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeSetRobloxChannel", "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetRobloxChannel");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeSetExceptionReasonFilename", "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeSetExceptionReasonFilename");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeOverrideChannelPlatformName", "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeOverrideChannelPlatformName");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeOverrideChannelPlatformName2", "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeOverrideChannelPlatformName2");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface", "nativeInitFastLog",
+      "()V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeInitFastLog");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeSetRobloxVersion", "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeSetRobloxVersion");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface", "nativeSetUserId",
+      "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetUserId");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeSetCacheDirectory", "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeSetCacheDirectory");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeSetFilesDirectory", "(Ljava/lang/String;)V",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeSetFilesDirectory");
+  g_roblox_set_multiple_cookies =
+      reinterpret_cast<RobloxSetMultipleCookies>(image.symbol(
+          "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+          "nativeSetMultipleCookies"));
+  g_roblox_get_cookies_for_domain =
+      reinterpret_cast<RobloxGetCookiesForDomain>(image.symbol(
+          "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+          "nativeGetCookiesForDomain"));
+  if (!nuah_jvm_bind_native(
+          jvm, "com/roblox/engine/jni/NativeSettingsInterface",
+          "nativeGetCookiesInNetscapeFormat",
+          "(Ljava/lang/String;)Ljava/lang/String;",
+          reinterpret_cast<void*>(&nuah_native_get_cookies_netscape)) ||
+      !nuah_jvm_bind_native(
+          jvm, "com/roblox/engine/jni/NativeSettingsInterface",
+          "nativeGetCookiesForDomain", "(Ljava/lang/String;)Ljava/lang/String;",
+          reinterpret_cast<void*>(&nuah_native_get_cookies_for_domain)) ||
+      !nuah_jvm_bind_native(
+          jvm, "com/roblox/engine/jni/NativeSettingsInterface",
+          "nativeSetMultipleCookies", "(Ljava/lang/String;Ljava/lang/String;)V",
+          reinterpret_cast<void*>(&nuah_native_set_cookies))) {
+    throw std::runtime_error("Roblox cookie boundary registration failed");
   }
+  bind_roblox_native(
+      "com/roblox/client/startup/MainGameActivity", "nativeSetAssetPath",
+      "(Ljava/lang/String;)V",
+      "Java_com_roblox_client_startup_MainGameActivity_nativeSetAssetPath");
+  void* running_architecture = image.symbol(
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "getRunningArchitecture");
+  if (!running_architecture)
+    running_architecture = reinterpret_cast<void*>(
+        &nuah_native_get_running_architecture);
+  if (!nuah_jvm_bind_native(
+          jvm, "com/roblox/engine/jni/NativeSettingsInterface",
+          "getRunningArchitecture", "()I", running_architecture)) {
+    throw std::runtime_error(
+        "NativeSettingsInterface.getRunningArchitecture registration failed");
+  }
+  report_bootstrap_stage("APPLICATION_STATE_SETUP");
+  if (!nuah_jvm_dispatch_application_create(jvm)) {
+    throw std::runtime_error("Roblox application state setup failed");
+  }
+  auto* bootstrap_env =
+      reinterpret_cast<JNIEnv*>(nuah_jvm_jni_env(jvm));
+  if (!install_device_static_params(bootstrap_env)) {
+    throw std::runtime_error(
+        "Roblox DeviceStaticParams contract could not be initialized");
+  }
+  prime_roblox_cookie_store(bootstrap_env);
 
   // A JNI version alone only proves that the library accepted a table.  The
   // Sober capture shows that the usable native boundary is the smaller
@@ -130,43 +1146,51 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   constexpr const char* kInitializeSignature =
       "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
       "Landroid/content/res/AssetManager;[BLandroid/content/res/Configuration;)J";
-  if (!nuah_jvm_find_registered_native(
-          jvm, kGameActivity, "initializeNativeCode", kInitializeSignature)) {
-    void* exported_initialize = image.symbol(
-        "Java_com_google_androidgamesdk_GameActivity_initializeNativeCode");
-    if (!exported_initialize ||
-        !nuah_jvm_bind_native(jvm, kGameActivity, "initializeNativeCode",
-                              kInitializeSignature, exported_initialize)) {
-      throw std::runtime_error(
-          "libroblox.so exposes neither a registered nor exported "
-          "GameActivity initializeNativeCode");
-    }
-  }
   struct NativeRequirement {
     const char* member;
     const char* signature;
   };
-  constexpr NativeRequirement kInputLifecycleRequirements[] = {
-      {"onStartNative", "(J)V"},
-      {"onResumeNative", "(J)V"},
-      {"onPauseNative", "(J)V"},
-      {"onStopNative", "(J)V"},
-      {"onSurfaceCreatedNative", "(JLandroid/view/Surface;)V"},
-      {"onSurfaceChangedNative", "(JLandroid/view/Surface;III)V"},
-      {"onSurfaceDestroyedNative", "(J)V"},
-      {"onTouchEventNative", "(JLandroid/view/MotionEvent;IIIIIJJIIIIIIFF)Z"},
-      {"onKeyDownNative", "(JLandroid/view/KeyEvent;)Z"},
-      {"onKeyUpNative", "(JLandroid/view/KeyEvent;)Z"},
-      {"onTextInputEventNative",
-       "(JLcom/google/androidgamesdk/gametextinput/State;)V"},
-  };
+  // The real ART adapter can resolve a Java method ID, but that does not
+  // expose whether another JNI library already installed its native pointer.
+  // Bind Roblox's exported entry point explicitly; RegisterNatives is the
+  // documented way to attach it and avoids relying on ART's class-loader
+  // library search (which cannot see our libhybris-loaded image).
+  void* exported_initialize = image.symbol(
+      "Java_com_google_androidgamesdk_GameActivity_initializeNativeCode");
+  if (!exported_initialize ||
+      !nuah_jvm_bind_native(jvm, kGameActivity, "initializeNativeCode",
+                            kInitializeSignature, exported_initialize)) {
+    throw std::runtime_error(
+        "libroblox.so exposes no bindable GameActivity initializeNativeCode");
+  }
   std::unique_ptr<NuahWindowSession, decltype(&nuah_window_session_destroy)>
       window(nuah_window_session_create(options.width, options.height, "Roblox"),
              nuah_window_session_destroy);
   if (!window) throw std::runtime_error("cannot create Nuah SDL/Vulkan window");
+  /* GameActivity_register expects the Surface class/object boundary to exist
+   * before initializeNativeCode. Keep this true for init-only diagnostics as
+   * well; SDL's offscreen driver makes the probe window side-effect free. */
   void* surface = nuah_native_session_surface(
       session.get(), nuah_window_session_native_window(window.get()));
   if (!surface) throw std::runtime_error("cannot create Nuah Android Surface façade");
+
+  // Android would have delivered MainGameActivity.onCreate before any
+  // GameActivity lifecycle callback. That method owns Roblox's AppManager
+  // bootstrap (including NativeUserJavaInterface.setImplementation); calling
+  // the native entry points directly without it leaves the app's Java-side
+  // session object null and aborts in nativeAppBridgeSetInitParams.
+  report_bootstrap_stage("ACTIVITY_ON_CREATE");
+  if (!nuah_jvm_dispatch_activity_create(jvm)) {
+    throw std::runtime_error("MainGameActivity.onCreate failed");
+  }
+  /* MainGameActivity.onCreate creates GameActivity.H/I and its real
+   * SurfaceHolder surface. Refresh the handoff after that point so the
+   * subsequent start/update calls receive the same Java Surface object that
+   * ATL delivered to GameActivity's native callbacks. */
+  surface = nuah_native_session_surface(
+      session.get(), nuah_window_session_native_window(window.get()));
+  if (!surface)
+    throw std::runtime_error("cannot obtain GameActivity holder Surface");
 
   const auto data_directory = options.data_directory.value_or(
       std::filesystem::temp_directory_path() / "nuah-data");
@@ -177,9 +1201,14 @@ int run_nuah_jni(const NativeLaunchOptions& options,
                              data_error.message());
   }
   report_bootstrap_stage("GAMEACTIVITY_INITIALIZE");
-  if (!nuah_native_session_initialize_game(session.get(), "com.roblox.client",
-                                           data_directory.c_str())) {
-    throw std::runtime_error("GameActivity initializeNativeCode returned no native handle");
+  if (nuah_jvm_capture_native_handle(jvm)) {
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+      std::cerr << "nuah native: reusing GameActivity.onCreate native handle\n";
+    }
+  } else if (!nuah_native_session_initialize_game(
+                 session.get(), "com.roblox.client", data_directory.c_str())) {
+    throw std::runtime_error(
+        "GameActivity initializeNativeCode returned no native handle");
   }
   std::filesystem::path content_directory;
   if (const char* override_path = ::getenv("NUAH_CONTENT_PATH");
@@ -205,18 +1234,34 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   auto* env = reinterpret_cast<JNIEnv*>(nuah_jvm_jni_env(jvm));
   jclass main_activity =
       env->FindClass("com/roblox/client/startup/MainGameActivity");
-  jclass init_params_class =
-      env->FindClass("com/roblox/engine/jni/autovalue/AutoValue_InitParams");
-  jobject init_params =
-      init_params_class ? env->AllocObject(init_params_class) : nullptr;
+  jclass native_gl =
+      env->FindClass("com/roblox/engine/jni/NativeGLInterface");
+  jobject init_params = make_real_init_params(
+      env, reinterpret_cast<jobject>(nuah_jvm_game_activity(jvm)));
   using SetAssetPath = void (*)(JNIEnv*, jclass, jstring);
   using SetInitParams = void (*)(JNIEnv*, jclass, jobject);
+  using InitClientSettings = jint (*)(JNIEnv*, jclass, jstring, jstring,
+                                      jstring);
+  using PostClientSettings = void (*)(JNIEnv*, jclass, jobject);
+  using InitWithParams = void (*)(JNIEnv*, jclass, jobject);
   const auto set_asset_path = reinterpret_cast<SetAssetPath>(image.symbol(
       "Java_com_roblox_client_startup_MainGameActivity_nativeSetAssetPath"));
   const auto set_init_params = reinterpret_cast<SetInitParams>(image.symbol(
       "Java_com_roblox_client_startup_MainGameActivity_"
       "nativeAppBridgeSetInitParams"));
-  if (!main_activity || !init_params || !set_asset_path || !set_init_params) {
+  const auto init_client_settings = reinterpret_cast<InitClientSettings>(
+      image.symbol("Java_com_roblox_engine_jni_NativeGLInterface_"
+                   "nativeInitClientSettings"));
+  const auto post_client_settings = reinterpret_cast<PostClientSettings>(
+      image.symbol("Java_com_roblox_engine_jni_NativeGLInterface_"
+                   "nativePostClientSettingsLoadedInitialization3"));
+  const auto init_with_params = reinterpret_cast<InitWithParams>(image.symbol(
+      "Java_com_roblox_engine_jni_NativeGLInterface_"
+      "nativeAppBridgeV2InitWithParams"));
+  if (!main_activity || !init_params || !set_asset_path ||
+      (!native_gl || !init_with_params) ||
+      (!fast_mvp && !set_init_params) || !init_client_settings ||
+      !post_client_settings) {
     throw std::runtime_error(
         "Roblox MainGameActivity pre-start JNI contract is unavailable");
   }
@@ -225,11 +1270,135 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   // Roblox installs its own native crash handlers during JNI_OnLoad. Re-arm
   // the supervisor before the first Roblox-specific lifecycle handoff so
   // faults in InitParams retain their native caller chain.
-  nuah_bootstrap_diagnostics_install_signal_handler();
-  report_bootstrap_stage("ROBLOX_INIT_PARAMS");
-  set_init_params(env, main_activity, init_params);
+  if (!::getenv("NUAH_DISABLE_CRASH_HANDLER")) {
+    nuah_bootstrap_diagnostics_install_signal_handler();
+  }
+  if (const char* pause = ::getenv("NUAH_PAUSE_BEFORE_INIT");
+      pause && *pause) {
+    std::cerr << "nuah bootstrap: paused before Roblox parameter handoff (pid="
+              << ::getpid() << ")\n";
+    (void)::raise(SIGSTOP);
+  }
+  /* Roblox's API-36 pthread_mutex_t is not glibc-compatible.  Keep the
+   * loader/JNI bootstrap on the host synchronization objects, then enable
+   * the tiny out-of-line Android mutex adapter only for the InitParams and
+   * game runtime calls that pass Android mutex storage. */
+  if (!::getenv("NUAH_ANDROID_SYNC") &&
+      ::setenv("NUAH_ANDROID_SYNC", "1", 1) != 0) {
+    throw std::runtime_error("cannot select Android synchronization adapter");
+  }
 
-  for (const auto& requirement : kInputLifecycleRequirements) {
+  /* The Android activity fetches these flags before it initializes the data
+   * model.  Calling V2 directly skips that contract and Roblox aborts with
+   * "Can't initialize the TaskScheduler before flags have been loaded".
+   * Accept a supplied response for real sessions; the empty application
+   * settings document is only the offline diagnostic fallback. */
+  report_bootstrap_stage("ROBLOX_CLIENT_SETTINGS_INIT");
+  const char* settings_json = ::getenv("NUAH_CLIENT_SETTINGS_JSON");
+  std::string settings_storage;
+  if (const char* settings_path = ::getenv("NUAH_CLIENT_SETTINGS_PATH");
+      settings_path && *settings_path) {
+    std::ifstream settings_file(settings_path, std::ios::binary);
+    if (!settings_file) {
+      throw std::runtime_error("cannot open client-settings response: " +
+                               std::string(settings_path));
+    }
+    std::ostringstream settings_stream;
+    settings_stream << settings_file.rdbuf();
+    settings_storage = settings_stream.str();
+    if (settings_storage.empty()) {
+      throw std::runtime_error("client-settings response is empty");
+    }
+    settings_json = settings_storage.c_str();
+  }
+  if (!settings_json || !*settings_json) {
+    settings_json = "{\"applicationSettings\":{}}";
+  }
+  const jstring settings = env->NewStringUTF(settings_json);
+  const jstring settings_signature = env->NewStringUTF("");
+  const jstring settings_application = env->NewStringUTF("GoogleAndroidApp");
+  const jint settings_status = init_client_settings(
+      env, native_gl, settings, settings_signature, settings_application);
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::cerr << "nuah native: nativeInitClientSettings status="
+              << settings_status << '\n';
+  }
+  if (settings_status != 0) {
+    throw std::runtime_error("Roblox client-settings initialization failed with status " +
+                             std::to_string(settings_status));
+  }
+  report_bootstrap_stage("ROBLOX_CLIENT_SETTINGS_POST_INIT");
+  const jclass history_class = env->FindClass("java/util/ArrayList");
+  const jobject history = history_class ? env->AllocObject(history_class) : nullptr;
+  if (!history) throw std::runtime_error("cannot create empty client-settings history list");
+  if (const char* skip_post = ::getenv("NUAH_SKIP_CLIENT_SETTINGS_POST");
+      !skip_post || !*skip_post || std::strcmp(skip_post, "0") == 0) {
+    post_client_settings(env, native_gl, history);
+  } else if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+             trace && *trace) {
+    std::cerr << "nuah native: skipping client-settings post-init for A/B\n";
+  }
+
+  /* The APK's AppShell setup calls these before it initializes the data model
+   * (vi/e.E -> nativeGameGlobalInit -> nativeUpdateAdapterInit -> vi/e.j).
+   * Keep the same order here; starting a game first leaves SingleSurfaceApp
+   * without its global adapter and its later surface update dereferences that
+   * missing state. */
+  using GlobalInit = void (*)(JNIEnv*, jclass);
+  using UpdateAdapterInit = void (*)(JNIEnv*, jclass);
+  const auto global_init = reinterpret_cast<GlobalInit>(image.symbol(
+      "Java_com_roblox_engine_jni_NativeGLInterface_nativeGameGlobalInit"));
+  const auto update_adapter_init = reinterpret_cast<UpdateAdapterInit>(
+      image.symbol("Java_com_roblox_engine_jni_NativeGLInterface_"
+                   "nativeUpdateAdapterInit"));
+  report_bootstrap_stage("ROBLOX_GAME_GLOBAL_INIT");
+  if (global_init) global_init(env, native_gl);
+  if (update_adapter_init) update_adapter_init(env, native_gl);
+
+  if (!fast_mvp) {
+    report_bootstrap_stage("ROBLOX_INIT_PARAMS_DIAGNOSTIC");
+    const char* skip_init = ::getenv("NUAH_SKIP_ROBLOX_INIT_PARAMS");
+    if (!skip_init || !*skip_init || std::strcmp(skip_init, "0") == 0) {
+      set_init_params(env, main_activity, init_params);
+    } else if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+               trace && *trace) {
+      std::cerr << "nuah native: skipping MainGameActivity parameter setter "
+                   "for ABI comparison\n";
+    }
+  }
+
+  /* MainGameActivity's AppManager performs this immediately after the init
+   * setter.  Keep both halves of that contract even in the diagnostic path;
+   * the setter alone leaves SingleSurfaceApp's render-session provider null,
+   * which only becomes visible when updateSurface is called. */
+  report_bootstrap_stage(fast_mvp ? "ROBLOX_FAST_V2_INIT"
+                                  : "ROBLOX_GAME_V2_INIT");
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+      trace && *trace) {
+    std::cerr << "nuah native: NativeGLInterface V2 init\n";
+  }
+  init_with_params(env, native_gl, init_params);
+
+  report_bootstrap_stage("ROBLOX_V2_INIT_COMPLETE");
+  if (init_only) {
+    std::cerr << "nuah native: V2 initialization completed (init-only)\n";
+    return 0;
+  }
+
+  /* These are the only callbacks required to reach a first frame and basic
+   * desktop input. Pause/stop/text-input remain optional until the MVP is
+   * rendering. This mirrors GameActivity's documented callback boundary
+   * without making unrelated Android APIs a launch prerequisite. */
+  constexpr NativeRequirement kMvpRequirements[] = {
+      {"onStartNative", "(J)V"},
+      {"onResumeNative", "(J)V"},
+      {"onSurfaceCreatedNative", "(JLandroid/view/Surface;)V"},
+      {"onSurfaceChangedNative", "(JLandroid/view/Surface;III)V"},
+      {"onTouchEventNative", "(JLandroid/view/MotionEvent;IIIIIJJIIIIIIFF)Z"},
+      {"onKeyDownNative", "(JLandroid/view/KeyEvent;)Z"},
+      {"onKeyUpNative", "(JLandroid/view/KeyEvent;)Z"},
+  };
+  for (const auto& requirement : kMvpRequirements) {
     if (!nuah_jvm_find_registered_native(jvm, kGameActivity,
                                          requirement.member,
                                          requirement.signature)) {
@@ -257,6 +1426,64 @@ int run_nuah_jni(const NativeLaunchOptions& options,
     throw std::runtime_error("GameActivity surface lifecycle callback is unavailable");
   }
   report_bootstrap_stage("GRAPHICS_LIFECYCLE_ACTIVE");
+  nuah_roblox_java_facade_set_launch_surface(
+      reinterpret_cast<jobject>(surface));
+  if (options.uri && !options.uri->empty()) {
+    const auto request = parse_roblox_uri(*options.uri);
+    nuah_roblox_java_facade_set_launch_place_id(
+        static_cast<jlong>(std::stoll(request.place_id)));
+    const auto start_game = reinterpret_cast<jint (*)(JNIEnv*, jclass, jobject)>(
+        image.symbol("Java_com_roblox_engine_jni_NativeGLInterface_"
+                     "nativeAppBridgeV2StartGameWithParam"));
+    using UpdateSurfaceGame = void (*)(JNIEnv*, jclass, jobject, jobject,
+                                       jobject);
+    const auto update_surface_game = reinterpret_cast<UpdateSurfaceGame>(
+        image.symbol("Java_com_roblox_engine_jni_NativeGLInterface_"
+                     "nativeAppBridgeV2UpdateSurfaceGameWithPlatformParams"));
+    const auto start_params = make_real_start_game_params(
+        env, reinterpret_cast<jobject>(surface),
+        reinterpret_cast<jobject>(nuah_jvm_game_activity(jvm)), request,
+        content_path.c_str());
+    const auto activity = reinterpret_cast<jobject>(nuah_jvm_game_activity(jvm));
+    const auto platform_params =
+        make_real_platform_params(env, content_path.c_str());
+    if (!native_gl || !start_game || !start_params || !update_surface_game ||
+        !activity || !platform_params) {
+      throw std::runtime_error(
+          "Roblox direct game-start JNI contract is unavailable");
+    }
+    report_bootstrap_stage("ROBLOX_GAME_START");
+    /* App/bootstrap initialization can rebuild the native HTTP client after
+     * the early activity setup. Re-apply the authenticated Sober header at
+     * the same boundary immediately before the join request. */
+    prime_roblox_cookie_store(env);
+    const jint start_result = start_game(env, native_gl, start_params);
+    /* ExperienceSession starts its data-model work asynchronously.  On
+     * Android the next SurfaceHolder callback arrives after the UI returns
+     * to the looper; calling updateSurface in the same native stack frame
+     * races that initialization and leaves the render-session object null.
+     * Give the worker a small, configurable handoff window before matching
+     * that later callback. */
+    unsigned long settle_ms = 500;
+    if (const char* value = ::getenv("NUAH_GAME_START_SETTLE_MS");
+        value && *value) {
+      char* end = nullptr;
+      const unsigned long parsed = std::strtoul(value, &end, 10);
+      if (end != value) settle_ms = parsed;
+    }
+    if (settle_ms != 0) ::usleep(settle_ms * 1000U);
+    /* ExperienceSession.updateSurface() is the call that turns the Android
+     * Surface façade into Roblox's render target after the UGC game enters
+     * its stage.  GameActivity's lifecycle callback alone is not equivalent;
+     * omitting this leaves a live Lua/game stage with no swapchain. */
+    report_bootstrap_stage("ROBLOX_GAME_SURFACE_UPDATE");
+    update_surface_game(env, native_gl, reinterpret_cast<jobject>(surface),
+                        platform_params, activity);
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+      std::cerr << "nuah native: nativeAppBridgeV2StartGameWithParam placeId="
+                << request.place_id << " status=" << start_result << '\n';
+    }
+  }
   nuah_input_bind_native_session(session.get());
   while (!nuah_window_session_should_close(window.get())) {
     nuah_window_session_pump(window.get());
@@ -268,13 +1495,39 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   (void)nuah_native_session_dispatch_lifecycle(session.get(), "onPauseNative");
   (void)nuah_native_session_dispatch_lifecycle(session.get(), "onStopNative");
   nuah_native_session_clear_surface(session.get());
-  std::cerr << "nuah native: libroblox.so accepted retained Nuah JVM JNI version 0x"
-            << std::hex << version << std::dec << '\n';
+  std::cerr << "nuah native: libroblox.so retained through ATL's single JNI_OnLoad path\n";
   return 0;
 }
 
-int run_nuah_jni_isolated(const NativeLaunchOptions& options,
-                          const std::filesystem::path& apk) {
+/* Keep the Android-facing bootstrap on a dedicated host stack, but create
+ * that thread only after the isolated child exists.  Forking from a worker
+ * thread copies the parent's libc/loader lock state into the child; Roblox's
+ * JNI_OnLoad then exercises that half-copied state through its TLS allocator.
+ * A fork-first child has one clean host TLS domain before any Android DSO is
+ * loaded. */
+struct NativeIsolationThreadArgs {
+  const NativeLaunchOptions* options;
+  const std::filesystem::path* apk;
+  int result;
+  std::string error;
+};
+
+void* run_nuah_jni_isolated_on_large_stack(void* opaque) noexcept {
+  auto* args = static_cast<NativeIsolationThreadArgs*>(opaque);
+  try {
+    args->result = run_nuah_jni(*args->options, *args->apk);
+  } catch (const std::exception& error) {
+    args->error = error.what();
+    args->result = 1;
+  } catch (...) {
+    args->error = "native bootstrap failed with an unknown error";
+    args->result = 1;
+  }
+  return nullptr;
+}
+
+int run_nuah_jni_isolated_impl(const NativeLaunchOptions& options,
+                               const std::filesystem::path& apk) {
   // Android constructors run while android_dlopen is still active. Isolate
   // them so a native abort is converted into a useful launch error rather
   // than taking down the supervisor with only a core-dump message.
@@ -288,6 +1541,7 @@ int run_nuah_jni_isolated(const NativeLaunchOptions& options,
   std::memset(diagnostics, 0, sizeof(*diagnostics));
   diagnostics->version = 1;
   nuah_bootstrap_diagnostics_attach(diagnostics);
+  const pid_t parent_pid = ::getpid();
   const pid_t child = ::fork();
   if (child < 0) {
     nuah_bootstrap_diagnostics_attach(nullptr);
@@ -295,14 +1549,41 @@ int run_nuah_jni_isolated(const NativeLaunchOptions& options,
     throw std::runtime_error("cannot start isolated native bootstrap");
   }
   if (child == 0) {
-    nuah_bootstrap_diagnostics_install_signal_handler();
-    try {
-      _exit(run_nuah_jni(options, apk));
-    } catch (const std::exception& error) {
-      std::cerr << "nuah bootstrap: native initialization failed before JNI_OnLoad: "
-                << error.what() << '\n';
+#ifdef __linux__
+    /* Do not leave a detached ART/Roblox child behind when the Nuah launcher
+     * is closed.  The old process split was the reason stale 1818 windows and
+     * locked databases survived later launches. */
+    if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || ::getppid() != parent_pid)
+      _exit(70);
+#endif
+    if (!::getenv("NUAH_DISABLE_CRASH_HANDLER")) {
+      nuah_bootstrap_diagnostics_install_signal_handler();
+    }
+    constexpr std::size_t kNativeBootstrapStack = 256u * 1024u * 1024u;
+    pthread_attr_t attributes{};
+    if (::pthread_attr_init(&attributes) != 0 ||
+        ::pthread_attr_setstacksize(&attributes, kNativeBootstrapStack) != 0) {
+      (void)::pthread_attr_destroy(&attributes);
+      std::cerr << "nuah bootstrap: cannot allocate native bootstrap stack\n";
       _exit(70);
     }
+    NativeIsolationThreadArgs arguments{&options, &apk, 1, {}};
+    pthread_t worker{};
+    const int create_result = ::pthread_create(
+        &worker, &attributes, run_nuah_jni_isolated_on_large_stack, &arguments);
+    (void)::pthread_attr_destroy(&attributes);
+    if (create_result != 0) {
+      std::cerr << "nuah bootstrap: cannot start native bootstrap thread (errno="
+                << create_result << ")\n";
+      _exit(70);
+    }
+    (void)::pthread_join(worker, nullptr);
+    if (!arguments.error.empty()) {
+      std::cerr << "nuah bootstrap: native initialization failed before JNI_OnLoad: "
+                << arguments.error << '\n';
+      _exit(70);
+    }
+    _exit(arguments.result == 0 ? 0 : 70);
   }
   int status = 0;
   if (::waitpid(child, &status, 0) != child) {
@@ -358,6 +1639,14 @@ int run_nuah_jni_isolated(const NativeLaunchOptions& options,
                            " at " + stage);
 }
 
+int run_nuah_jni_isolated(const NativeLaunchOptions& options,
+                          const std::filesystem::path& apk) {
+  /* The parent remains single-threaded for native-run.  Forking here, before
+   * the Android linker/SDL providers are loaded, avoids inheriting locks from
+   * a host worker; the child creates its large-stack bootstrap thread above. */
+  return run_nuah_jni_isolated_impl(options, apk);
+}
+
 int run_bionic_loader(const std::filesystem::path& image) {
   const auto root = runtime_directory();
   const auto linker = root / "bionic/lib64/linker64";
@@ -401,6 +1690,11 @@ int run_native(const NativeLaunchOptions& options) {
   }
   if (options.width <= 0 || options.height <= 0) {
     throw std::runtime_error("native window dimensions must be positive");
+  }
+
+  if (!std::getenv("NUAH_DISABLE_SESSION_DISCOVERY")) {
+    (void)discover_sober_session_cookie();
+    (void)discover_webkit_user_id();
   }
 
   const auto image_apk = find_image(options);

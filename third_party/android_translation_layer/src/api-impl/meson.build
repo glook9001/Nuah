@@ -629,6 +629,8 @@ srcs = [
 	'android/view/WindowManager.java',
 	'android/view/WindowManagerGlobal.java',
 	'android/view/WindowManagerImpl.java',
+	'android/window/OnBackInvokedCallback.java',
+	'android/window/OnBackInvokedDispatcher.java',
 	'android/view/accessibility/AccessibilityManager.java',
 	'android/view/accessibility/AccessibilityNodeInfo.java',
 	'android/view/accessibility/AccessibilityNodeProvider.java',

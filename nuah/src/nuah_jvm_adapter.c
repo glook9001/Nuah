@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 
 extern jobject java_lang_Class_getClassLoader(JNIEnv*, jobject);
 jobject (*nuah_java_facade_link_anchor)(JNIEnv*, jobject) =
@@ -39,6 +40,15 @@ struct NuahJvm {
   struct jvm core;
   jclass (*base_find_class)(JNIEnv*, const char*);
   jint (*base_register_natives)(JNIEnv*, jclass, const JNINativeMethod*, jint);
+  jint (*base_call_int)(JNIEnv*, jobject, jmethodID, ...);
+  jint (*base_call_int_v)(JNIEnv*, jobject, jmethodID, va_list);
+  jint (*base_call_int_a)(JNIEnv*, jobject, jmethodID, jvalue*);
+  jlong (*base_call_long)(JNIEnv*, jobject, jmethodID, ...);
+  jlong (*base_call_long_v)(JNIEnv*, jobject, jmethodID, va_list);
+  jlong (*base_call_long_a)(JNIEnv*, jobject, jmethodID, jvalue*);
+  jlong (*base_call_static_long)(JNIEnv*, jclass, jmethodID, ...);
+  jlong (*base_call_static_long_v)(JNIEnv*, jclass, jmethodID, va_list);
+  jlong (*base_call_static_long_a)(JNIEnv*, jclass, jmethodID, jvalue*);
   jobject activity;
   jlong native_handle;
   struct nuah_event key;
@@ -100,60 +110,131 @@ static jint nuah_call_int(JNIEnv* env, jobject object, jmethodID method, ...) {
   struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
   const struct nuah_event* event = event_for(jvm, object);
   const char* name = method_name_for(jvm, method);
-  if (!event || !name) return 0;
-  if (!strcmp(name, "getKeyCode")) return event->keycode;
-  if (!strcmp(name, "getAction")) return event->action;
-  if (!strcmp(name, "getRepeatCount")) return event->repeat;
-  if (!strcmp(name, "getScanCode")) return event->scancode;
-  if (!strcmp(name, "getMetaState")) return (jint)event->modifiers;
-  return 0;
+  if (event && name) {
+    if (!strcmp(name, "getKeyCode")) return event->keycode;
+    if (!strcmp(name, "getAction")) return event->action;
+    if (!strcmp(name, "getRepeatCount")) return event->repeat;
+    if (!strcmp(name, "getScanCode")) return event->scancode;
+    if (!strcmp(name, "getMetaState")) return (jint)event->modifiers;
+  }
+  va_list args;
+  va_start(args, method);
+  const jint result = jvm->base_call_int_v
+                          ? jvm->base_call_int_v(env, object, method, args)
+                          : 0;
+  va_end(args);
+  return result;
 }
 
 static jint nuah_call_int_v(JNIEnv* env, jobject object, jmethodID method, va_list args) {
-  (void)args;
-  return nuah_call_int(env, object, method);
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  const struct nuah_event* event = event_for(jvm, object);
+  const char* name = method_name_for(jvm, method);
+  if (event && name) {
+    if (!strcmp(name, "getKeyCode")) return event->keycode;
+    if (!strcmp(name, "getAction")) return event->action;
+    if (!strcmp(name, "getRepeatCount")) return event->repeat;
+    if (!strcmp(name, "getScanCode")) return event->scancode;
+    if (!strcmp(name, "getMetaState")) return (jint)event->modifiers;
+  }
+  return jvm->base_call_int_v
+             ? jvm->base_call_int_v(env, object, method, args)
+             : 0;
 }
 
 static jint nuah_call_int_a(JNIEnv* env, jobject object, jmethodID method, jvalue* args) {
-  (void)args;
-  return nuah_call_int(env, object, method);
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  const struct nuah_event* event = event_for(jvm, object);
+  const char* name = method_name_for(jvm, method);
+  if (event && name) {
+    if (!strcmp(name, "getKeyCode")) return event->keycode;
+    if (!strcmp(name, "getAction")) return event->action;
+    if (!strcmp(name, "getRepeatCount")) return event->repeat;
+    if (!strcmp(name, "getScanCode")) return event->scancode;
+    if (!strcmp(name, "getMetaState")) return (jint)event->modifiers;
+  }
+  return jvm->base_call_int_a
+             ? jvm->base_call_int_a(env, object, method, args)
+             : 0;
 }
 
 static jlong nuah_call_long(JNIEnv* env, jobject object, jmethodID method, ...) {
   struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
   const struct nuah_event* event = event_for(jvm, object);
   const char* name = method_name_for(jvm, method);
-  return event && name && !strcmp(name, "getEventTime") ? (jlong)event->event_time_ms : 0;
+  if (event && name && !strcmp(name, "getEventTime"))
+    return (jlong)event->event_time_ms;
+  va_list args;
+  va_start(args, method);
+  const jlong result = jvm->base_call_long_v
+                           ? jvm->base_call_long_v(env, object, method, args)
+                           : 0;
+  va_end(args);
+  return result;
 }
 
 static jlong nuah_call_long_v(JNIEnv* env, jobject object, jmethodID method, va_list args) {
-  (void)args;
-  return nuah_call_long(env, object, method);
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  const struct nuah_event* event = event_for(jvm, object);
+  const char* name = method_name_for(jvm, method);
+  if (event && name && !strcmp(name, "getEventTime"))
+    return (jlong)event->event_time_ms;
+  return jvm->base_call_long_v
+             ? jvm->base_call_long_v(env, object, method, args)
+             : 0;
 }
 
 static jlong nuah_call_long_a(JNIEnv* env, jobject object, jmethodID method, jvalue* args) {
-  (void)args;
-  return nuah_call_long(env, object, method);
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  const struct nuah_event* event = event_for(jvm, object);
+  const char* name = method_name_for(jvm, method);
+  if (event && name && !strcmp(name, "getEventTime"))
+    return (jlong)event->event_time_ms;
+  return jvm->base_call_long_a
+             ? jvm->base_call_long_a(env, object, method, args)
+             : 0;
 }
 
 static jlong nuah_call_static_long(JNIEnv* env, jclass klass, jmethodID method, ...) {
   struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
   (void)klass;
   const char* name = method_name_for(jvm, method);
-  if (!name || strcmp(name, "getProcessTimestamp")) return 0;
+  if (!name || strcmp(name, "getProcessTimestamp")) {
+    va_list args;
+    va_start(args, method);
+    const jlong result = jvm->base_call_static_long_v
+                             ? jvm->base_call_static_long_v(env, klass, method, args)
+                             : 0;
+    va_end(args);
+    return result;
+  }
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
   return (jlong)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 static jlong nuah_call_static_long_v(JNIEnv* env, jclass klass, jmethodID method, va_list args) {
-  (void)klass; (void)args;
-  return nuah_call_static_long(env, NULL, method);
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  const char* name = method_name_for(jvm, method);
+  if (!name || strcmp(name, "getProcessTimestamp"))
+    return jvm->base_call_static_long_v
+               ? jvm->base_call_static_long_v(env, klass, method, args)
+               : 0;
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  return (jlong)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 static jlong nuah_call_static_long_a(JNIEnv* env, jclass klass, jmethodID method, jvalue* args) {
-  (void)klass; (void)args;
-  return nuah_call_static_long(env, NULL, method);
+  struct NuahJvm* jvm = NUAH_CONTAINER_OF(env, struct NuahJvm, core.env);
+  const char* name = method_name_for(jvm, method);
+  if (!name || strcmp(name, "getProcessTimestamp"))
+    return jvm->base_call_static_long_a
+               ? jvm->base_call_static_long_a(env, klass, method, args)
+               : 0;
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  return (jlong)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 static jobject make_object(struct NuahJvm* jvm, const char* class_name) {
@@ -180,6 +261,15 @@ NuahJvm* nuah_jvm_create(void) {
   jvm_init(&jvm->core);
   jvm->base_find_class = jvm->core.native.FindClass;
   jvm->base_register_natives = jvm->core.native.RegisterNatives;
+  jvm->base_call_int = jvm->core.native.CallIntMethod;
+  jvm->base_call_int_v = jvm->core.native.CallIntMethodV;
+  jvm->base_call_int_a = jvm->core.native.CallIntMethodA;
+  jvm->base_call_long = jvm->core.native.CallLongMethod;
+  jvm->base_call_long_v = jvm->core.native.CallLongMethodV;
+  jvm->base_call_long_a = jvm->core.native.CallLongMethodA;
+  jvm->base_call_static_long = jvm->core.native.CallStaticLongMethod;
+  jvm->base_call_static_long_v = jvm->core.native.CallStaticLongMethodV;
+  jvm->base_call_static_long_a = jvm->core.native.CallStaticLongMethodA;
   jvm->core.native.FindClass = nuah_find_class;
   jvm->core.native.RegisterNatives = nuah_register_natives;
   jvm->core.native.GetVersion = nuah_get_version;
@@ -310,11 +400,29 @@ long long nuah_jvm_initialize_game(NuahJvm* jvm, const char* package_name,
   jobject configuration = make_object(jvm, "android/content/res/Configuration");
   jbyteArray saved_state = jvm->core.native.NewByteArray(env, 0);
   const char* path = data_path ? data_path : "";
+  char obb_path[4096];
+  char external_path[4096];
+  snprintf(obb_path, sizeof(obb_path), "%s/obb", path);
+  snprintf(external_path, sizeof(external_path), "%s/external", path);
   (void)package_name;
+  if (bootstrap_trace_enabled()) {
+    Dl_info info = {0};
+    const char* object_name = "(unknown)";
+    const char* symbol_name = "(unknown)";
+    if (dladdr((void*)callback, &info)) {
+      if (info.dli_fname) object_name = info.dli_fname;
+      if (info.dli_sname) symbol_name = info.dli_sname;
+    }
+    fprintf(stderr,
+            "nuah jvm: initialize callback=%p object=%p assets=%p saved=%p "
+            "configuration=%p module=%s symbol=%s\n",
+            (void*)callback, jvm->activity, assets, saved_state, configuration,
+            object_name, symbol_name);
+  }
   jvm->native_handle = callback(env, jvm->activity,
                   jvm->core.native.NewStringUTF(env, path),
-                  jvm->core.native.NewStringUTF(env, path),
-                  jvm->core.native.NewStringUTF(env, path), assets,
+                  jvm->core.native.NewStringUTF(env, obb_path),
+                  jvm->core.native.NewStringUTF(env, external_path), assets,
                   saved_state, configuration);
   return jvm->native_handle;
 }
@@ -382,7 +490,10 @@ int nuah_jvm_dispatch_motion(NuahJvm* jvm, int action, int button, double x,
   callback_t callback = (callback_t)nuah_jvm_find_registered_native(
       jvm, "com/google/androidgamesdk/GameActivity", "onTouchEventNative", signature);
   jobject event = (jobject)nuah_jvm_motion_event(jvm, action, button, x, y, dx, dy, event_time_ms);
-  return callback && event && callback(&jvm->core.env, jvm->activity, jvm->native_handle, event, action, button, 0, 0,
-                                       0, event_time_ms, event_time_ms, 0, 0, 0, 0, 0, 0,
-                                       (jfloat)x, (jfloat)y) == JNI_TRUE;
+  const jint action_button = (action == 0 || action == 1) ? button : 0;
+  return callback && event && callback(&jvm->core.env, jvm->activity,
+                                       jvm->native_handle, event, 1, 0, 0,
+                                       0x1002, action, event_time_ms,
+                                       event_time_ms, 0, 0, action_button,
+                                       button, 0, 0, 1.0f, 1.0f) == JNI_TRUE;
 }

@@ -80,6 +80,10 @@ void AConfiguration_getLanguage(void*, char language[2]) {
   }
 }
 int AConfiguration_getNavHidden(void*) { unsupported("AConfiguration_getNavHidden"); return 0; }
+/* Roblox gates its Vulkan path on the NDK configuration SDK value.  The
+ * Java-side GameActivity already reports API 36; expose the same value from
+ * the native libandroid façade instead of returning the old NDK sentinel. */
+int AConfiguration_getSdkVersion(void*) { return 36; }
 int AConfiguration_getScreenHeightDp(void*) { return 720; }
 int AConfiguration_getScreenSize(void*) { unsupported("AConfiguration_getScreenSize"); return 0; }
 int AConfiguration_getScreenWidthDp(void*) { return 1280; }
@@ -182,18 +186,35 @@ int ALooper_pollOnce(int timeout_ms, int* out_fd, int* out_events,
 }
 
 void ANativeWindow_acquire(void* window) {
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah android: ANativeWindow_acquire(%p)\n", window);
   nuah_native_window_acquire(static_cast<NuahNativeWindow*>(window));
 }
 void ANativeWindow_release(void* window) {
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah android: ANativeWindow_release(%p)\n", window);
   nuah_native_window_release(static_cast<NuahNativeWindow*>(window));
 }
 void* ANativeWindow_fromSurface(void*, void* surface) {
-  return nuah_native_window_from_surface(surface);
+  auto* window = nuah_native_window_from_surface(surface);
+  if (!window) window = nuah_native_window_default();
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah android: ANativeWindow_fromSurface(surface=%p) -> %p\n",
+                 surface, static_cast<void*>(window));
+  /* Return the façade itself.  The EGL adapter uses the façade to obtain the
+   * SDL/Wayland native handle; returning the raw wl_egl_window here makes ATL
+   * interpret Wayland memory as an Android ANativeWindow and crash during
+   * eglCreateWindowSurface. */
+  return window;
 }
 int ANativeWindow_getWidth(void* window) {
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah android: ANativeWindow_getWidth(%p)\n", window);
   return nuah_native_window_width(static_cast<NuahNativeWindow*>(window));
 }
 int ANativeWindow_getHeight(void* window) {
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah android: ANativeWindow_getHeight(%p)\n", window);
   return nuah_native_window_height(static_cast<NuahNativeWindow*>(window));
 }
 

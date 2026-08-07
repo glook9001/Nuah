@@ -184,6 +184,11 @@ public abstract class Context {
 		return new Intent();
 	}
 
+	/** API 33+ overload used by modern split-install/startup code. */
+	public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, int flags) {
+		return registerReceiver(receiver, filter);
+	}
+
 	public Looper getMainLooper() {
 		return Looper.getMainLooper();
 	}

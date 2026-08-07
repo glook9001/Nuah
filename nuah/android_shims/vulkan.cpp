@@ -6,6 +6,8 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_wayland.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <mutex>
@@ -102,6 +104,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateAndroidSurfaceKHR(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   *output = surface;
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+      trace && *trace) {
+    std::fprintf(stderr,
+                 "nuah vulkan: Android surface translated to host surface\n");
+  }
   return VK_SUCCESS;
 }
 

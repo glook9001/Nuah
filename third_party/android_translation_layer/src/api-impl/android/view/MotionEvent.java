@@ -175,6 +175,9 @@ public final class MotionEvent extends InputEvent {
 	 */
 	public static final int INVALID_POINTER_ID = -1;
 
+	/** No classification is available for this pointer event. */
+	public static final int CLASSIFICATION_NONE = 0;
+
 	/**
 	 * Bit mask of the parts of the action code that are the action itself.
 	 */
@@ -2275,6 +2278,25 @@ public final class MotionEvent extends InputEvent {
 			return BUTTON_PRIMARY;
 		else
 			return 0;
+	}
+
+	/**
+	 * Return the button that caused this event.  Android's GameActivity asks
+	 * for this method while installing its input callbacks.  ATL's compact
+	 * event representation has one primary pointer button, so use the same
+	 * provider-owned value exposed by getButtonState().
+	 */
+	public final int getActionButton() {
+		return getButtonState();
+	}
+
+	/**
+	 * Return the Android motion classification.  ATL currently models pointer
+	 * input as ordinary touch/mouse events, so the API-36 neutral classification
+	 * is the truthful value until a classifier is added to the provider.
+	 */
+	public final int getClassification() {
+		return CLASSIFICATION_NONE;
 	}
 
 	/**

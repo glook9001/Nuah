@@ -29,6 +29,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.WindowManagerImpl;
+import android.window.OnBackInvokedDispatcher;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -40,6 +41,16 @@ import java.util.Map;
 
 public class Activity extends ContextThemeWrapper implements Window.Callback, LayoutInflater.Factory2 {
 	private final static String TAG = "Activity";
+
+	/*
+	 * GameActivity (and current AndroidX code) asks every Activity for the
+	 * Android 13 back dispatcher while it builds its view hierarchy.  ATL has
+	 * no separate system back dispatcher: back is still delivered through the
+	 * existing Activity.onBackPressed path.  Returning a stable no-op object
+	 * preserves the API contract without inventing another native bridge.
+	 */
+	private static final OnBackInvokedDispatcher ATL_BACK_DISPATCHER =
+			new OnBackInvokedDispatcher() {};
 
 	public static final int RESULT_CANCELED = 0;
 	public static final int RESULT_OK = -1;
@@ -501,6 +512,10 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, La
 	public void onBackPressed() {
 		System.out.println("onBackPressed() called");
 		finish();
+	}
+
+	public OnBackInvokedDispatcher getOnBackInvokedDispatcher() {
+		return ATL_BACK_DISPATCHER;
 	}
 
 	public void setIntent(Intent newIntent) {

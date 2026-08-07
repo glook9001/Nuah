@@ -29,6 +29,18 @@ int nuah_jvm_bind_native(NuahJvm* jvm, const char* class_name,
 // Opaque façade objects are allocated by the same imported JNI core used for
 // JNI_OnLoad.  They are deliberately not host pointers or a second fake JVM.
 void* nuah_jvm_game_activity(NuahJvm* jvm);
+// Create the ATL application object and seed only the process state required
+// by MainGameActivity. The full RobloxApplication.onCreate is intentionally
+// not called: it assumes Android services that Nuah does not provide.
+int nuah_jvm_dispatch_application_create(NuahJvm* jvm);
+// Deliver the real MainGameActivity.onCreate(Bundle) once the Roblox native
+// library has installed its JNI methods. This runs the app-owned bootstrap
+// (AppManager/user/session setup) instead of reimplementing it in Nuah.
+int nuah_jvm_dispatch_activity_create(NuahJvm* jvm);
+// GameActivity.onCreate stores the handle returned by initializeNativeCode in
+// its static field. Capture that handle so later lifecycle/input calls use the
+// same native session rather than creating a second one.
+int nuah_jvm_capture_native_handle(NuahJvm* jvm);
 void* nuah_jvm_key_event(NuahJvm* jvm, int keycode, int action, int repeat,
                          int scancode, unsigned int modifiers,
                          unsigned long long event_time_ms);

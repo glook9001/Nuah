@@ -83,6 +83,10 @@ public class JobInfo {
 			return this;
 		}
 
+		public Builder setRequiredNetwork(android.net.NetworkRequest networkRequest) {
+			return this;
+		}
+
 		public Builder setRequiresCharging(boolean requires_charging) {
 			return this;
 		}
@@ -96,6 +100,27 @@ public class JobInfo {
 		}
 
 		public Builder setRequiresStorageNotLow(boolean requires_storage_not_low) {
+			return this;
+		}
+
+		/** API 31+: retained for WorkManager's JobScheduler backend. */
+		public Builder setImportantWhileForeground(boolean importantWhileForeground) {
+			return this;
+		}
+
+		public Builder setTriggerContentUpdateDelay(long durationMs) {
+			return this;
+		}
+
+		public Builder setTriggerContentMaxDelay(long durationMs) {
+			return this;
+		}
+
+		public Builder setExpedited(boolean expedited) {
+			return this;
+		}
+
+		public Builder setTraceTag(String traceTag) {
 			return this;
 		}
 

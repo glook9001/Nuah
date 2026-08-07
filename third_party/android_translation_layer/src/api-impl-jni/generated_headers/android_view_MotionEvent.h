@@ -17,6 +17,8 @@ extern "C" {
 #define android_view_MotionEvent_NS_PER_MS 1000000LL
 #undef android_view_MotionEvent_INVALID_POINTER_ID
 #define android_view_MotionEvent_INVALID_POINTER_ID -1L
+#undef android_view_MotionEvent_CLASSIFICATION_NONE
+#define android_view_MotionEvent_CLASSIFICATION_NONE 0L
 #undef android_view_MotionEvent_ACTION_MASK
 #define android_view_MotionEvent_ACTION_MASK 255L
 #undef android_view_MotionEvent_ACTION_DOWN

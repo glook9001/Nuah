@@ -44,10 +44,17 @@ void set_hybris_path_if_unset(const char* name, const std::string& value) {
 }
 
 void configure_hybris_environment(const char* library) {
-  // Only Nuah's narrow Android-facing providers belong on the linker path.
-  // In particular, do not accept a bionic/APEX directory here: libhybris must
-  // resolve the libc/libdl/libm ABI boundary through its host hooks.
-  set_hybris_path_if_unset("HYBRIS_LD_LIBRARY_PATH", (runtime_directory() / "android").string());
+  // Only dependency placeholders belong on the Android linker's search path.
+  // The real Nuah providers are opened by the host loader below; putting them
+  // on this path would make the Android linker chase their glibc dependencies.
+  // The placeholders have no host dependencies and let upstream libhybris
+  // reach its hook callback for every Android soname.
+  const auto root = runtime_directory() / "android";
+  const auto linker_dependencies = root / "linker-deps";
+  const auto linker_path = std::filesystem::is_directory(linker_dependencies)
+                               ? linker_dependencies
+                               : root;  // compatibility with old artifacts
+  set_hybris_path_if_unset("HYBRIS_LD_LIBRARY_PATH", linker_path.string());
   if (!library || !*library || ::getenv("HYBRIS_LINKER_DIR")) return;
   const std::filesystem::path common(library);
   if (!common.has_parent_path()) return;
@@ -59,14 +66,15 @@ void configure_hybris_environment(const char* library) {
 std::vector<void*> host_provider_handles;
 void* bionic_provider_handle = nullptr;
 void* android_provider_handle = nullptr;
+void* host_libc_handle = nullptr;
 using HybrisBuiltinHook = void* (*)(const char*, const char*);
 HybrisBuiltinHook hybris_builtin_hook = nullptr;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 
-// The production boundary is ATL/libhybris: it owns the Android libc and
-// pthread/TLS ABI.  Nuah's old bionic provider is retained only as an
-// explicitly requested diagnostic fallback because preloading it creates a
-// second TLS/DSO lifetime domain (the source of the startup crash).
+// The production boundary is libhybris: it owns the Android linker-facing
+// ABI and translates libc/pthread/TLS calls to this host.  Nuah's old bionic
+// provider is retained only as an explicitly requested diagnostic fallback;
+// preloading it creates a second TLS/DSO lifetime domain.
 bool use_nuah_compat_runtime() {
   const char* mode = ::getenv("NUAH_ANDROID_RUNTIME");
   return mode && (std::strcmp(mode, "nuah") == 0 ||
@@ -196,10 +204,48 @@ char* android_strncat_chk(char* destination, const char* source, std::size_t cou
 
 void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (!symbol) return nullptr;
-  /* Native Roblox links libEGL.so directly.  ATL's EGL implementation lives
-   * in libandroid.so under bionic_ names, so route the Android-facing window
-   * entry points to it before falling back to host Mesa.  The latter cannot
-   * consume ATL's ANativeWindow object. */
+  /* The loader and JNI_OnLoad use native pthread_once_t storage.  Roblox's
+   * post-init objects use the Android layout, so enable the out-of-line
+   * adapter only after native_runtime has crossed the InitParams boundary. */
+  const bool android_sync = [] {
+    const char* value = ::getenv("NUAH_ANDROID_SYNC");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  const bool trace_provider = [] {
+    const char* value = ::getenv("NUAH_TRACE_PROVIDER");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  const bool trace_pthread_symbol =
+      std::strncmp(symbol, "pthread_", 8) == 0 ||
+      std::strncmp(symbol, "__pthread_", 10) == 0;
+  const auto traced_provider = [&](const char* owner, void* address) {
+    if (trace_provider && trace_pthread_symbol) {
+      std::fprintf(stderr,
+                   "nuah provider: symbol=%s owner=%s address=%p requester=%s\n",
+                   symbol, owner, address, requester ? requester : "(unknown)");
+    }
+    return address;
+  };
+  /* ATL's libandroid.so.0 is still required for its bionic_egl* exports,
+   * but its ANativeWindow implementation is GTK-specific.  Roblox receives
+   * Nuah's SDL-backed Surface, so let the Nuah provider own the complete
+   * ANativeWindow family.  This must happen before RTLD_DEFAULT/ATL lookup;
+   * otherwise ATL treats the Nuah object as a GtkWidget and dereferences it.
+   */
+  const bool native_window_symbol =
+      std::strcmp(symbol, "ANativeWindow_fromSurface") == 0 ||
+      std::strcmp(symbol, "ANativeWindow_acquire") == 0 ||
+      std::strcmp(symbol, "ANativeWindow_release") == 0 ||
+      std::strcmp(symbol, "ANativeWindow_getWidth") == 0 ||
+      std::strcmp(symbol, "ANativeWindow_getHeight") == 0;
+  if (native_window_symbol && android_provider_handle) {
+    if (void* resolved = ::dlsym(android_provider_handle, symbol)) {
+      return traced_provider("nuah-libandroid-window", resolved);
+    }
+  }
+  /* Native Roblox links libEGL.so directly.  Nuah's Android-facing provider
+   * owns the window façade, so route its bionic_ entry points before falling
+   * back to host Mesa. */
   if (android_provider_handle &&
       (std::strncmp(symbol, "egl", 3) == 0 ||
        std::strncmp(symbol, "gl", 2) == 0)) {
@@ -212,6 +258,35 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   // API-36 x86-64 layouts (pthread attributes and legacy Bionic FILE), or
   // carry Nuah's constructor diagnostics. Everything else delegates to
   // libhybris before the finite provider fallback.
+  const bool compat_pthread_provider = use_nuah_compat_runtime();
+  const bool requires_bionic_sync =
+      android_sync &&
+      (std::strcmp(symbol, "pthread_mutex_init") == 0 ||
+       std::strcmp(symbol, "pthread_mutex_destroy") == 0 ||
+       std::strcmp(symbol, "pthread_mutex_lock") == 0 ||
+       std::strcmp(symbol, "pthread_mutex_trylock") == 0 ||
+       std::strcmp(symbol, "pthread_mutex_unlock") == 0 ||
+       std::strcmp(symbol, "pthread_mutexattr_init") == 0 ||
+       std::strcmp(symbol, "pthread_mutexattr_destroy") == 0 ||
+       std::strcmp(symbol, "pthread_mutexattr_settype") == 0 ||
+       std::strcmp(symbol, "pthread_cond_init") == 0 ||
+       std::strcmp(symbol, "pthread_cond_destroy") == 0 ||
+       std::strcmp(symbol, "pthread_cond_signal") == 0 ||
+       std::strcmp(symbol, "pthread_cond_broadcast") == 0 ||
+       std::strcmp(symbol, "pthread_cond_wait") == 0 ||
+       std::strcmp(symbol, "pthread_cond_timedwait") == 0);
+  const bool requires_bionic_pthread =
+      requires_bionic_sync ||
+      (compat_pthread_provider &&
+       (std::strcmp(symbol, "pthread_attr_init") == 0 ||
+       std::strcmp(symbol, "pthread_attr_destroy") == 0 ||
+       std::strcmp(symbol, "pthread_attr_getstack") == 0 ||
+       std::strcmp(symbol, "pthread_attr_setdetachstate") == 0 ||
+       std::strcmp(symbol, "pthread_attr_setschedparam") == 0 ||
+       std::strcmp(symbol, "pthread_attr_setstacksize") == 0 ||
+       std::strcmp(symbol, "pthread_create") == 0 ||
+       std::strcmp(symbol, "pthread_getattr_np") == 0 ||
+       (std::strcmp(symbol, "pthread_once") == 0 && android_sync)));
   const bool requires_bionic_provider =
       std::strcmp(symbol, "abort") == 0 ||
       std::strcmp(symbol, "fflush") == 0 ||
@@ -222,25 +297,43 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
       std::strcmp(symbol, "stdin") == 0 ||
       std::strcmp(symbol, "stdout") == 0 ||
       std::strcmp(symbol, "stderr") == 0 ||
-      std::strcmp(symbol, "pthread_attr_init") == 0 ||
-      std::strcmp(symbol, "pthread_attr_destroy") == 0 ||
-      std::strcmp(symbol, "pthread_attr_getstack") == 0 ||
-      std::strcmp(symbol, "pthread_attr_setdetachstate") == 0 ||
-      std::strcmp(symbol, "pthread_attr_setschedparam") == 0 ||
-      std::strcmp(symbol, "pthread_attr_setstacksize") == 0 ||
-      std::strcmp(symbol, "pthread_create") == 0 ||
-      std::strcmp(symbol, "pthread_getattr_np") == 0;
-  if (use_nuah_compat_runtime() && bionic_provider_handle &&
-      requires_bionic_provider) {
+      requires_bionic_pthread;
+  /* These are the small Android-only ABI helpers that glibc/libhybris do not
+   * expose.  In production the bionic shim is loaded LOCAL solely for this
+   * finite set; libhybris still owns all libc/pthread/TLS/DSO resolution. */
+  const bool requires_bionic_helper =
+      std::strcmp(symbol, "__FD_CLR_chk") == 0 ||
+      std::strcmp(symbol, "__FD_ISSET_chk") == 0 ||
+      std::strcmp(symbol, "__FD_SET_chk") == 0 ||
+      std::strcmp(symbol, "__assert2") == 0 ||
+      std::strcmp(symbol, "__fwrite_chk") == 0 ||
+      std::strcmp(symbol, "__sendto_chk") == 0 ||
+      std::strcmp(symbol, "__stack_chk_guard") == 0 ||
+      std::strcmp(symbol, "__strchr_chk") == 0 ||
+      std::strcmp(symbol, "__strlen_chk") == 0 ||
+      std::strcmp(symbol, "__strncpy_chk2") == 0 ||
+      std::strcmp(symbol, "__system_property_get") == 0 ||
+      std::strcmp(symbol, "__write_chk") == 0 ||
+      std::strcmp(symbol, "android_set_abort_message") == 0;
+  if (bionic_provider_handle && requires_bionic_helper) {
+    // The standalone Nuah helper DSO is intentionally unversioned, while
+    // libc_bio uses the Android LIBC version node.  Accept either shape;
+    // requiring only LIBC made real fortify imports such as __sendto_chk
+    // fail even though the provider exported the correct ABI.
+    if (void* resolved = ::dlvsym(bionic_provider_handle, symbol, "LIBC")) {
+      return resolved;
+    }
+    if (void* resolved = ::dlsym(bionic_provider_handle, symbol)) {
+      return resolved;
+    }
+  }
+  if (bionic_provider_handle && requires_bionic_provider) {
     if (void* resolved =
             ::dlvsym(bionic_provider_handle, symbol, "LIBC")) {
       return resolved;
     }
   }
   if (use_nuah_compat_runtime()) {
-    if (std::strcmp(symbol, "sysconf") == 0) {
-      return reinterpret_cast<void*>(android_sysconf);
-    }
     if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
     if (std::strcmp(symbol, "__stack_chk_fail") == 0) {
       return ::dlsym(RTLD_DEFAULT, symbol);
@@ -257,13 +350,38 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
     if (std::strcmp(symbol, "__strcat_chk") == 0) return reinterpret_cast<void*>(android_strcat_chk);
     if (std::strcmp(symbol, "__strncat_chk") == 0) return reinterpret_cast<void*>(android_strncat_chk);
   }
-  const bool requires_hybris_synchronization =
-      std::strncmp(symbol, "pthread_mutex", 13) == 0 ||
-      std::strncmp(symbol, "pthread_cond", 12) == 0 ||
-      std::strncmp(symbol, "pthread_rwlock", 14) == 0 ||
-      std::strcmp(symbol, "pthread_once") == 0;
-  if (requires_hybris_synchronization && hybris_builtin_hook) {
-    return hybris_builtin_hook(symbol, requester);
+  /* Android's request numbers differ from glibc's.  Keep this one narrow
+   * translation in the libhybris hook; it does not provide another libc. */
+  if (std::strcmp(symbol, "sysconf") == 0) {
+    return reinterpret_cast<void*>(android_sysconf);
+  }
+  const bool is_pthread_symbol =
+      std::strncmp(symbol, "pthread_", 8) == 0 ||
+      std::strncmp(symbol, "__pthread_", 10) == 0;
+  /* The explicit compatibility provider remains available for diagnostics.
+   * In production, Roblox's API-36 pthread objects are forwarded to the
+   * process's one glibc TLS domain; libhybris still owns Android DSO loading. */
+  if (use_nuah_compat_runtime() && bionic_provider_handle &&
+      is_pthread_symbol) {
+    if (void* resolved = ::dlvsym(bionic_provider_handle, symbol, "LIBC")) {
+      return traced_provider("nuah-bionic", resolved);
+    }
+  }
+  if (!use_nuah_compat_runtime() && is_pthread_symbol) {
+    /* Do not use RTLD_DEFAULT here.  The Android helper DSO is deliberately
+     * kept local, but a default-scope lookup can still select its exported
+     * pthread trampolines on glibc.  That creates a second pthread state
+     * machine and, during Roblox's TLS singleton initialization, recurses
+     * back into the caller.  Pin production pthread symbols to the process's
+     * real libc instead. */
+    if (host_libc_handle) {
+      if (void* resolved = ::dlsym(host_libc_handle, symbol)) {
+        return traced_provider("host-libc", resolved);
+      }
+    }
+    if (void* resolved = ::dlsym(RTLD_NEXT, symbol)) {
+      return traced_provider("rtld-next", resolved);
+    }
   }
   for (auto it = host_provider_handles.rbegin(); it != host_provider_handles.rend(); ++it) {
     void* resolved = ::dlsym(*it, symbol);
@@ -273,12 +391,22 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
     if (::dladdr(resolved, &owner) != 0 &&
         ::dlinfo(*it, RTLD_DI_LINKMAP, &provider) == 0 && provider &&
         owner.dli_fbase == reinterpret_cast<void*>(provider->l_addr)) {
-      return resolved;
+      return traced_provider("host-provider", resolved);
     }
   }
   if (hybris_builtin_hook) {
     if (void* resolved = hybris_builtin_hook(symbol, requester)) {
-      return resolved;
+      return traced_provider("libhybris-builtin", resolved);
+    }
+  }
+  /* The Android image contains ordinary libc/libm/libpthread imports in
+   * addition to libhybris's special Android hooks.  They are intentionally
+   * satisfied by the one host libc domain in production.  Keeping this
+   * fallback here also makes the preflight reflect the same rule used by the
+   * linker instead of rejecting the image for every ordinary glibc symbol. */
+  if (!use_nuah_compat_runtime()) {
+    if (void* resolved = ::dlsym(RTLD_DEFAULT, symbol)) {
+      return traced_provider("rtld-default", resolved);
     }
   }
   // libhybris may still satisfy this through one of its built-in host hooks,
@@ -334,6 +462,65 @@ void configure_host_provider_hooks(void* hybris) {
                                     "libOpenSLES.so", "libOpenMAXAL.so"};
   for (const auto* name : providers) {
     load_host_provider(android / name);
+  }
+  // ATL's generated native library is linked against its companion
+  // libandroid.so.0, whose bionic_egl* exports are part of ATL's real ABI.
+  // Register that existing provider with libhybris before ART attempts
+  // Runtime.loadLibrary; otherwise relocation stops at bionic_eglSwapBuffers
+  // and Nuah falls back to an unassociated glibc dlopen.
+  std::vector<std::filesystem::path> atl_android_candidates;
+  if (const char* app_data = ::getenv("ANDROID_APP_DATA_DIR");
+      app_data && *app_data) {
+    atl_android_candidates.emplace_back(
+        std::filesystem::path(app_data) / "lib" / "libandroid.so.0");
+  }
+  if (const char* atl_home = ::getenv("NUAH_ATL_HOME");
+      atl_home && *atl_home) {
+    atl_android_candidates.emplace_back(
+        std::filesystem::path(atl_home) / "natives" / "libandroid.so.0");
+  }
+  for (const auto& candidate : atl_android_candidates) {
+    if (!std::filesystem::is_regular_file(candidate)) continue;
+    // libandroid.so.0 and libtranslation_layer_main.so form a deliberate
+    // ATL pair: libandroid references main_thread_id, while the translation
+    // layer needs libandroid's bionic_egl* exports.  Lazy binding lets both
+    // real libraries finish loading without inventing a Nuah definition.
+    void* handle = ::dlopen(candidate.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+    if (!handle) {
+      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+        std::fprintf(stderr, "nuah: optional ATL libandroid load failed: %s\n",
+                     ::dlerror());
+      continue;
+    }
+    host_provider_handles.push_back(handle);
+    break;
+  }
+  if (!use_nuah_compat_runtime()) {
+    /* Keep the compatibility object out of the global host namespace.  It is
+     * consulted only for the finite Android-only helper set above; pthread,
+     * TLS, libc and DSO symbols remain exclusively libhybris-owned. */
+    bionic_provider_handle = ::dlopen((android / "libbionic.so").c_str(),
+                                      RTLD_NOW | RTLD_LOCAL);
+    if (!bionic_provider_handle) {
+      const char* error = ::dlerror();
+      throw std::runtime_error(
+          "cannot load Nuah Android helper provider: " +
+          std::string(error ? error : "unknown error"));
+    }
+    const auto callbacks = nuah_bootstrap_diagnostics_callbacks();
+    if (auto setter = reinterpret_cast<void (*)(
+            const NuahDiagnosticsCallbacks*)>(
+            ::dlsym(bionic_provider_handle,
+                    "nuah_bionic_set_diagnostics_callbacks"))) {
+      setter(&callbacks);
+    }
+  }
+  host_libc_handle = ::dlopen("libc.so.6", RTLD_NOW | RTLD_NOLOAD | RTLD_LOCAL);
+  if (!host_libc_handle) {
+    const char* error = ::dlerror();
+    throw std::runtime_error(
+        "cannot pin host libc for Android pthread symbols: " +
+        std::string(error ? error : "libc.so.6 is not loaded"));
   }
   for (const auto* name : {"libEGL.so.1", "libGLESv2.so.2"}) {
     void* handle = ::dlopen(name, RTLD_NOW | RTLD_GLOBAL);
@@ -666,24 +853,106 @@ std::vector<std::string> elf_needed_libraries(
   return needed_libraries(elf_bytes);
 }
 
+void configure_android_library_path(
+    const std::filesystem::path& app_directory) {
+  const std::string app_library = (app_directory / "lib").string();
+  // Match ATL's main executable: the explicit lib directory handles
+  // System.loadLibrary("name"), while the app-root wildcard covers Android
+  // libraries extracted by app code into its private data tree.
+  std::string path = app_library + ":" + app_directory.string() + "**";
+  using ParseLibraryPath = void (*)(const char*, char*);
+  ParseLibraryPath parse = nullptr;
+  void* linker_handle = nullptr;
+  if (bionic_provider_handle) {
+    linker_handle = bionic_provider_handle;
+    parse = reinterpret_cast<ParseLibraryPath>(
+        ::dlsym(bionic_provider_handle, "dl_parse_library_path"));
+  }
+  if (!parse) {
+    parse = reinterpret_cast<ParseLibraryPath>(
+        ::dlsym(RTLD_DEFAULT, "dl_parse_library_path"));
+  }
+  if (!parse) {
+    // Fedora's ATL install keeps the bionic linker as a system soname. It is
+    // not pulled into RTLD_DEFAULT until the first Android library load, so
+    // make the same existing provider available before that first load.
+    static const char* candidates[] = {
+        "/lib64/libdl_bio.so.0", "/usr/lib64/libdl_bio.so.0",
+        "/lib/libdl_bio.so.0", "/usr/lib/libdl_bio.so.0"};
+    for (const char* candidate : candidates) {
+      void* linker = ::dlopen(candidate, RTLD_NOW | RTLD_GLOBAL);
+      if (!linker) continue;
+      linker_handle = linker;
+      parse = reinterpret_cast<ParseLibraryPath>(
+          ::dlsym(linker, "dl_parse_library_path"));
+      if (parse) break;
+      ::dlclose(linker);
+    }
+  }
+  if (!parse) {
+    throw std::runtime_error(
+        "ATL bionic linker lacks dl_parse_library_path");
+  }
+
+  // The standalone ATL linker normally receives this from its executable's
+  // bionic_compat constructor.  Nuah loads the same linker as a provider, so
+  // that constructor is not present; without the host r_debug pointer the
+  // first later dlopen reaches apkenv_find_library and writes through null.
+  // Give ATL the glibc loader's real debug object instead of emulating its
+  // link-map protocol in Nuah.
+  struct r_debug** linker_debug = nullptr;
+  if (linker_handle) {
+    linker_debug = reinterpret_cast<struct r_debug**>(
+        ::dlsym(linker_handle, "_r_debug_ptr"));
+  }
+  if (!linker_debug) {
+    linker_debug = reinterpret_cast<struct r_debug**>(
+        ::dlsym(RTLD_DEFAULT, "_r_debug_ptr"));
+  }
+  if (linker_debug && !*linker_debug) {
+    auto* host_debug = reinterpret_cast<struct r_debug*>(
+        ::dlsym(RTLD_DEFAULT, "_r_debug"));
+    if (host_debug) *linker_debug = host_debug;
+  }
+  if (linker_debug && !*linker_debug) {
+    throw std::runtime_error("ATL bionic linker lacks host r_debug state");
+  }
+  char delimiter[] = ":";
+  // dl_parse_library_path tokenizes the path in place (ATL passes a
+  // g_strdup_printf buffer), so do not hand it std::string::c_str().
+  parse(path.data(), delimiter);
+}
+
 LoadedModule::~LoadedModule() {
   if (handle_ && close_) close_(handle_);
   if (loader_library_) ::dlclose(loader_library_);
-  if (!path_.empty()) {
+  if (remove_path_ && !path_.empty()) {
     std::error_code error;
     std::filesystem::remove(path_, error);
   }
 }
 LoadedModule::LoadedModule(LoadedModule&& other) noexcept : path_(std::move(other.path_)), handle_(other.handle_), loader_library_(other.loader_library_), close_(other.close_), symbol_(other.symbol_), size_(other.size_) {
-  other.path_.clear(); other.handle_ = nullptr; other.loader_library_ = nullptr; other.close_ = nullptr; other.symbol_ = nullptr; other.size_ = 0;
+  versioned_symbol_ = other.versioned_symbol_;
+  remove_path_ = other.remove_path_;
+  other.path_.clear(); other.handle_ = nullptr; other.loader_library_ = nullptr; other.close_ = nullptr; other.symbol_ = nullptr; other.versioned_symbol_ = nullptr; other.size_ = 0; other.remove_path_ = true;
 }
 LoadedModule& LoadedModule::operator=(LoadedModule&& other) noexcept {
-  if (this != &other) { this->~LoadedModule(); path_ = std::move(other.path_); handle_ = other.handle_; loader_library_ = other.loader_library_; close_ = other.close_; symbol_ = other.symbol_; size_ = other.size_; other.path_.clear(); other.handle_ = nullptr; other.loader_library_ = nullptr; other.close_ = nullptr; other.symbol_ = nullptr; other.size_ = 0; }
+  if (this != &other) { this->~LoadedModule(); path_ = std::move(other.path_); handle_ = other.handle_; loader_library_ = other.loader_library_; close_ = other.close_; symbol_ = other.symbol_; versioned_symbol_ = other.versioned_symbol_; size_ = other.size_; remove_path_ = other.remove_path_; other.path_.clear(); other.handle_ = nullptr; other.loader_library_ = nullptr; other.close_ = nullptr; other.symbol_ = nullptr; other.versioned_symbol_ = nullptr; other.size_ = 0; other.remove_path_ = true; }
   return *this;
 }
 
 void* LoadedModule::symbol(const char* name) const {
-  return handle_ && symbol_ ? symbol_(handle_, name) : nullptr;
+  if (!handle_ || !name) return nullptr;
+  if (symbol_) {
+    if (void* result = symbol_(handle_, name)) return result;
+  }
+  // Android app images produced by the current Roblox toolchain export their
+  // JNI entry points in the LIBROBLOX symbol version.  libhybris exposes the
+  // correct lookup as android_dlvsym, while its plain dlsym path misses those
+  // entries.  Keep this fallback in the loader so callers do not grow a
+  // method-by-method facade.
+  return versioned_symbol_ ? versioned_symbol_(handle_, name, "LIBROBLOX")
+                          : nullptr;
 }
 
 LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member) {
@@ -693,12 +962,33 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
   char path_template[] = "/tmp/nuah-module-XXXXXX";
   int fd = ::mkstemp(path_template);
   if (fd < 0) throw std::runtime_error("temporary ELF file creation failed");
-  const std::filesystem::path path(path_template);
+  const std::filesystem::path temporary_path(path_template);
+  std::filesystem::path path = temporary_path;
+  bool remove_path = true;
   try {
     write_all(fd, image_bytes);
     if (::fchmod(fd, 0500) != 0) throw std::runtime_error("temporary ELF permission setup failed");
     if (::close(fd) != 0) throw std::runtime_error("temporary ELF close failed");
     fd = -1;
+    // prepare_atl_native_libraries() already extracted app DSOs into this
+    // exact Android path. Reuse it so ATL's later System.loadLibrary("roblox")
+    // resolves the same bionic linker handle instead of loading a second copy
+    // and recursively entering JNI_OnLoad. Keep the temporary file as the
+    // fallback for callers that do not have an app-private extraction root.
+    if (const char* app_data = ::getenv("ANDROID_APP_DATA_DIR");
+        app_data && *app_data) {
+      const std::size_t separator = member.find_last_of('/');
+      const std::string basename = separator == std::string::npos
+                                       ? member
+                                       : member.substr(separator + 1);
+      const auto app_path = std::filesystem::path(app_data) / "lib" / basename;
+      std::error_code app_stat;
+      if (std::filesystem::is_regular_file(app_path, app_stat) &&
+          std::filesystem::file_size(app_path, app_stat) == image_bytes.size()) {
+        path = app_path;
+        remove_path = false;
+      }
+    }
     void* loader_library = nullptr;
     const char* configured_library = ::getenv("NUAH_HYBRIS_LIBRARY");
     const std::string library = configured_library && *configured_library
@@ -719,16 +1009,53 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
         ::dlsym(loader_library, "android_dlclose"));
     const auto android_dlsym = reinterpret_cast<void* (*)(void*, const char*)>(
         ::dlsym(loader_library, "android_dlsym"));
+    const auto android_dlvsym = reinterpret_cast<void* (*)(
+        void*, const char*, const char*)>(
+        ::dlsym(loader_library, "android_dlvsym"));
     if (!android_dlopen || !android_dlerror || !android_dlclose || !android_dlsym) {
       ::dlclose(loader_library);
       throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
     }
     configure_host_provider_hooks(loader_library);
+    // ATL registers the app's private native-library roots before its first
+    // Android DSO is opened. Nuah does the same when native-run prepared an
+    // app data directory; doing it here also keeps linker path mutation out
+    // of Roblox constructors and ART startup threads.
+    if (const char* app_directory = ::getenv("ANDROID_APP_DATA_DIR");
+        app_directory && *app_directory) {
+      configure_android_library_path(app_directory);
+    }
     preflight_host_hooks(image_bytes, path.c_str());
-    void* handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    // ATL's Java System.loadLibrary uses the process-wide bionic linker. If
+    // Nuah first opens the image through libhybris, ATL sees a different
+    // linker namespace and loads a second copy (JNI_OnLoad then recurses).
+    // Prefer the already-installed bionic loader for app DSOs so both calls
+    // share one handle; retain libhybris as a fallback for stripped-down
+    // installations that do not expose bionic_dlopen.
+    using BionicDlopen = void* (*)(const char*, int);
+    using BionicDlerror = const char* (*)();
+    using BionicDlclose = int (*)(void*);
+    using BionicDlsym = void* (*)(void*, const char*);
+    const auto bionic_dlopen = reinterpret_cast<BionicDlopen>(
+        ::dlsym(RTLD_DEFAULT, "bionic_dlopen"));
+    const auto bionic_dlerror = reinterpret_cast<BionicDlerror>(
+        ::dlsym(RTLD_DEFAULT, "bionic_dlerror"));
+    const auto bionic_dlclose = reinterpret_cast<BionicDlclose>(
+        ::dlsym(RTLD_DEFAULT, "bionic_dlclose"));
+    const auto bionic_dlsym = reinterpret_cast<BionicDlsym>(
+        ::dlsym(RTLD_DEFAULT, "bionic_dlsym"));
+    bool bionic_handle = false;
+    void* handle = nullptr;
+    if (bionic_dlopen && bionic_dlclose && bionic_dlsym) {
+      handle = bionic_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+      bionic_handle = handle != nullptr;
+    }
+    if (!handle) handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
       std::string message = "android_dlopen failed: ";
-      const char* error = android_dlerror();
+      const char* error = bionic_handle
+                              ? (bionic_dlerror ? bionic_dlerror() : nullptr)
+                              : android_dlerror();
       message += error ? error : "unknown loader error";
       const auto needed = needed_libraries(apk_member.bytes);
       if (!needed.empty()) {
@@ -739,12 +1066,12 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       if (loader_library) ::dlclose(loader_library);
       throw std::runtime_error(message);
     }
-    LoadedModule result; result.path_ = path; result.handle_ = handle; result.loader_library_ = loader_library; result.close_ = android_dlclose; result.symbol_ = android_dlsym; result.size_ = image_bytes.size();
+    LoadedModule result; result.path_ = path; result.handle_ = handle; result.loader_library_ = loader_library; result.close_ = bionic_handle ? bionic_dlclose : android_dlclose; result.symbol_ = bionic_handle ? bionic_dlsym : android_dlsym; result.versioned_symbol_ = bionic_handle ? nullptr : android_dlvsym; result.size_ = image_bytes.size(); result.remove_path_ = remove_path;
     return result;
   } catch (...) {
     if (fd >= 0) ::close(fd);
     std::error_code error;
-    std::filesystem::remove(path, error);
+    std::filesystem::remove(temporary_path, error);
     throw;
   }
 }

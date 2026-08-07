@@ -40,8 +40,6 @@ jobs:
           git -C hybris-source checkout --detach "$revision"
           test "$(git -C hybris-source rev-parse HEAD)" = "$revision"
           git -C hybris-source/hybris apply --recount --check \
-            "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
-          git -C hybris-source/hybris apply --recount --check \
             "$GITHUB_WORKSPACE/nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch"
           test -f hybris-source/hybris/configure.ac
           test -f hybris-source/hybris/common/q/linker.cpp
@@ -78,8 +76,6 @@ jobs:
           . third_party/libhybris.lock
           git clone --filter=blob:none "$repository" hybris-source
           git -C hybris-source checkout --detach "$revision"
-          git -C hybris-source/hybris apply --recount \
-            "$GITHUB_WORKSPACE/nuah/libhybris_patches/0001-virtual-host-hook-dependencies.patch"
           git -C hybris-source/hybris apply --recount \
             "$GITHUB_WORKSPACE/nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch"
 
@@ -336,6 +332,7 @@ jobs:
             build-ci/libnuah_host_bridge.so
             build-ci/libnuah_atl_overlay.so
             build-ci/android/*.so
+            build-ci/android/linker-deps/*.so
             build-ci/hybris/lib/libhybris-common.so*
             build-ci/hybris/lib/libhybris/linker/*.so
             build-ci/bionic

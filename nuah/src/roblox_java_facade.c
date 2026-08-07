@@ -6,10 +6,20 @@
 #include "jvm/jni.h"
 
 static char nuah_content_path[4096];
+static jlong nuah_launch_place_id;
+static jobject nuah_launch_surface;
 
 void nuah_roblox_java_facade_set_content_path(const char* path) {
   snprintf(nuah_content_path, sizeof(nuah_content_path), "%s",
            path ? path : "");
+}
+
+void nuah_roblox_java_facade_set_launch_place_id(jlong place_id) {
+  nuah_launch_place_id = place_id;
+}
+
+void nuah_roblox_java_facade_set_launch_surface(jobject surface) {
+  nuah_launch_surface = surface;
 }
 
 /*
@@ -84,11 +94,76 @@ jobject java_lang_Object_socModel(JNIEnv* env, jobject object, va_list args) {
   return string_value(env, "x86_64");
 }
 
+/* DeviceStaticParams is a concrete class, so android2gnulinux resolves its
+ * virtual accessors using the concrete JNI symbol prefix.  Keep the generic
+ * Object-prefixed helpers above for older callers, but also expose the exact
+ * class names used by the current Roblox image. */
+#define DEVICE_STATIC_STRING(name, value)                                  \
+  jobject com_roblox_engine_jni_DeviceStaticParams_##name(                 \
+      JNIEnv* env, jobject object, va_list args) {                          \
+    (void)object;                                                           \
+    (void)args;                                                             \
+    return string_value(env, value);                                        \
+  }
+#define DEVICE_STATIC_BOOLEAN(name, value)                                 \
+  jboolean com_roblox_engine_jni_DeviceStaticParams_##name(                \
+      JNIEnv* env, jobject object, va_list args) {                          \
+    (void)env;                                                              \
+    (void)object;                                                           \
+    (void)args;                                                             \
+    return value;                                                           \
+  }
+
+DEVICE_STATIC_STRING(osVersion, "16")
+DEVICE_STATIC_STRING(deviceName, "Nuah Linux PC")
+DEVICE_STATIC_STRING(appVersion, "Roblox")
+DEVICE_STATIC_STRING(manufacturer, "Nuah")
+DEVICE_STATIC_STRING(deviceSku, "x86_64")
+DEVICE_STATIC_STRING(appBuildVariant, "release")
+DEVICE_STATIC_BOOLEAN(cpu64Bit, JNI_TRUE)
+DEVICE_STATIC_STRING(socModel, "x86_64")
+
+#undef DEVICE_STATIC_STRING
+#undef DEVICE_STATIC_BOOLEAN
+
 jobject com_roblox_engine_jni_locale_NativeLocaleJavaInterface_getLocale(
     JNIEnv* env, jclass klass, va_list args) {
   (void)klass;
   (void)args;
   return string_value(env, "en_US");
+}
+
+jobject
+com_roblox_engine_jni_locale_NativeLocaleJavaInterface_getRobloxLocale(
+    JNIEnv* env, jclass klass, va_list args) {
+  (void)klass;
+  (void)args;
+  return string_value(env, "en_US");
+}
+
+/* The locale bridge asks for the game locale immediately after the Roblox
+ * locale.  Keep both values non-null until the authenticated WebKit session
+ * supplies a server locale. */
+jobject
+com_roblox_engine_jni_locale_NativeLocaleJavaInterface_getGameLocale(
+    JNIEnv* env, jclass klass, va_list args) {
+  (void)klass;
+  (void)args;
+  return string_value(env, "en_US");
+}
+
+/* Android's Locale exposes these accessors even when the script/variant
+ * portion is empty.  Returning an empty String is important: Roblox asks for
+ * getScript() while constructing the API-36 Configuration and treats a null
+ * result as an invalid locale. */
+jstring java_util_Locale_getScript(JNIEnv* env, jobject object) {
+  (void)object;
+  return string_value(env, "");
+}
+
+jstring java_util_Locale_getVariant(JNIEnv* env, jobject object) {
+  (void)object;
+  return string_value(env, "");
 }
 
 /*
@@ -194,6 +269,32 @@ jobject android_os_LocaleList_get(JNIEnv* env, jobject list, va_list args) {
   return klass ? (*env)->AllocObject(env, klass) : NULL;
 }
 
+/* API 30+ returns an empty java.util.List when there are no historical
+ * ApplicationExitInfo records.  Roblox consumes that list during
+ * nativePostClientSettingsLoadedInitialization3.  Keep the boundary typed
+ * and empty rather than passing NULL or inventing exit records. */
+jint java_util_ArrayList_size(JNIEnv* env, jobject list, va_list args) {
+  (void)env;
+  (void)list;
+  (void)args;
+  return 0;
+}
+
+jobject java_util_ArrayList_get(JNIEnv* env, jobject list, va_list args) {
+  (void)env;
+  (void)list;
+  (void)args;
+  return NULL;
+}
+
+jint java_util_List_size(JNIEnv* env, jobject list, va_list args) {
+  return java_util_ArrayList_size(env, list, args);
+}
+
+jobject java_util_List_get(JNIEnv* env, jobject list, va_list args) {
+  return java_util_ArrayList_get(env, list, args);
+}
+
 static jobject make_value(JNIEnv* env, const char* class_name) {
   jclass klass = (*env)->FindClass(env, class_name);
   return klass ? (*env)->AllocObject(env, klass) : NULL;
@@ -247,6 +348,8 @@ jobject com_roblox_engine_jni_autovalue_AutoValue_InitParams_vrContext(
       JNIEnv* env, jobject object, va_list args) {                        \
     (void)object;                                                        \
     (void)args;                                                          \
+    if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
+      fprintf(stderr, "nuah facade: DeviceParams.%s\\n", #name);       \
     return string_value(env, value);                                    \
   }
 #define DEVICE_INT(name, value)                                         \
@@ -255,6 +358,9 @@ jobject com_roblox_engine_jni_autovalue_AutoValue_InitParams_vrContext(
     (void)env;                                                           \
     (void)object;                                                        \
     (void)args;                                                          \
+    if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
+      fprintf(stderr, "nuah facade: DeviceParams.%s=%d\\n", #name,     \
+              (int)(value));                                             \
     return value;                                                        \
   }
 #define DEVICE_LONG(name, value)                                        \
@@ -263,6 +369,9 @@ jobject com_roblox_engine_jni_autovalue_AutoValue_InitParams_vrContext(
     (void)env;                                                           \
     (void)object;                                                        \
     (void)args;                                                          \
+    if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
+      fprintf(stderr, "nuah facade: DeviceParams.%s=%lld\\n", #name,   \
+              (long long)(value));                                       \
     return value;                                                        \
   }
 #define DEVICE_BOOLEAN(name, value)                                     \
@@ -271,6 +380,9 @@ jobject com_roblox_engine_jni_autovalue_AutoValue_InitParams_vrContext(
     (void)env;                                                           \
     (void)object;                                                        \
     (void)args;                                                          \
+    if (getenv("NUAH_BOOTSTRAP_TRACE"))                                  \
+      fprintf(stderr, "nuah facade: DeviceParams.%s=%d\\n", #name,     \
+              (int)(value));                                             \
     return value;                                                        \
   }
 
@@ -341,3 +453,96 @@ PLATFORM_BOOLEAN(isMouseDevice, JNI_TRUE)
 PLATFORM_BOOLEAN(isTouchDevice, JNI_FALSE)
 PLATFORM_INT(viewportHeightMm, 190)
 PLATFORM_INT(viewportWidthMm, 340)
+
+/* The real Java GameManager builds this immutable value before it calls
+ * NativeGLInterface.nativeAppBridgeV2StartGameWithParam.  Nuah invokes that
+ * same exported JNI entry point directly, so expose the small immutable
+ * accessor surface it reads instead of manufacturing another Java runtime. */
+#define START_GAME_STRING(name, value)                                  \
+  jobject com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_##name(\
+      JNIEnv* env, jobject object, va_list args) {                       \
+    (void)object;                                                        \
+    (void)args;                                                          \
+    return string_value(env, value);                                     \
+  }
+#define START_GAME_LONG(name, expression)                               \
+  jlong com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_##name(\
+      JNIEnv* env, jobject object, va_list args) {                       \
+    (void)env;                                                           \
+    (void)object;                                                        \
+    (void)args;                                                          \
+    return (expression);                                                 \
+  }
+#define START_GAME_INT(name, value)                                     \
+  jint com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_##name( \
+      JNIEnv* env, jobject object, va_list args) {                       \
+    (void)env;                                                           \
+    (void)object;                                                        \
+    (void)args;                                                          \
+    return (value);                                                       \
+  }
+#define START_GAME_BOOLEAN(name, value)                                  \
+  jboolean com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_##name(\
+      JNIEnv* env, jobject object, va_list args) {                       \
+    (void)env;                                                           \
+    (void)object;                                                        \
+    (void)args;                                                          \
+    return (value);                                                       \
+  }
+
+START_GAME_STRING(accessCode, "")
+START_GAME_STRING(callId, "")
+START_GAME_LONG(conversationId, 0)
+START_GAME_STRING(eventId, "")
+START_GAME_STRING(gameId, "")
+START_GAME_STRING(gameJoinContext, "")
+START_GAME_BOOLEAN(isUnder13, JNI_FALSE)
+START_GAME_STRING(isoContext, "")
+START_GAME_STRING(joinAttemptId, "")
+START_GAME_STRING(joinAttemptOrigin, "")
+/* vi.j0.a(placeId, null, ...) uses request type 2 for a WebView launch. */
+START_GAME_INT(joinRequestType, 2)
+START_GAME_STRING(launchData, "")
+START_GAME_STRING(linkCode, "")
+START_GAME_LONG(placeId, nuah_launch_place_id)
+START_GAME_STRING(referralPage, "WebView")
+START_GAME_LONG(referredByPlayerId, 0)
+START_GAME_STRING(reservedServerAccessCode, "")
+START_GAME_LONG(userId, 0)
+START_GAME_STRING(username, "")
+
+jobject com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_surface(
+    JNIEnv* env, jobject object, va_list args) {
+  (void)env;
+  (void)object;
+  (void)args;
+  return nuah_launch_surface;
+}
+
+jobject com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_platformParams(
+    JNIEnv* env, jobject object, va_list args) {
+  (void)object;
+  (void)args;
+  return make_value(env, "com/roblox/engine/jni/model/PlatformParams");
+}
+
+jobject com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_deviceParams(
+    JNIEnv* env, jobject object, va_list args) {
+  (void)env;
+  (void)object;
+  (void)args;
+  return NULL;
+}
+
+jobject com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_vrContext(
+    JNIEnv* env, jobject object, va_list args) {
+  (void)env;
+  (void)object;
+  (void)args;
+  return NULL;
+}
+
+#undef START_GAME_STRING
+#undef START_GAME_LONG
+#undef START_GAME_INT
+#undef START_GAME_BOOLEAN

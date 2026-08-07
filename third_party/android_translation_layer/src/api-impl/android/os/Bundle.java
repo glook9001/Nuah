@@ -793,6 +793,16 @@ public final class Bundle extends BaseBundle implements Cloneable, Parcelable {
 		}
 	}
 
+	/** Android 13 typed overload used by current GameActivity code. */
+	public Object getParcelable(String key, Class clazz) {
+		Parcelable value = getParcelable(key);
+		if (value == null || clazz == null || clazz.isInstance(value)) {
+			return value;
+		}
+		throw new ClassCastException(value.getClass().getName() + " cannot be cast to " +
+				clazz.getName());
+	}
+
 	/**
 	 * Returns the value associated with the given key, or null if
 	 * no mapping of the desired type exists for the given key or a null

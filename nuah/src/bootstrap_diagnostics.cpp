@@ -2,6 +2,7 @@
 
 #include <execinfo.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <signal.h>
@@ -75,7 +76,68 @@ void fatal_signal_handler(int signal_number, siginfo_t* info,
 
 #if defined(__x86_64__) && defined(REG_RIP)
   if (context_pointer) {
-    const auto* context = static_cast<const ucontext_t*>(context_pointer);
+    auto* context = static_cast<ucontext_t*>(context_pointer);
+    /* A current Roblox GLES build can enter its render-target allocator with
+     * an uninitialised aspect vector.  The resulting NaN is converted to a
+     * zero divisor at one stable instruction.  Keep this recovery explicitly
+     * opt-in: it lets us verify the rest of the frame path without turning a
+     * real native fault into an invisible hang. */
+    if (signal_number == SIGFPE &&
+        std::getenv("NUAH_RECOVER_RENDER_FPE")) {
+      NuahBootstrapDiagnostics mapping{};
+      const uintptr_t pc = static_cast<uintptr_t>(
+          context->uc_mcontext.gregs[REG_RIP]);
+      if (locate_mapping(pc, &mapping) &&
+          std::strstr(mapping.module_path, "/libroblox.so") &&
+          mapping.module_offset == 0x323372a &&
+          context->uc_mcontext.gregs[REG_RCX] == 0 &&
+          context->uc_mcontext.gregs[REG_R14] != 0) {
+        constexpr uint64_t kFallbackDivisor = 512;
+        context->uc_mcontext.gregs[REG_RAX] =
+            context->uc_mcontext.gregs[REG_R14] / kFallbackDivisor;
+        context->uc_mcontext.gregs[REG_RDX] = 0;
+        context->uc_mcontext.gregs[REG_RCX] = kFallbackDivisor;
+        context->uc_mcontext.gregs[REG_RIP] =
+            static_cast<greg_t>(pc + 2);  // skip `div ecx`
+        static constexpr char message[] =
+            "nuah: recovered Roblox NaN render divisor (diagnostic)\n";
+        (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
+        return;
+      }
+    }
+    unsigned int xmm0_bits = 0;
+    unsigned int xmm1_bits = 0;
+    unsigned int xmm2_bits = 0;
+    unsigned int xmm3_bits = 0;
+    if (context->uc_mcontext.fpregs) {
+      std::memcpy(&xmm0_bits, &context->uc_mcontext.fpregs->_xmm[0],
+                  sizeof(xmm0_bits));
+      std::memcpy(&xmm1_bits, &context->uc_mcontext.fpregs->_xmm[1],
+                  sizeof(xmm1_bits));
+      std::memcpy(&xmm2_bits, &context->uc_mcontext.fpregs->_xmm[2],
+                  sizeof(xmm2_bits));
+      std::memcpy(&xmm3_bits, &context->uc_mcontext.fpregs->_xmm[3],
+                  sizeof(xmm3_bits));
+    }
+    char registers[256]{};
+    const int register_length = std::snprintf(
+        registers, sizeof(registers),
+        "nuah crash registers: rip=%#llx rdi=%#llx rbx=%#llx r12=%#llx "
+        "r13=%#llx r14=%#llx r15=%#llx rax=%#llx rcx=%#llx "
+        "xmm0=%#x xmm1=%#x xmm2=%#x xmm3=%#x\\n",
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_RIP]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_RDI]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_RBX]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_R12]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_R13]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_R14]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_R15]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_RAX]),
+        static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_RCX]),
+        xmm0_bits, xmm1_bits, xmm2_bits, xmm3_bits);
+    if (register_length > 0)
+      (void)::write(STDERR_FILENO, registers,
+                    static_cast<std::size_t>(register_length));
     record_address(
         static_cast<uintptr_t>(context->uc_mcontext.gregs[REG_RIP]));
   }

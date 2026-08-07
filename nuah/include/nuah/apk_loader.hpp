@@ -33,7 +33,9 @@ class LoadedModule {
   void* loader_library_ = nullptr;
   int (*close_)(void*) = nullptr;
   void* (*symbol_)(void*, const char*) = nullptr;
+  void* (*versioned_symbol_)(void*, const char*, const char*) = nullptr;
   std::size_t size_ = 0;
+  bool remove_path_ = true;
 };
 
 ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::string& member);
@@ -41,6 +43,13 @@ std::vector<ApkMember> read_apk_members_with_prefix(
     const std::filesystem::path& apk, const std::string& prefix);
 std::vector<std::string> elf_needed_libraries(
     const std::vector<std::byte>& elf_bytes);
+
+// Register an extracted app-library tree with ATL's bionic linker. This is
+// the same dl_parse_library_path call made by ATL's executable before ART
+// starts; setting an environment variable alone does not update its lookup
+// table.
+void configure_android_library_path(const std::filesystem::path& app_directory);
+
 LoadedModule load_apk_library(const std::filesystem::path& apk,
                               const std::string& member);
 

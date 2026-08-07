@@ -7,6 +7,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(NUAH_ANDROID_API_LEVEL 36)
 
+# Dependency-free loader-boundary diagnostics.  This is built beside Nuah so
+# the binary under test can be audited without a second compiler invocation
+# using different flags.
+add_library(nuah_rtld_audit SHARED Investigation/nuah_rtld_audit.c)
+set_target_properties(nuah_rtld_audit PROPERTIES
+  OUTPUT_NAME nuah_rtld_audit
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+target_compile_options(nuah_rtld_audit PRIVATE
+  -Wall -Wextra -Wpedantic -Werror -fno-stack-protector)
+
 include(CTest)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -74,6 +84,7 @@ endif()
 add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
 target_include_directories(nuah_host_bridge PUBLIC nuah/include)
 target_compile_options(nuah_host_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_link_libraries(nuah_host_bridge PRIVATE dl)
 
 add_library(nuah_bootstrap_diagnostics STATIC
   nuah/src/bootstrap_diagnostics.cpp)
@@ -95,6 +106,32 @@ set_target_properties(
 target_include_directories(nuah_android_registry PUBLIC nuah/include)
 target_compile_options(nuah_android_registry PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 set_target_properties(nuah_android_registry PROPERTIES BUILD_RPATH "$ORIGIN")
+
+# Upstream libhybris still expects a file for each DT_NEEDED Android soname.
+# These tiny, dependency-free ELF records satisfy that lookup without
+# modifying its linker or shipping an Android libc/APEX.  Actual symbols are
+# resolved by the libhybris hook callback and Nuah's host-loaded providers.
+set(NUAH_LINKER_DEPENDENCY_DIR "${CMAKE_BINARY_DIR}/android/linker-deps")
+set(NUAH_LINKER_DEPENDENCY_NAMES
+  libOpenMAXAL.so libmediandk.so libOpenSLES.so libGLESv2.so libEGL.so
+  libandroid.so liblog.so libm.so libdl.so libc.so)
+set(NUAH_LINKER_DEPENDENCY_OUTPUTS)
+foreach(soname IN LISTS NUAH_LINKER_DEPENDENCY_NAMES)
+  set(output "${NUAH_LINKER_DEPENDENCY_DIR}/${soname}")
+  add_custom_command(
+    OUTPUT "${output}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${NUAH_LINKER_DEPENDENCY_DIR}"
+    COMMAND "${CMAKE_C_COMPILER}" -shared -fPIC -nostdlib
+            "-Wl,-soname,${soname}" "-Wl,--build-id=none"
+            "${CMAKE_CURRENT_SOURCE_DIR}/nuah/android_shims/linker_stub.c"
+            -o "${output}"
+    DEPENDS nuah/android_shims/linker_stub.c
+    VERBATIM)
+  list(APPEND NUAH_LINKER_DEPENDENCY_OUTPUTS "${output}")
+endforeach()
+add_custom_target(nuah_android_linker_dependencies ALL
+  DEPENDS ${NUAH_LINKER_DEPENDENCY_OUTPUTS})
 
 # Host-side Bionic compatibility symbols consumed by libhybris hooks.  This is
 # intentionally a provider named libbionic.so, never a replacement host libc.
@@ -141,6 +178,7 @@ add_library(nuah_core
   nuah/src/input_bridge.cpp
   nuah/src/native_session.cpp
   nuah/src/window_session.cpp
+  nuah/src/real_art_jvm.cpp
   nuah/src/native_runtime.cpp
   nuah/src/apk_loader.cpp
   nuah/src/launch_uri.cpp
@@ -163,6 +201,7 @@ target_link_libraries(
 add_dependencies(nuah_core nuah_atl_overlay)
 add_dependencies(nuah_core nuah_android_bionic)
 add_dependencies(nuah_core nuah_android_math)
+add_dependencies(nuah_core nuah_android_linker_dependencies)
 
 add_library(nuah_android_log SHARED nuah/android_shims/log.cpp)
 set_target_properties(nuah_android_log PROPERTIES OUTPUT_NAME log LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
@@ -184,13 +223,15 @@ target_link_libraries(nuah_android_math PRIVATE
 
 add_library(nuah_android_platform SHARED
   nuah/android_shims/asset_manager.cpp
+  nuah/android_shims/egl.cpp
   nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_platform PROPERTIES OUTPUT_NAME android LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
 target_compile_options(nuah_android_platform PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_compile_definitions(nuah_android_platform PRIVATE _LARGEFILE64_SOURCE)
 target_include_directories(nuah_android_platform PRIVATE nuah/include)
 target_link_libraries(nuah_android_platform PRIVATE
-  nuah_host_bridge nuah_android_registry PkgConfig::NUAH_ARCHIVE)
+  nuah_host_bridge nuah_android_registry PkgConfig::NUAH_ARCHIVE
+  PkgConfig::NUAH_PLATFORM dl)
 set_target_properties(nuah_android_platform PROPERTIES BUILD_RPATH "$ORIGIN:$ORIGIN/..")
 
 add_library(nuah_android_vulkan SHARED nuah/android_shims/vulkan.cpp)

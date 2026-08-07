@@ -15,6 +15,7 @@
 #include <semaphore.h>
 #include <signal.h>
 #include <sys/mman.h>
+#include <sys/auxv.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
@@ -45,12 +46,68 @@ char* nuah_optarg __asm__("optarg") = nullptr;
 int nuah_optind __asm__("optind") = 1;
 asm(".symver nuah_in6addr_any_n,in6addr_any@LIBC_N");
 asm(".symver nuah_in6addr_loopback_n,in6addr_loopback@LIBC_N");
+
+/* glibc publishes the internal pthread entry points with fixed symbol
+ * versions.  Binding these at link time avoids calling dlsym from a TLS
+ * function (the loader itself asks for TLS while resolving dlsym). */
+int nuah_host_pthread_once(pthread_once_t*, void (*)(void));
+int nuah_host_pthread_key_create(pthread_key_t*, void (*)(void*));
+int nuah_host_pthread_key_delete(pthread_key_t);
+void* nuah_host_pthread_getspecific(pthread_key_t);
+int nuah_host_pthread_setspecific(pthread_key_t, const void*);
+int nuah_host_mutex_init(pthread_mutex_t*, const pthread_mutexattr_t*);
+int nuah_host_mutex_destroy(pthread_mutex_t*);
+int nuah_host_mutex_lock(pthread_mutex_t*);
+int nuah_host_mutex_trylock(pthread_mutex_t*);
+int nuah_host_mutex_unlock(pthread_mutex_t*);
+int nuah_host_mutexattr_init(pthread_mutexattr_t*);
+int nuah_host_mutexattr_destroy(pthread_mutexattr_t*);
+int nuah_host_mutexattr_settype(pthread_mutexattr_t*, int);
+int nuah_host_cond_init(pthread_cond_t*, const pthread_condattr_t*);
+int nuah_host_cond_destroy(pthread_cond_t*);
+int nuah_host_cond_signal(pthread_cond_t*);
+int nuah_host_cond_broadcast(pthread_cond_t*);
+int nuah_host_cond_wait(pthread_cond_t*, pthread_mutex_t*);
+int nuah_host_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const timespec*);
+int nuah_host_rwlock_init(pthread_rwlock_t*, const pthread_rwlockattr_t*);
+int nuah_host_rwlock_destroy(pthread_rwlock_t*);
+int nuah_host_rwlock_rdlock(pthread_rwlock_t*);
+int nuah_host_rwlock_wrlock(pthread_rwlock_t*);
+int nuah_host_rwlock_unlock(pthread_rwlock_t*);
+asm(".symver nuah_host_pthread_once,__pthread_once@GLIBC_2.2.5");
+asm(".symver nuah_host_pthread_key_create,__pthread_key_create@GLIBC_2.2.5");
+asm(".symver nuah_host_pthread_key_delete,pthread_key_delete@GLIBC_2.2.5");
+asm(".symver nuah_host_pthread_getspecific,__pthread_getspecific@GLIBC_2.2.5");
+asm(".symver nuah_host_pthread_setspecific,__pthread_setspecific@GLIBC_2.2.5");
+asm(".symver nuah_host_mutex_init,__pthread_mutex_init@GLIBC_2.2.5");
+asm(".symver nuah_host_mutex_destroy,__pthread_mutex_destroy@GLIBC_2.2.5");
+asm(".symver nuah_host_mutex_lock,__pthread_mutex_lock@GLIBC_2.2.5");
+asm(".symver nuah_host_mutex_trylock,__pthread_mutex_trylock@GLIBC_2.2.5");
+asm(".symver nuah_host_mutex_unlock,__pthread_mutex_unlock@GLIBC_2.2.5");
+asm(".symver nuah_host_mutexattr_init,pthread_mutexattr_init@GLIBC_2.2.5");
+asm(".symver nuah_host_mutexattr_destroy,pthread_mutexattr_destroy@GLIBC_2.2.5");
+asm(".symver nuah_host_mutexattr_settype,pthread_mutexattr_settype@GLIBC_2.2.5");
+asm(".symver nuah_host_cond_init,pthread_cond_init@GLIBC_2.2.5");
+asm(".symver nuah_host_cond_destroy,pthread_cond_destroy@GLIBC_2.2.5");
+asm(".symver nuah_host_cond_signal,pthread_cond_signal@GLIBC_2.2.5");
+asm(".symver nuah_host_cond_broadcast,pthread_cond_broadcast@GLIBC_2.2.5");
+asm(".symver nuah_host_cond_wait,pthread_cond_wait@GLIBC_2.2.5");
+asm(".symver nuah_host_cond_timedwait,pthread_cond_timedwait@GLIBC_2.2.5");
+asm(".symver nuah_host_rwlock_init,__pthread_rwlock_init@GLIBC_2.2.5");
+asm(".symver nuah_host_rwlock_destroy,__pthread_rwlock_destroy@GLIBC_2.2.5");
+asm(".symver nuah_host_rwlock_rdlock,__pthread_rwlock_rdlock@GLIBC_2.2.5");
+asm(".symver nuah_host_rwlock_wrlock,__pthread_rwlock_wrlock@GLIBC_2.2.5");
+asm(".symver nuah_host_rwlock_unlock,__pthread_rwlock_unlock@GLIBC_2.2.5");
 }
 
 namespace {
 NuahDiagnosticsCallbacks diagnostics_callbacks{};
 
 struct MutexEntry { void* android = nullptr; pthread_mutex_t native{}; };
+struct MutexAttrEntry {
+  void* android = nullptr;
+  int type = PTHREAD_MUTEX_NORMAL;
+};
 struct CondEntry { void* android = nullptr; pthread_cond_t native{}; };
 struct OnceEntry { void* android = nullptr; pthread_once_t native = PTHREAD_ONCE_INIT; };
 struct AttrEntry { void* android = nullptr; pthread_attr_t native{}; };
@@ -58,11 +115,23 @@ struct RwlockEntry { void* android = nullptr; pthread_rwlock_t native{}; };
 struct SemEntry { void* android = nullptr; sem_t native{}; };
 std::atomic_flag table_lock = ATOMIC_FLAG_INIT;
 MutexEntry mutexes[2048];
+MutexAttrEntry mutex_attributes[256];
 CondEntry conditions[1024];
 OnceEntry onces[1024];
 AttrEntry attributes[256];
 RwlockEntry rwlocks[1024];
 SemEntry semaphores[512];
+
+/* Keep synchronization diagnostics opt-in and bounded.  These wrappers are
+ * entered from Roblox's constructors, so an unbounded fprintf here can hide
+ * the fault (or become recursive through libc).  The trace is deliberately a
+ * probe, not a second synchronization implementation. */
+std::atomic<unsigned> sync_trace_events{0};
+bool sync_trace_slot() {
+  const char* value = ::getenv("NUAH_TRACE_PTHREAD");
+  if (!value || !*value || std::strcmp(value, "0") == 0) return false;
+  return sync_trace_events.fetch_add(1, std::memory_order_relaxed) < 4096;
+}
 
 // Android 16 x86-64 exposes an 88-byte jmp_buf; glibc uses a 200-byte buffer.
 // Key stable host buffers by the opaque Android address instead of writing a
@@ -90,6 +159,7 @@ struct AndroidSigaction {
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
+
 
 std::FILE* host_stream(std::FILE* stream) {
   const auto address = reinterpret_cast<uintptr_t>(stream);
@@ -129,12 +199,70 @@ int host_signal_number(int signal_number) {
   // in this tree do.
   return signal_number == 33 ? SIGRTMIN : signal_number;
 }
-MutexEntry* mutex_for(void* object) {
+int mutex_attr_type(const pthread_mutexattr_t* object) {
+  if (!object) return PTHREAD_MUTEX_NORMAL;
+  lock_table();
+  for (const auto& entry : mutex_attributes) {
+    if (entry.android == object) {
+      const int type = entry.type;
+      unlock_table();
+      return type;
+    }
+  }
+  unlock_table();
+  return PTHREAD_MUTEX_NORMAL;
+}
+
+MutexAttrEntry* mutex_attr_for(void* object) {
+  if (!object) return nullptr;
+  lock_table();
+  for (auto& entry : mutex_attributes) {
+    if (entry.android == object) {
+      unlock_table();
+      return &entry;
+    }
+  }
+  for (auto& entry : mutex_attributes) {
+    if (!entry.android) {
+      entry.android = object;
+      entry.type = PTHREAD_MUTEX_NORMAL;
+      unlock_table();
+      return &entry;
+    }
+  }
+  unlock_table();
+  return nullptr;
+}
+
+MutexEntry* mutex_for(void* object, const pthread_mutexattr_t* attributes = nullptr) {
+  const int requested_type = attributes ? mutex_attr_type(attributes)
+                                        : PTHREAD_MUTEX_NORMAL;
   lock_table();
   for (auto& entry : mutexes) if (entry.android == object) { unlock_table(); return &entry; }
   for (auto& entry : mutexes) if (!entry.android) {
     entry.android = object;
-    host<int (*)(pthread_mutex_t*, const pthread_mutexattr_t*)>("pthread_mutex_init")(&entry.native, nullptr);
+    /* Android's static mutex initializer stores its type in bits 14..15,
+     * while glibc's object layout is unrelated.  Preserve that type before
+     * creating the out-of-line host object; Roblox uses recursive static
+     * mutexes in its TLS singleton and a normal host mutex deadlocks there. */
+    std::uint32_t initializer = 0;
+    if (object) std::memcpy(&initializer, object, sizeof(initializer));
+    int type = requested_type;
+    if (!attributes) {
+      switch ((initializer >> 14U) & 0x3U) {
+        case 1: type = PTHREAD_MUTEX_RECURSIVE; break;
+        case 2: type = PTHREAD_MUTEX_ERRORCHECK; break;
+        default: break;
+      }
+    }
+    pthread_mutexattr_t attributes{};
+    if (nuah_host_mutexattr_init(&attributes) == 0) {
+      (void)nuah_host_mutexattr_settype(&attributes, type);
+      (void)nuah_host_mutex_init(&entry.native, &attributes);
+      (void)nuah_host_mutexattr_destroy(&attributes);
+    } else {
+      (void)nuah_host_mutex_init(&entry.native, nullptr);
+    }
     unlock_table(); return &entry;
   }
   unlock_table(); return nullptr;
@@ -144,7 +272,7 @@ CondEntry* cond_for(void* object) {
   for (auto& entry : conditions) if (entry.android == object) { unlock_table(); return &entry; }
   for (auto& entry : conditions) if (!entry.android) {
     entry.android = object;
-    host<int (*)(pthread_cond_t*, const pthread_condattr_t*)>("pthread_cond_init")(&entry.native, nullptr);
+    nuah_host_cond_init(&entry.native, nullptr);
     unlock_table(); return &entry;
   }
   unlock_table(); return nullptr;
@@ -191,8 +319,7 @@ RwlockEntry* rwlock_for(void* object) {
   for (auto& entry : rwlocks) {
     if (!entry.android) {
       entry.android = object;
-      host<int (*)(pthread_rwlock_t*, const pthread_rwlockattr_t*)>(
-          "pthread_rwlock_init")(&entry.native, nullptr);
+      nuah_host_rwlock_init(&entry.native, nullptr);
       unlock_table();
       return &entry;
     }
@@ -344,6 +471,13 @@ int fclose(std::FILE* stream) {
 }
 
 __attribute__((constructor)) static void initialize_standard_streams() {
+  /* Bionic initializes its exported guard from AT_RANDOM.  A fixed sentinel
+   * is not ABI-compatible with API-36 stack-protected objects. */
+  if (const auto random = ::getauxval(AT_RANDOM); random != 0) {
+    std::memcpy(&__stack_chk_guard,
+                reinterpret_cast<const void*>(random),
+                sizeof(__stack_chk_guard));
+  }
   if (auto** value = host<std::FILE**>("stdin")) nuah_stdin = *value;
   if (auto** value = host<std::FILE**>("stdout")) nuah_stdout = *value;
   if (auto** value = host<std::FILE**>("stderr")) nuah_stderr = *value;
@@ -602,11 +736,58 @@ int __register_atfork(void (*prepare)(void), void (*parent)(void),
   return host<int (*)(void (*)(void), void (*)(void), void (*)(void), void*)>(
       "__register_atfork")(prepare, parent, child, dso);
 }
+int pthread_key_create(pthread_key_t* key, void (*destructor)(void*)) {
+  const int result = nuah_host_pthread_key_create(key, destructor);
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_key_create key=%p value=%u result=%d\n",
+                 static_cast<void*>(key), result == 0 ? static_cast<unsigned>(*key) : 0u,
+                 result);
+  }
+  return result;
+}
+int pthread_key_delete(pthread_key_t key) {
+  return nuah_host_pthread_key_delete(key);
+}
+void* pthread_getspecific(pthread_key_t key) {
+  void* value = nuah_host_pthread_getspecific(key);
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_getspecific key=%u value=%p\n",
+                 static_cast<unsigned>(key), value);
+  }
+  return value;
+}
+int nuah_pthread_setspecific_export(pthread_key_t key, const void* value)
+    __asm__("pthread_setspecific");
+int nuah_pthread_setspecific_export(pthread_key_t key, const void* value) {
+  using Function = int (*)(pthread_key_t, const void*);
+  const Function function = &nuah_host_pthread_setspecific;
+  const uintptr_t value_bits = reinterpret_cast<uintptr_t>(value);
+  const int result = function(key, reinterpret_cast<const void*>(value_bits));
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_setspecific key=%u value=%p result=%d\n",
+                 static_cast<unsigned>(key), value, result);
+  }
+  return result;
+}
 int pthread_once(pthread_once_t* object, void (*function)(void)) {
+  const bool trace = sync_trace_slot();
+  if (trace) {
+    std::fprintf(stderr, "nuah bionic: pthread_once object=%p function=%p\n",
+                 static_cast<void*>(object), reinterpret_cast<void*>(function));
+  }
   auto* entry = once_for(object);
-  return entry ? host<int (*)(pthread_once_t*, void (*)(void))>("pthread_once")(
-                    &entry->native, function)
-               : ENOMEM;
+  const int result = entry ? nuah_host_pthread_once(&entry->native, function)
+                           : ENOMEM;
+  if (trace) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_once object=%p native=%p result=%d\n",
+                 static_cast<void*>(object),
+                 entry ? static_cast<void*>(&entry->native) : nullptr, result);
+  }
+  return result;
 }
 int __cxa_atexit(void (*function)(void*), void* argument, void* dso) {
   return host<int (*)(void (*)(void*), void*, void*)>("__cxa_atexit")(
@@ -688,20 +869,90 @@ asm(".symver nuah_sendto_chk_o,__sendto_chk@LIBC_O");
 // Android's pthread_mutex_t/pthread_cond_t layout is ABI-incompatible with
 // glibc. Keep host synchronization objects out-of-line and use the Android
 // object address purely as Nuah's stable key.
-int pthread_mutex_init(pthread_mutex_t* object, const pthread_mutexattr_t*) { return mutex_for(object) ? 0 : ENOMEM; }
-int pthread_mutex_destroy(pthread_mutex_t*) { return 0; }
-int pthread_mutex_lock(pthread_mutex_t* object) { auto* entry = mutex_for(object); return entry ? host<int (*)(pthread_mutex_t*)>("pthread_mutex_lock")(&entry->native) : ENOMEM; }
-int pthread_mutex_trylock(pthread_mutex_t* object) { auto* entry = mutex_for(object); return entry ? host<int (*)(pthread_mutex_t*)>("pthread_mutex_trylock")(&entry->native) : ENOMEM; }
-int pthread_mutex_unlock(pthread_mutex_t* object) { auto* entry = mutex_for(object); return entry ? host<int (*)(pthread_mutex_t*)>("pthread_mutex_unlock")(&entry->native) : EINVAL; }
-int pthread_mutexattr_init(pthread_mutexattr_t*) { return 0; }
-int pthread_mutexattr_destroy(pthread_mutexattr_t*) { return 0; }
-int pthread_mutexattr_settype(pthread_mutexattr_t*, int) { return 0; }
+int pthread_mutex_init(pthread_mutex_t* object,
+                       const pthread_mutexattr_t* attributes) {
+  auto* entry = mutex_for(object, attributes);
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_mutex_init android=%p native=%p result=%d\n",
+                 static_cast<void*>(object),
+                 entry ? static_cast<void*>(&entry->native) : nullptr,
+                 entry ? 0 : ENOMEM);
+  }
+  return entry ? 0 : ENOMEM;
+}
+int pthread_mutex_destroy(pthread_mutex_t* object) {
+  if (sync_trace_slot()) {
+    std::fprintf(stderr, "nuah bionic: pthread_mutex_destroy android=%p\n",
+                 static_cast<void*>(object));
+  }
+  return 0;
+}
+int pthread_mutex_lock(pthread_mutex_t* object) {
+  auto* entry = mutex_for(object);
+  const int result = entry ? nuah_host_mutex_lock(&entry->native) : ENOMEM;
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_mutex_lock android=%p native=%p result=%d\n",
+                 static_cast<void*>(object),
+                 entry ? static_cast<void*>(&entry->native) : nullptr, result);
+  }
+  return result;
+}
+int pthread_mutex_trylock(pthread_mutex_t* object) {
+  auto* entry = mutex_for(object);
+  const int result = entry ? nuah_host_mutex_trylock(&entry->native) : ENOMEM;
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_mutex_trylock android=%p native=%p result=%d\n",
+                 static_cast<void*>(object),
+                 entry ? static_cast<void*>(&entry->native) : nullptr, result);
+  }
+  return result;
+}
+int pthread_mutex_unlock(pthread_mutex_t* object) {
+  auto* entry = mutex_for(object);
+  const int result = entry ? nuah_host_mutex_unlock(&entry->native) : EINVAL;
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_mutex_unlock android=%p native=%p result=%d\n",
+                 static_cast<void*>(object),
+                 entry ? static_cast<void*>(&entry->native) : nullptr, result);
+  }
+  return result;
+}
+int pthread_mutexattr_init(pthread_mutexattr_t* object) {
+  return mutex_attr_for(object) ? 0 : ENOMEM;
+}
+int pthread_mutexattr_destroy(pthread_mutexattr_t* object) {
+  lock_table();
+  for (auto& entry : mutex_attributes) {
+    if (entry.android == object) {
+      entry.android = nullptr;
+      entry.type = PTHREAD_MUTEX_NORMAL;
+      unlock_table();
+      return 0;
+    }
+  }
+  unlock_table();
+  return EINVAL;
+}
+int pthread_mutexattr_settype(pthread_mutexattr_t* object, int type) {
+  if (type != PTHREAD_MUTEX_NORMAL && type != PTHREAD_MUTEX_RECURSIVE &&
+      type != PTHREAD_MUTEX_ERRORCHECK) {
+    return EINVAL;
+  }
+  auto* entry = mutex_attr_for(object);
+  if (!entry) return ENOMEM;
+  entry->type = type;
+  return 0;
+}
 int pthread_cond_init(pthread_cond_t* object, const pthread_condattr_t*) { return cond_for(object) ? 0 : ENOMEM; }
 int pthread_cond_destroy(pthread_cond_t*) { return 0; }
-int pthread_cond_signal(pthread_cond_t* object) { auto* entry = cond_for(object); return entry ? host<int (*)(pthread_cond_t*)>("pthread_cond_signal")(&entry->native) : ENOMEM; }
-int pthread_cond_broadcast(pthread_cond_t* object) { auto* entry = cond_for(object); return entry ? host<int (*)(pthread_cond_t*)>("pthread_cond_broadcast")(&entry->native) : ENOMEM; }
-int pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex) { auto* c = cond_for(condition); auto* m = mutex_for(mutex); return c && m ? host<int (*)(pthread_cond_t*, pthread_mutex_t*)>("pthread_cond_wait")(&c->native, &m->native) : ENOMEM; }
-int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex, const timespec* timeout) { auto* c = cond_for(condition); auto* m = mutex_for(mutex); return c && m ? host<int (*)(pthread_cond_t*, pthread_mutex_t*, const timespec*)>("pthread_cond_timedwait")(&c->native, &m->native, timeout) : ENOMEM; }
+int pthread_cond_signal(pthread_cond_t* object) { auto* entry = cond_for(object); return entry ? nuah_host_cond_signal(&entry->native) : ENOMEM; }
+int pthread_cond_broadcast(pthread_cond_t* object) { auto* entry = cond_for(object); return entry ? nuah_host_cond_broadcast(&entry->native) : ENOMEM; }
+int pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex) { auto* c = cond_for(condition); auto* m = mutex_for(mutex); return c && m ? nuah_host_cond_wait(&c->native, &m->native) : ENOMEM; }
+int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex, const timespec* timeout) { auto* c = cond_for(condition); auto* m = mutex_for(mutex); return c && m ? nuah_host_cond_timedwait(&c->native, &m->native, timeout) : ENOMEM; }
 int pthread_condattr_init(pthread_condattr_t*) { return 0; }
 int pthread_condattr_destroy(pthread_condattr_t*) { return 0; }
 int pthread_condattr_setclock(pthread_condattr_t*, clockid_t) { return 0; }
@@ -726,9 +977,18 @@ int pthread_attr_destroy(pthread_attr_t* object) {
 int pthread_attr_getstack(const pthread_attr_t* object, void** address,
                           size_t* size) {
   auto* entry = attr_for(const_cast<pthread_attr_t*>(object));
-  return entry ? host<int (*)(const pthread_attr_t*, void**, size_t*)>(
-                     "pthread_attr_getstack")(&entry->native, address, size)
-               : EINVAL;
+  const int result =
+      entry ? host<int (*)(const pthread_attr_t*, void**, size_t*)>(
+                   "pthread_attr_getstack")(&entry->native, address, size)
+            : EINVAL;
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_attr_getstack android=%p base=%p "
+                 "size=%zu result=%d\n",
+                 static_cast<const void*>(object),
+                 *address, *size, result);
+  }
+  return result;
 }
 int pthread_attr_setdetachstate(pthread_attr_t* object, int state) {
   auto* entry = attr_for(object);
@@ -762,22 +1022,64 @@ int pthread_attr_setstacksize(pthread_attr_t* object, size_t size) {
 int pthread_create(pthread_t* thread, const pthread_attr_t* object,
                    void* (*start)(void*), void* argument) {
   auto* entry = object ? attr_for(const_cast<pthread_attr_t*>(object)) : nullptr;
+  constexpr size_t kMinimumRobloxStack = 256u * 1024u * 1024u;
+  pthread_attr_t fallback{};
+  const pthread_attr_t* host_attributes = entry ? &entry->native : nullptr;
+  bool destroy_fallback = false;
+  if (!host_attributes) {
+    if (host<int (*)(pthread_attr_t*)>("pthread_attr_init")(&fallback) != 0 ||
+        host<int (*)(pthread_attr_t*, size_t)>("pthread_attr_setstacksize")(
+            &fallback, kMinimumRobloxStack) != 0) {
+      return EAGAIN;
+    }
+    host_attributes = &fallback;
+    destroy_fallback = true;
+  } else {
+    size_t stack_size = 0;
+    if (host<int (*)(const pthread_attr_t*, size_t*)>("pthread_attr_getstacksize")(
+            host_attributes, &stack_size) == 0 &&
+        stack_size < kMinimumRobloxStack) {
+      (void)host<int (*)(pthread_attr_t*, size_t)>("pthread_attr_setstacksize")(
+          const_cast<pthread_attr_t*>(host_attributes), kMinimumRobloxStack);
+    }
+  }
   if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
       trace && *trace) {
     size_t stack_size = 0;
-    if (entry) {
-      (void)host<int (*)(const pthread_attr_t*, size_t*)>(
-          "pthread_attr_getstacksize")(&entry->native, &stack_size);
-    }
+    (void)host<int (*)(const pthread_attr_t*, size_t*)>(
+        "pthread_attr_getstacksize")(host_attributes, &stack_size);
     std::fprintf(stderr,
                  "nuah bionic: pthread_create android_attr=%p "
                  "host_stack_size=%zu start=%p\n",
                  static_cast<const void*>(object), stack_size,
                  reinterpret_cast<void*>(start));
   }
-  return host<int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*),
-                      void*)>("pthread_create")(
-      thread, entry ? &entry->native : nullptr, start, argument);
+  const int result =
+      host<int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*),
+                   void*)>("pthread_create")(thread, host_attributes, start,
+                                               argument);
+  if (sync_trace_slot() && result == 0) {
+    pthread_attr_t observed{};
+    void* stack_base = nullptr;
+    size_t observed_size = 0;
+    const int observed_result =
+        host<int (*)(pthread_t, pthread_attr_t*)>("pthread_getattr_np")(
+            *thread, &observed);
+    if (observed_result == 0) {
+      (void)host<int (*)(const pthread_attr_t*, void**, size_t*)>(
+          "pthread_attr_getstack")(&observed, &stack_base, &observed_size);
+      (void)host<int (*)(pthread_attr_t*)>("pthread_attr_destroy")(&observed);
+    }
+    std::fprintf(stderr,
+                 "nuah bionic: pthread_create result=0 thread=%p "
+                 "actual_stack=%p actual_size=%zu inspect=%d\n",
+                 reinterpret_cast<void*>(*thread), stack_base, observed_size,
+                 observed_result);
+  }
+  if (destroy_fallback) {
+    (void)host<int (*)(pthread_attr_t*)>("pthread_attr_destroy")(&fallback);
+  }
+  return result;
 }
 int pthread_getattr_np(pthread_t thread, pthread_attr_t* object) {
   auto* entry = attr_for(object);
@@ -830,9 +1132,7 @@ int pthread_rwlock_destroy(pthread_rwlock_t* object) {
   lock_table();
   for (auto& entry : rwlocks) {
     if (entry.android == object) {
-      const int result =
-          host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_destroy")(
-              &entry.native);
+      const int result = nuah_host_rwlock_destroy(&entry.native);
       entry.android = nullptr;
       unlock_table();
       return result;
@@ -843,20 +1143,17 @@ int pthread_rwlock_destroy(pthread_rwlock_t* object) {
 }
 int pthread_rwlock_rdlock(pthread_rwlock_t* object) {
   auto* entry = rwlock_for(object);
-  return entry ? host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_rdlock")(
-                     &entry->native)
+  return entry ? nuah_host_rwlock_rdlock(&entry->native)
                : EINVAL;
 }
 int pthread_rwlock_wrlock(pthread_rwlock_t* object) {
   auto* entry = rwlock_for(object);
-  return entry ? host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_wrlock")(
-                     &entry->native)
+  return entry ? nuah_host_rwlock_wrlock(&entry->native)
                : EINVAL;
 }
 int pthread_rwlock_unlock(pthread_rwlock_t* object) {
   auto* entry = rwlock_for(object);
-  return entry ? host<int (*)(pthread_rwlock_t*)>("pthread_rwlock_unlock")(
-                     &entry->native)
+  return entry ? nuah_host_rwlock_unlock(&entry->native)
                : EINVAL;
 }
 int sem_init(sem_t* object, int shared, unsigned int value) {

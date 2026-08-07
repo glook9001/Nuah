@@ -81,6 +81,9 @@ public class Build {
 	 */
 	public static final String MODEL = getString("ro.product.model");
 
+	/** Product SKU exposed by API 35+ device builds. */
+	public static final String SKU = getString("ro.product.sku");
+
 	/**
 	 * The system bootloader version number.
 	 */

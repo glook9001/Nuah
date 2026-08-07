@@ -7,6 +7,7 @@
 
 
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 
 #include <assert.h>
@@ -212,6 +213,21 @@ ssize_t bionic___write_chk(int fd, const void* buf, size_t count, size_t buf_siz
 	}
 
 	return write(fd, buf, count);
+}
+
+/* Android's fortify headers emit this import for UDP/TCP telemetry paths.
+ * Keep it with libc_bio's existing bionic_ providers instead of adding a
+ * one-off Roblox mapping to Nuah's loader. */
+ssize_t bionic___sendto_chk(int socket_fd, const void* buffer, size_t length,
+				    size_t buffer_size, int flags,
+				    const struct sockaddr* destination,
+				    socklen_t destination_length) {
+	if (length > buffer_size) {
+		fprintf(stderr, "sendto: prevented read past end of buffer");
+		abort();
+	}
+	return sendto(socket_fd, buffer, length, flags, destination,
+			destination_length);
 }
 
 /* NOTE: fortify level 2 is not meant for production, so arguably if some app uses it we should
