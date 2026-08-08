@@ -122,10 +122,15 @@ public class Build {
 		static {
 			String SDK_INT_str = System.getProperty("Build.VERSION.SDK_INT");
 			String mainApkPath;
-			int SDK_INT_tmp = Build.VERSION_CODES.GINGERBREAD;
+			/* Nuah runs the Android 16/API-36 façade.  ART may initialize this
+			 * class before the host-side -D property is visible, so an old ATL
+			 * fallback (GINGERBREAD or the APK minSdk) falsely advertises an
+			 * Android 6/7 device to Roblox.  Keep the API contract modern even
+			 * on that early path; the explicit property can only raise it. */
+			int SDK_INT_tmp = 36;
 			if (SDK_INT_str != null) {
 				// Always force SDK_INT to be at least 1 as 0 is used to detect early accesses.
-				SDK_INT_tmp = Integer.parseInt(SDK_INT_str);
+				SDK_INT_tmp = Math.max(Integer.parseInt(SDK_INT_str), 36);
 			} else if ((mainApkPath = System.getProperty("atl.app.class.path")) != null) {
 				// We need to set the SDK int to at least the minSdk as the
 				// Android Gradle plugin strips the SDK_INT check below anyway.
@@ -137,7 +142,7 @@ public class Build {
 				}
 				File mainApk = new File(mainApkPath);
 				if (mainApk.isFile()) {
-					SDK_INT_tmp = EarlyPackageParser.parseMinSdkInt(mainApk, SDK_INT_tmp);
+					SDK_INT_tmp = Math.max(EarlyPackageParser.parseMinSdkInt(mainApk, SDK_INT_tmp), 36);
 					// Always ensure the SDK int is at least gingerbread for older applications.
 					SDK_INT_tmp = Math.max(SDK_INT_tmp, Build.VERSION_CODES.GINGERBREAD);
 				}

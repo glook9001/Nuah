@@ -6,7 +6,11 @@
 #include "jvm/jni.h"
 
 static char nuah_content_path[4096];
+static char nuah_launch_access_code[4096];
+static char nuah_launch_reserved_server_access_code[4096];
 static jlong nuah_launch_place_id;
+static jlong nuah_launch_user_id;
+static jint nuah_launch_join_request_type;
 static jobject nuah_launch_surface;
 
 void nuah_roblox_java_facade_set_content_path(const char* path) {
@@ -16,6 +20,22 @@ void nuah_roblox_java_facade_set_content_path(const char* path) {
 
 void nuah_roblox_java_facade_set_launch_place_id(jlong place_id) {
   nuah_launch_place_id = place_id;
+}
+
+/* The AutoValue object is read through native accessors in the stripped APK.
+ * Keep the values passed to the real Builder visible at that boundary too;
+ * otherwise the facade returned empty accessCode/userId values and Roblox
+ * fell back to its signed-out account screen instead of joining the room. */
+void nuah_roblox_java_facade_set_start_game_params(
+    const char* access_code, const char* reserved_server_access_code,
+    jlong user_id, jint join_request_type) {
+  snprintf(nuah_launch_access_code, sizeof(nuah_launch_access_code), "%s",
+           access_code ? access_code : "");
+  snprintf(nuah_launch_reserved_server_access_code,
+           sizeof(nuah_launch_reserved_server_access_code), "%s",
+           reserved_server_access_code ? reserved_server_access_code : "");
+  nuah_launch_user_id = user_id;
+  nuah_launch_join_request_type = join_request_type;
 }
 
 void nuah_roblox_java_facade_set_launch_surface(jobject surface) {
@@ -46,7 +66,7 @@ static jstring string_value(JNIEnv* env, const char* value) {
 jobject java_lang_Object_osVersion(JNIEnv* env, jobject object, va_list args) {
   (void)object;
   (void)args;
-  return string_value(env, "16");
+  return string_value(env, "36");
 }
 
 jobject java_lang_Object_deviceName(JNIEnv* env, jobject object, va_list args) {
@@ -114,7 +134,7 @@ jobject java_lang_Object_socModel(JNIEnv* env, jobject object, va_list args) {
     return value;                                                           \
   }
 
-DEVICE_STATIC_STRING(osVersion, "16")
+DEVICE_STATIC_STRING(osVersion, "36")
 DEVICE_STATIC_STRING(deviceName, "Nuah Linux PC")
 DEVICE_STATIC_STRING(appVersion, "Roblox")
 DEVICE_STATIC_STRING(manufacturer, "Nuah")
@@ -404,7 +424,7 @@ DEVICE_LONG(lowMemoryKillerForegroundAppThreshold, 0)
 DEVICE_STRING(manufacturer, "Nuah")
 DEVICE_INT(memoryClass, 256)
 DEVICE_STRING(networkType, "WIFI")
-DEVICE_STRING(osVersion, "16")
+DEVICE_STRING(osVersion, "36")
 DEVICE_STRING(socModel, "x86_64")
 DEVICE_STRING(testDeviceName, "")
 
@@ -490,7 +510,7 @@ PLATFORM_INT(viewportWidthMm, 340)
     return (value);                                                       \
   }
 
-START_GAME_STRING(accessCode, "")
+START_GAME_STRING(accessCode, nuah_launch_access_code)
 START_GAME_STRING(callId, "")
 START_GAME_LONG(conversationId, 0)
 START_GAME_STRING(eventId, "")
@@ -501,14 +521,14 @@ START_GAME_STRING(isoContext, "")
 START_GAME_STRING(joinAttemptId, "")
 START_GAME_STRING(joinAttemptOrigin, "")
 /* vi.j0.a(placeId, null, ...) uses request type 2 for a WebView launch. */
-START_GAME_INT(joinRequestType, 2)
+START_GAME_INT(joinRequestType, nuah_launch_join_request_type)
 START_GAME_STRING(launchData, "")
 START_GAME_STRING(linkCode, "")
 START_GAME_LONG(placeId, nuah_launch_place_id)
 START_GAME_STRING(referralPage, "WebView")
 START_GAME_LONG(referredByPlayerId, 0)
-START_GAME_STRING(reservedServerAccessCode, "")
-START_GAME_LONG(userId, 0)
+START_GAME_STRING(reservedServerAccessCode, nuah_launch_reserved_server_access_code)
+START_GAME_LONG(userId, nuah_launch_user_id)
 START_GAME_STRING(username, "")
 
 jobject com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_surface(

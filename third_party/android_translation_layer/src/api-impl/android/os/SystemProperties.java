@@ -8,8 +8,12 @@ public class SystemProperties {
 	static {
 		String SDK_INT_str = System.getProperty("Build.VERSION.SDK_INT");
 		if (SDK_INT_str == null)
-			SDK_INT_str = "" + Build.VERSION_CODES.GINGERBREAD;
+			SDK_INT_str = "36";
 		properties.put("ro.build.version.sdk", SDK_INT_str);
+		// Sober exposes Android release 10. Roblox uses this value for its
+		// device-support gate; leaving it absent makes Build.VERSION.RELEASE
+		// resolve to "unknown" even when SDK_INT is 36.
+		properties.put("ro.build.version.release", "10");
 		properties.put("ro.product.brand", "google");
 		properties.put("ro.build.tags", "release-keys");
 		properties.put("ro.build.type", "user");

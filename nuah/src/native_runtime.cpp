@@ -8,6 +8,7 @@
 #include "nuah/window_session.h"
 
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -19,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -36,6 +38,9 @@ namespace {
 
 extern "C" void nuah_roblox_java_facade_set_content_path(const char* path);
 extern "C" void nuah_roblox_java_facade_set_launch_place_id(jlong place_id);
+extern "C" void nuah_roblox_java_facade_set_start_game_params(
+    const char* access_code, const char* reserved_server_access_code,
+    jlong user_id, jint join_request_type);
 extern "C" void nuah_roblox_java_facade_set_launch_surface(jobject surface);
 
 using RobloxSetMultipleCookies = void (*)(JNIEnv*, jclass, jstring, jstring);
@@ -47,10 +52,10 @@ void report_bootstrap_stage(const char* stage) {
   nuah_bootstrap_diagnostics_set_stage(stage);
 }
 
-/* Nuah has never had a working alternate native runtime.  The direct
- * NativeGLInterface path is therefore the product path by default; setting
- * NUAH_FAST_MVP=0 only keeps the older setter sequence available as an ABI
- * comparison experiment while the boundary is being debugged. */
+/* Keep the launch sequence that produced the known-good 632258f room run as
+ * the product path.  The longer setter sequence remains an explicit
+ * diagnostic experiment; it is not a safe default for the current Roblox
+ * image because it can initialize the render session twice. */
 bool fast_mvp_enabled() {
   const char* value = ::getenv("NUAH_FAST_MVP");
   return !value || std::strcmp(value, "0") != 0;
@@ -143,9 +148,19 @@ void adopt_cookie_header(std::string_view header) {
 }
 
 void prime_roblox_cookie_store(JNIEnv* env) {
+  if (const char* skip = ::getenv("NUAH_SKIP_COOKIE_PRIME"); skip && *skip) {
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+      std::fprintf(stderr, "nuah cookie: skipping early native-store prime\n");
+    return;
+  }
   if (!env || !g_roblox_set_multiple_cookies) return;
   const std::string cookie = nuah_roblox_cookie_header();
   if (cookie.empty()) return;
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::fprintf(stderr, "nuah cookie: native setter=%p header_bytes=%zu\n",
+                 reinterpret_cast<void*>(g_roblox_set_multiple_cookies),
+                 cookie.size());
+  }
   jstring url = env->NewStringUTF("https://roblox.com/");
   jstring header = env->NewStringUTF(cookie.c_str());
   if (!url || !header) {
@@ -501,7 +516,7 @@ jobject make_real_init_params(JNIEnv* env, jobject activity) {
       set_string_field(device, device_class, "manufacturer", "Nuah") &&
       set_int_field(device, device_class, "memoryClass", 256) &&
       set_string_field(device, device_class, "networkType", "WIFI") &&
-      set_string_field(device, device_class, "osVersion", "16") &&
+      set_string_field(device, device_class, "osVersion", "36") &&
       set_string_field(device, device_class, "socModel", "x86_64") &&
       set_string_field(device, device_class, "testDeviceName", "");
   if (!fields_ok || env->ExceptionCheck()) {
@@ -718,18 +733,19 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
   }
 
   const char* const empty = "";
-  /* rh.n.b -> vi.j0.a maps URI gameInstanceId to accessCode (the native
-   * join-private-game contract), while gameId is a separate field. */
+  /* The live Android client consumes an instance/job id through its
+   * accessCode getter on this native bridge.  Keep gameId separate: placing
+   * the id there makes the UGC coordinator finalize before NetworkClient is
+   * created, even though the Java model accepts the field. */
   const std::string access_code = request.game_instance_id.value_or("");
+  const std::string game_id;
   const std::string reserved_server_access_code =
       request.reserved_server_access_code.value_or("");
   const std::string launch_data = request.launch_data.value_or("");
   const std::string call_id = request.call_id.value_or("");
-  /* The APK's vi.j0 builder uses request type 1 when an authenticated user
-   * id is present and type 2 for the anonymous place-only WebView route.
-   * Nuah receives a bare roblox://placeId URI, so recover the signed-in id
-   * from Sober's cookie jar instead of accidentally taking the anonymous
-   * path (which returns Join Error 524/401). */
+  /* Match the observed vi.j0 WebView path: an authenticated place join uses
+   * type 1 only when no explicit access code is present; an instance/private
+   * launch remains on the type-2 path. */
   const jint join_request_type =
       nuah_roblox_user_id() > 0 && access_code.empty() ? 1 : 2;
   const jlong place_id = static_cast<jlong>(std::stoll(request.place_id));
@@ -895,7 +911,7 @@ bool install_device_static_params(JNIEnv* env) {
       cpu && string_field("deviceName", "Nuah Linux PC") &&
       string_field("deviceSku", "x86_64") &&
       string_field("manufacturer", "Nuah") &&
-      string_field("osVersion", "16") &&
+      string_field("osVersion", "36") &&
       string_field("socModel", "x86_64");
   if (!fields_ok || env->ExceptionCheck()) {
     clear_java_exception(env, "DeviceStaticParams fields");
@@ -971,6 +987,40 @@ std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
   return path;
 }
 
+void trace_start_game_params(JNIEnv* env, jobject params) {
+  const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+  if (!trace || !*trace || !env || !params) return;
+  jclass klass = env->GetObjectClass(params);
+  if (!klass) return;
+  const jmethodID access = env->GetMethodID(
+      klass, "accessCode", "()Ljava/lang/String;");
+  const jmethodID user = env->GetMethodID(klass, "userId", "()J");
+  const jmethodID type = env->GetMethodID(klass, "joinRequestType", "()I");
+  const jmethodID place = env->GetMethodID(klass, "placeId", "()J");
+  jstring access_value = access
+                            ? static_cast<jstring>(env->CallObjectMethod(params, access))
+                            : nullptr;
+  const jlong user_value = user ? env->CallLongMethod(params, user) : 0;
+  const jint type_value = type ? env->CallIntMethod(params, type) : -1;
+  const jlong place_value = place ? env->CallLongMethod(params, place) : 0;
+  std::size_t access_size = 0;
+  if (access_value && !env->ExceptionCheck()) {
+    const char* value = env->GetStringUTFChars(access_value, nullptr);
+    if (value) {
+      access_size = std::strlen(value);
+      env->ReleaseStringUTFChars(access_value, value);
+    }
+  }
+  if (env->ExceptionCheck()) env->ExceptionClear();
+  std::fprintf(stderr,
+               "nuah native: StartGameParams access_bytes=%zu user_id=%lld "
+               "join_type=%d place_id=%lld\n",
+               access_size, static_cast<long long>(user_value),
+               static_cast<int>(type_value), static_cast<long long>(place_value));
+  if (access_value) env->DeleteLocalRef(access_value);
+  env->DeleteLocalRef(klass);
+}
+
 int run_nuah_jni(const NativeLaunchOptions& options,
                  const std::filesystem::path& apk) {
   const bool fast_mvp = fast_mvp_enabled();
@@ -1008,6 +1058,9 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   // libraries such as libzstd-jni.
   (void)prepare_atl_native_libraries(options);
   const auto app_library_directory = app_data_directory / "lib";
+  // The installed ATL linker owns the process's one libc/TLS domain. Keep
+  // this path limited to extracted app libraries; accepting an inherited
+  // private libc path would load a second Bionic provider and corrupt ART.
   const std::string bionic_library_path =
       app_library_directory.string() + ":" + app_data_directory.string() + "**";
   if (::setenv("BIONIC_LD_LIBRARY_PATH", bionic_library_path.c_str(), 1) != 0) {
@@ -1025,6 +1078,14 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       session(nullptr, nuah_native_session_destroy);
   session.reset(nuah_native_session_create());
   if (!session) throw std::runtime_error("cannot create Nuah native session");
+  // Keep the installed libdl_bio/libc_bio pair untouched.  Redirect only
+  // Roblox's already-relocated property slot so the Java façade and native
+  // feature gates observe the same API level without a second TLS domain.
+  // The relocation is optional: some libhybris builds return a resolver
+  // trampoline for bionic_dladdr until the first Java callback.  Never let
+  // that diagnostic normalization crash the real bootstrap.
+  if (!std::getenv("NUAH_DISABLE_PROPERTY_PATCH"))
+    (void)patch_loaded_module_property_import(image);
   NuahJvm* jvm = nuah_native_session_jvm(session.get());
   // MainGameActivity.onCreate runs Roblox's own AppManager before the
   // GameActivity native handoff. Its settings methods are exported by this
@@ -1085,9 +1146,11 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       "nativeSetFilesDirectory", "(Ljava/lang/String;)V",
       "Java_com_roblox_engine_jni_NativeSettingsInterface_"
       "nativeSetFilesDirectory");
-  // MainGameActivity routes BACK/VOLUME keys through this direct native
-  // method. Register the APK export explicitly because libroblox was loaded
-  // by libhybris rather than ART's Java class-loader lookup.
+  // MainGameActivity and Roblox's application bootstrap install the same
+  // callback before they create the native bridge.  Keep this binding in the
+  // pre-bootstrap phase, matching the working Sober path; waiting until
+  // after Application.onCreate leaves the Java-side callback table with a
+  // null native entry during startup.
   bind_roblox_native(
       "com/roblox/engine/jni/NativeGLInterface", "nativePassKeyEvent",
       "(ZIIZ)V",
@@ -1137,11 +1200,19 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   }
   auto* bootstrap_env =
       reinterpret_cast<JNIEnv*>(nuah_jvm_jni_env(jvm));
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah native: DeviceStaticParams begin\n");
   if (!install_device_static_params(bootstrap_env)) {
     throw std::runtime_error(
         "Roblox DeviceStaticParams contract could not be initialized");
   }
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah native: DeviceStaticParams done\n");
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah native: cookie prime begin\n");
   prime_roblox_cookie_store(bootstrap_env);
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr, "nuah native: cookie prime done\n");
 
   // A JNI version alone only proves that the library accepted a table.  The
   // Sober capture shows that the usable native boundary is the smaller
@@ -1338,12 +1409,27 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   const jclass history_class = env->FindClass("java/util/ArrayList");
   const jobject history = history_class ? env->AllocObject(history_class) : nullptr;
   if (!history) throw std::runtime_error("cannot create empty client-settings history list");
-  if (const char* skip_post = ::getenv("NUAH_SKIP_CLIENT_SETTINGS_POST");
-      !skip_post || !*skip_post || std::strcmp(skip_post, "0") == 0) {
+  /* The post-init callback is not part of the minimal Sober launch contract
+   * and, on this Roblox build, can race the first game bootstrap.  Keep it
+   * available for ABI experiments, but make the proven launch path the
+   * default.  Set NUAH_CLIENT_SETTINGS_POST=1 to opt in. */
+  const bool post_client_settings_enabled = [] {
+    if (const char* enable = ::getenv("NUAH_CLIENT_SETTINGS_POST");
+        enable && *enable && std::strcmp(enable, "0") != 0) {
+      return true;
+    }
+    if (const char* skip = ::getenv("NUAH_SKIP_CLIENT_SETTINGS_POST");
+        skip && *skip && std::strcmp(skip, "0") != 0) {
+      return false;
+    }
+    return false;
+  }();
+  if (post_client_settings_enabled) {
     post_client_settings(env, native_gl, history);
   } else if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
              trace && *trace) {
-    std::cerr << "nuah native: skipping client-settings post-init for A/B\n";
+    std::cerr << "nuah native: skipping client-settings post-init (set "
+                 "NUAH_CLIENT_SETTINGS_POST=1 to opt in)\n";
   }
 
   /* The APK's AppShell setup calls these before it initializes the data model
@@ -1424,11 +1510,28 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   if (!nuah_native_session_dispatch_lifecycle(session.get(), "onResumeNative")) {
     throw std::runtime_error("GameActivity resume callback is unavailable");
   }
-  // Android delivers the focus transition after resume. Sober's Java
-  // GameActivity uses it to notify Roblox and focus its SurfaceView; without
-  // this, SDL can receive keys while the app-side input target remains
-  // unfocused.
-  (void)nuah_native_session_dispatch_window_focus(session.get(), 1);
+  /* Android's window manager reports focus before it hands the native
+   * activity its first Surface.  Keep that ordering: GameActivity queues
+   * APP_CMD_GAINED_FOCUS here, and the Surface callbacks below then queue
+   * APP_CMD_INIT_WINDOW with hasFocus already true. */
+  if (!std::getenv("NUAH_DISABLE_DELAYED_FOCUS")) {
+    unsigned long focus_delay_ms = 0;
+    if (const char* value = std::getenv("NUAH_PRESTART_FOCUS_DELAY_MS");
+        value && *value) {
+      char* end = nullptr;
+      const unsigned long parsed = std::strtoul(value, &end, 10);
+      if (end != value) focus_delay_ms = parsed;
+    }
+    if (focus_delay_ms != 0) ::usleep(focus_delay_ms * 1000U);
+    report_bootstrap_stage("GAMEACTIVITY_FOCUS");
+    const bool focus_ok =
+        nuah_native_session_dispatch_window_focus(session.get(), 1) != 0;
+    if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+        trace && *trace) {
+      std::cerr << "nuah native: activity focus-before-surface status="
+                << (focus_ok ? 1 : 0) << '\n';
+    }
+  }
   const auto* native_window = nuah_window_session_native_window(window.get());
   const int width = nuah_native_window_width(native_window);
   const int height = nuah_native_window_height(native_window);
@@ -1440,10 +1543,23 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   report_bootstrap_stage("GRAPHICS_LIFECYCLE_ACTIVE");
   nuah_roblox_java_facade_set_launch_surface(
       reinterpret_cast<jobject>(surface));
+  const bool async_game_start = [] {
+    const char* value = std::getenv("NUAH_ASYNC_GAME_START");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
   if (options.uri && !options.uri->empty()) {
     const auto request = parse_roblox_uri(*options.uri);
     nuah_roblox_java_facade_set_launch_place_id(
         static_cast<jlong>(std::stoll(request.place_id)));
+    const std::string request_access_code =
+        request.game_instance_id.value_or("");
+    const std::string request_reserved_server_access_code =
+        request.reserved_server_access_code.value_or("");
+    const jint request_join_type =
+        nuah_roblox_user_id() > 0 && request_access_code.empty() ? 1 : 2;
+    nuah_roblox_java_facade_set_start_game_params(
+        request_access_code.c_str(), request_reserved_server_access_code.c_str(),
+        nuah_roblox_user_id(), request_join_type);
     const auto start_game = reinterpret_cast<jint (*)(JNIEnv*, jclass, jobject)>(
         image.symbol("Java_com_roblox_engine_jni_NativeGLInterface_"
                      "nativeAppBridgeV2StartGameWithParam"));
@@ -1456,6 +1572,7 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         env, reinterpret_cast<jobject>(surface),
         reinterpret_cast<jobject>(nuah_jvm_game_activity(jvm)), request,
         content_path.c_str());
+    trace_start_game_params(env, start_params);
     const auto activity = reinterpret_cast<jobject>(nuah_jvm_game_activity(jvm));
     const auto platform_params =
         make_real_platform_params(env, content_path.c_str());
@@ -1469,7 +1586,55 @@ int run_nuah_jni(const NativeLaunchOptions& options,
      * the early activity setup. Re-apply the authenticated Sober header at
      * the same boundary immediately before the join request. */
     prime_roblox_cookie_store(env);
-    const jint start_result = start_game(env, native_gl, start_params);
+    jint start_result = 0;
+    if (!async_game_start) {
+      start_result = start_game(env, native_gl, start_params);
+    } else {
+      /* The direct bridge entry can perform the first render transition on
+       * its caller thread and block until the window-focus transition that
+       * Android normally delivers from the UI loop. Run that entry on an
+       * attached ART thread so this launch thread can deliver focus at the
+       * same point as the working ATL launcher. */
+      JavaVM* vm = reinterpret_cast<JavaVM*>(nuah_jvm_java_vm(jvm));
+      jobject global_native_gl = env->NewGlobalRef(native_gl);
+      jobject global_start_params = env->NewGlobalRef(start_params);
+      std::atomic<jint> async_result{0};
+      std::thread starter([&] {
+        JNIEnv* worker_env = nullptr;
+        if (!vm || vm->AttachCurrentThread(&worker_env, nullptr) != JNI_OK ||
+            !worker_env) {
+          async_result.store(-1, std::memory_order_release);
+          return;
+        }
+        async_result.store(start_game(worker_env,
+                                      reinterpret_cast<jclass>(global_native_gl),
+                                      global_start_params),
+                           std::memory_order_release);
+        vm->DetachCurrentThread();
+      });
+      unsigned long focus_delay_ms = 500;
+      if (const char* value = std::getenv("NUAH_ASYNC_FOCUS_DELAY_MS");
+          value && *value) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (end != value) focus_delay_ms = parsed;
+      }
+      if (focus_delay_ms != 0) ::usleep(focus_delay_ms * 1000U);
+      if (!std::getenv("NUAH_DISABLE_DELAYED_FOCUS")) {
+        report_bootstrap_stage("GAMEACTIVITY_FOCUS");
+        const bool focus_ok =
+            nuah_native_session_dispatch_window_focus(session.get(), 1) != 0;
+        if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+            trace && *trace) {
+          std::cerr << "nuah native: async window focus hasFocus=true status="
+                    << (focus_ok ? 1 : 0) << '\n';
+        }
+      }
+      starter.join();
+      start_result = async_result.load(std::memory_order_acquire);
+      env->DeleteGlobalRef(global_native_gl);
+      env->DeleteGlobalRef(global_start_params);
+    }
     /* ExperienceSession starts its data-model work asynchronously.  On
      * Android the next SurfaceHolder callback arrives after the UI returns
      * to the looper; calling updateSurface in the same native stack frame
@@ -1484,13 +1649,33 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       if (end != value) settle_ms = parsed;
     }
     if (settle_ms != 0) ::usleep(settle_ms * 1000U);
-    /* ExperienceSession.updateSurface() is the call that turns the Android
-     * Surface façade into Roblox's render target after the UGC game enters
-     * its stage.  GameActivity's lifecycle callback alone is not equivalent;
-     * omitting this leaves a live Lua/game stage with no swapchain. */
-    report_bootstrap_stage("ROBLOX_GAME_SURFACE_UPDATE");
-    update_surface_game(env, native_gl, reinterpret_cast<jobject>(surface),
-                        platform_params, activity);
+    /* nativeAppBridgeV2StartGameWithParam already schedules Roblox's own
+     * UGC-game surface transition.  Calling updateSurface again too early
+     * races that worker: the first EGL context is rebuilt and the second call
+     * can divide by a zero-sized framebuffer.  Let Roblox's callback own the
+     * playable path; set NUAH_EXPLICIT_SURFACE_UPDATE=1 only for an ABI
+     * comparison run. */
+    const bool explicit_surface_update = [] {
+      const char* value = ::getenv("NUAH_EXPLICIT_SURFACE_UPDATE");
+      return value && *value && std::strcmp(value, "0") != 0;
+    }();
+    if (explicit_surface_update) {
+      report_bootstrap_stage("ROBLOX_GAME_SURFACE_UPDATE");
+      update_surface_game(env, native_gl, reinterpret_cast<jobject>(surface),
+                          platform_params, activity);
+      /* On Android the window-manager focus notification follows the
+       * SurfaceHolder update.  Keep this opt-in hook for the direct native
+       * launcher so a room join can create its NetworkClient before Roblox's
+       * first render-job resize. */
+      if (const char* focus_after = ::getenv("NUAH_FOCUS_AFTER_SURFACE");
+          focus_after && *focus_after && std::strcmp(focus_after, "0") != 0) {
+        report_bootstrap_stage("GAMEACTIVITY_FOCUS");
+        (void)nuah_native_session_dispatch_window_focus(session.get(), 1);
+      }
+    } else if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+               trace && *trace) {
+      std::cerr << "nuah native: Roblox-owned UGC surface transition\n";
+    }
     if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
       std::cerr << "nuah native: nativeAppBridgeV2StartGameWithParam placeId="
                 << request.place_id << " status=" << start_result << '\n';

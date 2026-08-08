@@ -825,7 +825,7 @@ int __system_property_get(const char* key, char* value) {
   else if (key && std::strcmp(key, "ro.build.version.sdk") == 0)
     result = NUAH_STRINGIFY(NUAH_ANDROID_API_LEVEL);
   else if (key && std::strcmp(key, "ro.build.version.release") == 0)
-    result = "16";
+    result = "10";
   if (value) std::strcpy(value, result);
   if (diagnostics_callbacks.record_property) {
     diagnostics_callbacks.record_property(key, result);

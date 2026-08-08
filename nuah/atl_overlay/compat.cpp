@@ -33,7 +33,7 @@ int __system_property_get(const char* key, char* value) {
   if (key && std::strcmp(key, "ro.build.version.sdk") == 0)
     result = "36";
   else if (key && std::strcmp(key, "ro.build.version.release") == 0)
-    result = "16";
+    result = "10";
   else if (key && std::strcmp(key, "ro.product.cpu.abi") == 0)
     result = "x86_64";
   if (value) {

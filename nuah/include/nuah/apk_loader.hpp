@@ -50,6 +50,11 @@ std::vector<std::string> elf_needed_libraries(
 // table.
 void configure_android_library_path(const std::filesystem::path& app_directory);
 
+// Normalize Roblox's one native API-level import without loading a second
+// libc_bio/TLS domain.  Must be called after ART has initialized the installed
+// bionic linker and before app lifecycle callbacks begin.
+bool patch_loaded_module_property_import(const LoadedModule& module);
+
 LoadedModule load_apk_library(const std::filesystem::path& apk,
                               const std::string& member);
 

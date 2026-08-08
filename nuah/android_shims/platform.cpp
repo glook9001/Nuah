@@ -11,10 +11,6 @@
 #include <unistd.h>
 
 namespace {
-void unsupported(const char* symbol) {
-  nuah_android_api_unsupported("libandroid.so", symbol);
-  errno = ENOSYS;
-}
 void unsupported_media(const char* symbol) {
   nuah_android_api_unsupported("libmediandk.so", symbol);
   errno = ENOSYS;
@@ -40,7 +36,13 @@ struct NuahLooper {
   std::mutex mutex;
   std::vector<NuahLooperRegistration> registrations;
 };
-struct NuahConfiguration { int unused = 0; };
+struct NuahConfiguration {
+  int sdk_version = 36;
+  int screen_width_dp = 1280;
+  int screen_height_dp = 720;
+  int screen_size = 2;  // ACONFIGURATION_SCREENSIZE_NORMAL
+  int nav_hidden = 2;   // ACONFIGURATION_NAVHIDDEN_YES
+};
 /* The NDK declares these as exported `const char*` variables.  Exporting
  * arrays happens to satisfy a host ELF lookup but gives Android relocators a
  * six-byte object where they expect an eight-byte pointer, so apkenv rejects
@@ -79,14 +81,28 @@ void AConfiguration_getLanguage(void*, char language[2]) {
     language[1] = 'n';
   }
 }
-int AConfiguration_getNavHidden(void*) { unsupported("AConfiguration_getNavHidden"); return 0; }
+int AConfiguration_getNavHidden(void* configuration) {
+  (void)configuration;
+  // Keep the neutral value used by the working Sober-compatible path.  A
+  // fabricated navigation-bar state changes Roblox's display/inset math.
+  return 0;
+}
 /* Roblox gates its Vulkan path on the NDK configuration SDK value.  The
  * Java-side GameActivity already reports API 36; expose the same value from
  * the native libandroid façade instead of returning the old NDK sentinel. */
-int AConfiguration_getSdkVersion(void*) { return 36; }
-int AConfiguration_getScreenHeightDp(void*) { return 720; }
-int AConfiguration_getScreenSize(void*) { unsupported("AConfiguration_getScreenSize"); return 0; }
-int AConfiguration_getScreenWidthDp(void*) { return 1280; }
+int AConfiguration_getSdkVersion(void* configuration) {
+  return configuration ? static_cast<NuahConfiguration*>(configuration)->sdk_version : 36;
+}
+int AConfiguration_getScreenHeightDp(void* configuration) {
+  return configuration ? static_cast<NuahConfiguration*>(configuration)->screen_height_dp : 720;
+}
+int AConfiguration_getScreenSize(void* configuration) {
+  (void)configuration;
+  return 0;
+}
+int AConfiguration_getScreenWidthDp(void* configuration) {
+  return configuration ? static_cast<NuahConfiguration*>(configuration)->screen_width_dp : 1280;
+}
 
 void* ALooper_forThread() { static thread_local NuahLooper looper; return &looper; }
 void* ALooper_prepare(int) { return ALooper_forThread(); }

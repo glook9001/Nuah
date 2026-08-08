@@ -56,7 +56,7 @@ long long nuah_jvm_initialize_game(NuahJvm* jvm, const char* package_name,
                                    const char* data_path);
 int nuah_jvm_dispatch_lifecycle(NuahJvm* jvm, const char* method_name);
 /* Mirror Android's Activity window-focus transition so GameActivity can
- * notify Roblox and request focus for its SurfaceView before input starts. */
+ * notify Roblox and request focus for its SurfaceView after realization. */
 int nuah_jvm_dispatch_window_focus(NuahJvm* jvm, int has_focus);
 int nuah_jvm_dispatch_surface_created(NuahJvm* jvm, void* surface);
 int nuah_jvm_dispatch_surface_changed(NuahJvm* jvm, void* surface,

@@ -1,0 +1,12 @@
+LIBC {
+  global:
+    __sendto_chk;
+};
+LIBC_N {
+  global:
+    __sendto_chk;
+} LIBC;
+LIBC_O {
+  global:
+    __sendto_chk;
+} LIBC_N;

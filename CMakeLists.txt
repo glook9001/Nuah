@@ -151,6 +151,24 @@ target_include_directories(nuah_android_bionic PRIVATE nuah/include)
 target_link_options(nuah_android_bionic PRIVATE
   "-Wl,--version-script=${CMAKE_SOURCE_DIR}/nuah/android_shims/bionic.map")
 
+# The bundled Android linker resolves a few legacy fortify/property objects
+# with dlsym(RTLD_DEFAULT), bypassing libhybris's per-relocation callback.
+# Export only that finite helper ABI globally; do not expose the pthread/TLS
+# wrappers from libbionic, which would create a second synchronization domain.
+add_library(nuah_android_bionic_linker_helpers SHARED
+  nuah/android_shims/bionic_linker_helpers.cpp)
+set_target_properties(nuah_android_bionic_linker_helpers PROPERTIES
+  OUTPUT_NAME bionic-linker-helpers
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android"
+  BUILD_RPATH "$ORIGIN")
+target_compile_definitions(nuah_android_bionic_linker_helpers PRIVATE
+  NUAH_ANDROID_API_LEVEL=${NUAH_ANDROID_API_LEVEL})
+target_compile_options(nuah_android_bionic_linker_helpers PRIVATE
+  -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_include_directories(nuah_android_bionic_linker_helpers PRIVATE nuah/include)
+target_link_options(nuah_android_bionic_linker_helpers PRIVATE
+  "-Wl,--version-script=${CMAKE_SOURCE_DIR}/nuah/android_shims/bionic-linker-helpers.map")
+
 add_library(nuah_atl_overlay SHARED nuah/atl_overlay/compat.cpp)
 target_compile_options(nuah_atl_overlay PRIVATE -Wall -Wextra -Wpedantic -Werror)
 set_target_properties(
@@ -200,6 +218,7 @@ target_link_libraries(
   PkgConfig::NUAH_PLATFORM)
 add_dependencies(nuah_core nuah_atl_overlay)
 add_dependencies(nuah_core nuah_android_bionic)
+add_dependencies(nuah_core nuah_android_bionic_linker_helpers)
 add_dependencies(nuah_core nuah_android_math)
 add_dependencies(nuah_core nuah_android_linker_dependencies)
 

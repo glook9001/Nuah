@@ -339,6 +339,22 @@ void write_member(const ApkMember& member,
                                temporary);
   }
   std::filesystem::rename(temporary, destination);
+  // APK native libraries are executable ELF objects.  std::ofstream creates
+  // the temporary file with the process umask (normally 0644); keeping that
+  // mode makes the Android linker reject the cached path used by
+  // System.loadLibrary, even though the bytes are valid.  Restore the APK
+  // contract after the atomic rename so both ATL and libhybris can map text.
+  std::error_code permission_error;
+  std::filesystem::permissions(
+      destination,
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+          std::filesystem::perms::owner_exec | std::filesystem::perms::group_read |
+          std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+          std::filesystem::perms::others_exec,
+      std::filesystem::perm_options::replace, permission_error);
+  if (permission_error)
+    throw std::runtime_error("cannot mark extracted native library executable: " +
+                             destination.string());
 }
 }  // namespace
 

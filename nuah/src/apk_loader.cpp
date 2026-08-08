@@ -4,6 +4,7 @@
 #include <elf.h>
 #include <dlfcn.h>
 #include <link.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -70,6 +71,192 @@ void* host_libc_handle = nullptr;
 using HybrisBuiltinHook = void* (*)(const char*, const char*);
 HybrisBuiltinHook hybris_builtin_hook = nullptr;
 std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
+
+// Keep the installed ATL/Bionic DSO (and its TLS domain) intact.  Its
+// __system_property_get reports the API level baked into the distro bundle;
+// replacing the whole libc_bio with a second build makes ART see duplicate
+// Bionic state and crashes during startup.  The small app-local relocation
+// below gives Roblox the same API-36 property as the Java façade.
+extern "C" int nuah_api36_system_property_get(const char* key, char* value) {
+  const char* result = "";
+  if (key && std::strcmp(key, "ro.build.version.sdk") == 0) {
+    result = "36";
+  } else if (key && std::strcmp(key, "ro.build.version.release") == 0) {
+    result = "10";
+  } else if (key && std::strcmp(key, "ro.product.cpu.abi") == 0) {
+    result = "x86_64";
+  }
+  if (value) std::strcpy(value, result);
+  if (const char* trace = ::getenv("NUAH_PROPERTY_TRACE"); trace && *trace) {
+    std::fprintf(stderr, "nuah property: %s -> %s\n", key ? key : "(null)",
+                 result);
+  }
+  return static_cast<int>(std::strlen(result));
+}
+
+std::vector<std::byte> read_file(const std::filesystem::path& path);
+
+bool patch_loaded_module_property_import_impl(const LoadedModule& module) {
+#if !defined(__x86_64__)
+  (void)module;
+  return false;
+#else
+  /* Do not call bionic_dladdr here.  libhybris can expose a resolver
+   * trampoline with a different Dl_info ABI; dereferencing its result was
+   * the PRE_JNI_BIND crash.  The extracted ELF is available on disk, so use
+   * its immutable symbol/relocation tables and derive the load bias from an
+   * exported function address. */
+  void* anchor = module.symbol(
+      "Java_com_google_androidgamesdk_GameActivity_initializeNativeCode");
+  const char* anchor_name =
+      "Java_com_google_androidgamesdk_GameActivity_initializeNativeCode";
+  if (!anchor) {
+    anchor = module.symbol("JNI_OnLoad");
+    anchor_name = "JNI_OnLoad";
+  }
+  if (!anchor || module.path().empty()) return false;
+
+  const auto bytes = read_file(module.path());
+  if (bytes.size() < sizeof(Elf64_Ehdr)) return false;
+  Elf64_Ehdr header{};
+  std::memcpy(&header, bytes.data(), sizeof(header));
+  if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 ||
+      header.e_ident[EI_CLASS] != ELFCLASS64 ||
+      header.e_phentsize != sizeof(Elf64_Phdr) ||
+      header.e_shentsize != sizeof(Elf64_Shdr)) {
+    return false;
+  }
+  const auto in_bounds = [&](std::uint64_t offset, std::uint64_t size) {
+    return offset <= bytes.size() && size <= bytes.size() - offset;
+  };
+  if (!in_bounds(header.e_phoff,
+                 static_cast<std::uint64_t>(header.e_phnum) *
+                     sizeof(Elf64_Phdr)) ||
+      !in_bounds(header.e_shoff,
+                 static_cast<std::uint64_t>(header.e_shnum) *
+                     sizeof(Elf64_Shdr))) {
+    return false;
+  }
+  const auto* phdrs = reinterpret_cast<const Elf64_Phdr*>(
+      bytes.data() + header.e_phoff);
+  const auto* shdrs = reinterpret_cast<const Elf64_Shdr*>(
+      bytes.data() + header.e_shoff);
+
+  const Elf64_Shdr* dynsym_section = nullptr;
+  for (Elf64_Half index = 0; index < header.e_shnum; ++index) {
+    const auto& section = shdrs[index];
+    if (section.sh_type == SHT_DYNSYM && section.sh_entsize == sizeof(Elf64_Sym) &&
+        in_bounds(section.sh_offset, section.sh_size) &&
+        section.sh_link < header.e_shnum &&
+        shdrs[section.sh_link].sh_type == SHT_STRTAB &&
+        in_bounds(shdrs[section.sh_link].sh_offset,
+                  shdrs[section.sh_link].sh_size)) {
+      dynsym_section = &section;
+      break;
+    }
+  }
+  if (!dynsym_section) return false;
+  const auto* symbols = reinterpret_cast<const Elf64_Sym*>(
+      bytes.data() + dynsym_section->sh_offset);
+  const std::size_t symbol_count =
+      dynsym_section->sh_size / sizeof(Elf64_Sym);
+  const auto& strtab_section = shdrs[dynsym_section->sh_link];
+  const char* strings = reinterpret_cast<const char*>(
+      bytes.data() + strtab_section.sh_offset);
+  const std::size_t string_size = strtab_section.sh_size;
+
+  std::uint64_t anchor_value = 0;
+  for (std::size_t index = 0; index < symbol_count; ++index) {
+    const auto& symbol = symbols[index];
+    if (symbol.st_name >= string_size) continue;
+    if (std::strcmp(strings + symbol.st_name, anchor_name) == 0) {
+      anchor_value = symbol.st_value;
+      break;
+    }
+  }
+  if (anchor_value == 0) return false;
+  const auto base = reinterpret_cast<std::uintptr_t>(anchor) - anchor_value;
+  const auto page_size = static_cast<std::uintptr_t>(::getpagesize());
+  const auto base_page = base & ~(page_size - 1);
+  unsigned char resident = 0;
+  if (::mincore(reinterpret_cast<void*>(base_page), page_size, &resident) != 0)
+    return false;
+
+  const Elf64_Phdr* dynamic_segment = nullptr;
+  for (Elf64_Half index = 0; index < header.e_phnum; ++index) {
+    if (phdrs[index].p_type == PT_DYNAMIC) {
+      dynamic_segment = &phdrs[index];
+      break;
+    }
+  }
+  if (!dynamic_segment || !in_bounds(dynamic_segment->p_offset,
+                                     dynamic_segment->p_filesz)) {
+    return false;
+  }
+  const Elf64_Dyn* dynamic = reinterpret_cast<const Elf64_Dyn*>(
+      bytes.data() + dynamic_segment->p_offset);
+  const std::size_t dynamic_count = dynamic_segment->p_filesz / sizeof(Elf64_Dyn);
+  std::uint64_t jmprel_va = 0;
+  std::size_t jmprel_size = 0;
+  auto va_to_file = [&](std::uint64_t address, std::uint64_t size,
+                        std::uint64_t* offset) {
+    for (Elf64_Half index = 0; index < header.e_phnum; ++index) {
+      const auto& program = phdrs[index];
+      if (program.p_type != PT_LOAD || address < program.p_vaddr) continue;
+      const std::uint64_t delta = address - program.p_vaddr;
+      if (delta <= program.p_filesz && size <= program.p_filesz - delta) {
+        *offset = program.p_offset + delta;
+        return in_bounds(*offset, size);
+      }
+    }
+    return false;
+  };
+  for (std::size_t index = 0; index < dynamic_count; ++index) {
+    if (dynamic[index].d_tag == DT_NULL) break;
+    if (dynamic[index].d_tag == DT_JMPREL)
+      jmprel_va = dynamic[index].d_un.d_ptr;
+    else if (dynamic[index].d_tag == DT_PLTRELSZ)
+      jmprel_size = dynamic[index].d_un.d_val;
+  }
+  if (!jmprel_va || jmprel_size == 0 ||
+      jmprel_size % sizeof(Elf64_Rela) != 0)
+    return false;
+  std::uint64_t rel_offset = 0;
+  if (!va_to_file(jmprel_va, jmprel_size, &rel_offset)) return false;
+  const auto* relocations = reinterpret_cast<const Elf64_Rela*>(
+      bytes.data() + rel_offset);
+  const std::size_t relocation_count = jmprel_size / sizeof(Elf64_Rela);
+  for (std::size_t index = 0; index < relocation_count; ++index) {
+    const auto& relocation = relocations[index];
+    if (ELF64_R_TYPE(relocation.r_info) != R_X86_64_JUMP_SLOT) continue;
+    const auto symbol_index = ELF64_R_SYM(relocation.r_info);
+    if (symbol_index >= symbol_count ||
+        symbols[symbol_index].st_name >= string_size)
+      continue;
+    if (std::strcmp(strings + symbols[symbol_index].st_name,
+                    "__system_property_get") != 0)
+      continue;
+    const auto slot_address = base + relocation.r_offset;
+    const auto page = slot_address & ~(page_size - 1);
+    if (::mincore(reinterpret_cast<void*>(page), page_size, &resident) != 0 ||
+        ::mprotect(reinterpret_cast<void*>(page), page_size,
+                   PROT_READ | PROT_WRITE) != 0)
+      return false;
+    *reinterpret_cast<void**>(slot_address) =
+        reinterpret_cast<void*>(&nuah_api36_system_property_get);
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+      char value[93]{};
+      const int length = nuah_api36_system_property_get(
+          "ro.build.version.sdk", value);
+      std::fprintf(stderr,
+                   "nuah loader: patched libroblox property GOT=%p sdk=%d value=%s\n",
+                   reinterpret_cast<void*>(slot_address), length, value);
+    }
+    return true;
+  }
+  return false;
+#endif
+}
 
 // The production boundary is libhybris: it owns the Android linker-facing
 // ABI and translates libc/pthread/TLS calls to this host.  Nuah's old bionic
@@ -204,6 +391,13 @@ char* android_strncat_chk(char* destination, const char* source, std::size_t cou
 
 void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (!symbol) return nullptr;
+  /* Roblox's native graphics gate reads this property directly through its
+   * imported Bionic symbol.  Letting ATL's distro libc satisfy it first
+   * exposes that bundle's older SDK (currently 16), even though ART and
+   * GameActivity are configured for API 36.  Keep this as one narrow symbol
+   * override; libc/pthread/TLS ownership remains with libhybris/ATL. */
+  if (std::strcmp(symbol, "__system_property_get") == 0)
+    return reinterpret_cast<void*>(&nuah_api36_system_property_get);
   /* The loader and JNI_OnLoad use native pthread_once_t storage.  Roblox's
    * post-init objects use the Android layout, so enable the out-of-line
    * adapter only after native_runtime has crossed the InitParams boundary. */
@@ -496,9 +690,22 @@ void configure_host_provider_hooks(void* hybris) {
     break;
   }
   if (!use_nuah_compat_runtime()) {
-    /* Keep the compatibility object out of the global host namespace.  It is
-     * consulted only for the finite Android-only helper set above; pthread,
-     * TLS, libc and DSO symbols remain exclusively libhybris-owned. */
+    /* The Android linker used by ATL resolves a small set of legacy helper
+     * imports through RTLD_DEFAULT (not through libhybris's callback).  Keep
+     * this existing helper DSO visible so imports such as __sendto_chk can be
+     * resolved before the app image is entered.  It does not replace libc:
+     * ordinary libc/pthread/TLS lookups still resolve to the host/libhybris
+     * domain through resolve_host_provider_symbol(). */
+    const auto linker_helpers = android / "libbionic-linker-helpers.so";
+    void* helper_handle = ::dlopen(linker_helpers.c_str(),
+                                   RTLD_NOW | RTLD_GLOBAL);
+    if (!helper_handle) {
+      const char* error = ::dlerror();
+      throw std::runtime_error(
+          "cannot load Android linker helper provider: " +
+          std::string(error ? error : "unknown error"));
+    }
+    host_provider_handles.push_back(helper_handle);
     bionic_provider_handle = ::dlopen((android / "libbionic.so").c_str(),
                                       RTLD_NOW | RTLD_LOCAL);
     if (!bionic_provider_handle) {
@@ -858,7 +1065,9 @@ void configure_android_library_path(
   const std::string app_library = (app_directory / "lib").string();
   // Match ATL's main executable: the explicit lib directory handles
   // System.loadLibrary("name"), while the app-root wildcard covers Android
-  // libraries extracted by app code into its private data tree.
+  // libraries extracted by app code into its private data tree. Do not append
+  // an inherited private libc path: ATL/libhybris must keep one linker/TLS
+  // provider, while the app-local API adjustment is handled after relocation.
   std::string path = app_library + ":" + app_directory.string() + "**";
   using ParseLibraryPath = void (*)(const char*, char*);
   ParseLibraryPath parse = nullptr;
@@ -873,9 +1082,9 @@ void configure_android_library_path(
         ::dlsym(RTLD_DEFAULT, "dl_parse_library_path"));
   }
   if (!parse) {
-    // Fedora's ATL install keeps the bionic linker as a system soname. It is
-    // not pulled into RTLD_DEFAULT until the first Android library load, so
-    // make the same existing provider available before that first load.
+    // Fedora's ATL install keeps the bionic linker as a system soname. Keep
+    // that known-good linker first: replacing it with a separately rebuilt
+    // linker changes ATL's loader ABI and can corrupt ART's startup mutexes.
     static const char* candidates[] = {
         "/lib64/libdl_bio.so.0", "/usr/lib64/libdl_bio.so.0",
         "/lib/libdl_bio.so.0", "/usr/lib/libdl_bio.so.0"};
@@ -1026,6 +1235,25 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       configure_android_library_path(app_directory);
     }
     preflight_host_hooks(image_bytes, path.c_str());
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+      void* libc_handle = android_dlopen("libc.so", RTLD_NOW | RTLD_LOCAL);
+      if (libc_handle) {
+        using PropertyGet = int (*)(const char*, char*);
+        const auto property = reinterpret_cast<PropertyGet>(
+            android_dlsym(libc_handle, "__system_property_get"));
+        char value[93]{};
+        const int length = property
+            ? property("ro.build.version.sdk", value)
+            : -1;
+        std::fprintf(stderr,
+                     "nuah loader: Android libc property=%p sdk=%d value=%s\n",
+                     reinterpret_cast<void*>(property), length, value);
+        (void)android_dlclose(libc_handle);
+      } else {
+        std::fprintf(stderr, "nuah loader: Android libc lookup failed: %s\n",
+                     android_dlerror ? android_dlerror() : "unknown");
+      }
+    }
     // ATL's Java System.loadLibrary uses the process-wide bionic linker. If
     // Nuah first opens the image through libhybris, ATL sees a different
     // linker namespace and loads a second copy (JNI_OnLoad then recurses).
@@ -1049,8 +1277,22 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     if (bionic_dlopen && bionic_dlclose && bionic_dlsym) {
       handle = bionic_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
       bionic_handle = handle != nullptr;
+      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+        const char* error = bionic_dlerror ? bionic_dlerror() : nullptr;
+        std::fprintf(stderr,
+                     "nuah loader: bionic_dlopen(%s) handle=%p error=%s\n",
+                     path.c_str(), handle, error ? error : "none");
+      }
     }
-    if (!handle) handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+      handle = android_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+        std::fprintf(stderr,
+                     "nuah loader: android_dlopen(%s) handle=%p error=%s\n",
+                     path.c_str(), handle,
+                     android_dlerror ? android_dlerror() : "unknown");
+      }
+    }
     if (!handle) {
       std::string message = "android_dlopen failed: ";
       const char* error = bionic_handle
@@ -1067,6 +1309,24 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       throw std::runtime_error(message);
     }
     LoadedModule result; result.path_ = path; result.handle_ = handle; result.loader_library_ = loader_library; result.close_ = bionic_handle ? bionic_dlclose : android_dlclose; result.symbol_ = bionic_handle ? bionic_dlsym : android_dlsym; result.versioned_symbol_ = bionic_handle ? nullptr : android_dlvsym; result.size_ = image_bytes.size(); result.remove_path_ = remove_path;
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+      const auto lookup = bionic_handle ? bionic_dlsym : android_dlsym;
+      if (lookup) {
+        using PropertyGet = int (*)(const char*, char*);
+        const auto property = reinterpret_cast<PropertyGet>(
+            lookup(handle, "__system_property_get"));
+        if (property) {
+          char value[93]{};
+          const int length = property("ro.build.version.sdk", value);
+          std::fprintf(stderr,
+                       "nuah loader: libroblox __system_property_get=%p sdk=%d value=%s\n",
+                       reinterpret_cast<void*>(property), length, value);
+        } else {
+          std::fprintf(stderr,
+                       "nuah loader: libroblox __system_property_get unresolved\n");
+        }
+      }
+    }
     return result;
   } catch (...) {
     if (fd >= 0) ::close(fd);
@@ -1074,5 +1334,11 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     std::filesystem::remove(temporary_path, error);
     throw;
   }
+}
+}  // namespace nuah
+
+namespace nuah {
+bool patch_loaded_module_property_import(const LoadedModule& module) {
+  return patch_loaded_module_property_import_impl(module);
 }
 }  // namespace nuah

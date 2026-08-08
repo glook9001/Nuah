@@ -324,7 +324,7 @@ bool initialize_roblox_device_static_params(NuahJvm* jvm) {
       set_string("deviceName", "Nuah Linux PC") &&
       set_string("deviceSku", "x86_64") &&
       set_string("manufacturer", "Nuah") &&
-      set_string("osVersion", "16") &&
+      set_string("osVersion", "36") &&
       set_string("socModel", "x86_64");
   if (!ok || env->ExceptionCheck()) {
     clear_exception(env, "DeviceStaticParams setup fields");
@@ -410,8 +410,23 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
 
   const std::string root = artifact_root();
   const std::string api_jar = root + "/api-impl.jar";
-  const std::string framework = root + "/framework-res.apk";
-  const std::string natives = root + "/natives";
+  std::string framework = root + "/framework-res.apk";
+  if (!std::filesystem::is_regular_file(framework)) {
+    const auto build_framework = std::filesystem::path(root) /
+                                 "res/framework-res/framework-res.apk";
+    if (std::filesystem::is_regular_file(build_framework))
+      framework = build_framework.string();
+  }
+  std::string natives = root + "/natives";
+  // A local Meson build keeps its provider beside api-impl.jar instead of
+  // installing a separate natives/ directory. Accept that layout directly so
+  // local MVP runs do not need a copied runtime bundle.
+  if (!std::filesystem::is_regular_file(
+          std::filesystem::path(natives) / "libtranslation_layer_main.so") &&
+      std::filesystem::is_regular_file(
+          std::filesystem::path(root) / "libtranslation_layer_main.so")) {
+    natives = root;
+  }
   const auto apk_paths = apk_class_paths();
   if (apk_paths.empty()) {
     std::fprintf(stderr, "nuah ART: NUAH_APK_PATHS is empty\n");
@@ -858,6 +873,72 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
          "Java_android_graphics_drawable_Drawable_native_1ref"},
         {"android/graphics/drawable/Drawable", "native_unref", "(J)V",
          "Java_android_graphics_drawable_Drawable_native_1unref"},
+        // Matrix is part of the framework API jar, but ART resolves its
+        // private natives lazily.  ATL already ships the generated JNI
+        // implementation; expose that implementation to this class loader
+        // before Activity/View code asks Matrix to allocate its handle.
+        {"android/graphics/Matrix", "native_create", "(J)J",
+         "Java_android_graphics_Matrix_native_1create"},
+        {"android/graphics/Matrix", "native_getValues", "(J[F)V",
+         "Java_android_graphics_Matrix_native_1getValues"},
+        {"android/graphics/Matrix", "native_set", "(JJ)V",
+         "Java_android_graphics_Matrix_native_1set"},
+        {"android/graphics/Matrix", "native_isIdentity", "(J)Z",
+         "Java_android_graphics_Matrix_native_1isIdentity"},
+        {"android/graphics/Matrix", "native_rectStaysRect", "(J)Z",
+         "Java_android_graphics_Matrix_native_1rectStaysRect"},
+        {"android/graphics/Matrix", "native_reset", "(J)V",
+         "Java_android_graphics_Matrix_native_1reset"},
+        {"android/graphics/Matrix", "native_setTranslate", "(JFF)V",
+         "Java_android_graphics_Matrix_native_1setTranslate"},
+        {"android/graphics/Matrix", "native_setScale", "(JFF)V",
+         "Java_android_graphics_Matrix_native_1setScale__JFF"},
+        {"android/graphics/Matrix", "native_setScale", "(JFFFF)V",
+         "Java_android_graphics_Matrix_native_1setScale__JFFFF"},
+        {"android/graphics/Matrix", "native_setRotate", "(JF)V",
+         "Java_android_graphics_Matrix_native_1setRotate__JF"},
+        {"android/graphics/Matrix", "native_setRotate", "(JFFF)V",
+         "Java_android_graphics_Matrix_native_1setRotate__JFFF"},
+        {"android/graphics/Matrix", "native_preTranslate", "(JFF)Z",
+         "Java_android_graphics_Matrix_native_1preTranslate"},
+        {"android/graphics/Matrix", "native_preScale", "(JFF)Z",
+         "Java_android_graphics_Matrix_native_1preScale__JFF"},
+        {"android/graphics/Matrix", "native_preScale", "(JFFFF)Z",
+         "Java_android_graphics_Matrix_native_1preScale__JFFFF"},
+        {"android/graphics/Matrix", "native_preRotate", "(JF)Z",
+         "Java_android_graphics_Matrix_native_1preRotate__JF"},
+        {"android/graphics/Matrix", "native_preRotate", "(JFFF)Z",
+         "Java_android_graphics_Matrix_native_1preRotate__JFFF"},
+        {"android/graphics/Matrix", "native_preConcat", "(JJ)Z",
+         "Java_android_graphics_Matrix_native_1preConcat"},
+        {"android/graphics/Matrix", "native_postTranslate", "(JFF)Z",
+         "Java_android_graphics_Matrix_native_1postTranslate"},
+        {"android/graphics/Matrix", "native_postScale", "(JFF)Z",
+         "Java_android_graphics_Matrix_native_1postScale__JFF"},
+        {"android/graphics/Matrix", "native_postScale", "(JFFFF)Z",
+         "Java_android_graphics_Matrix_native_1postScale__JFFFF"},
+        {"android/graphics/Matrix", "native_postRotate", "(JF)Z",
+         "Java_android_graphics_Matrix_native_1postRotate__JF"},
+        {"android/graphics/Matrix", "native_postRotate", "(JFFF)Z",
+         "Java_android_graphics_Matrix_native_1postRotate__JFFF"},
+        {"android/graphics/Matrix", "native_postConcat", "(JJ)Z",
+         "Java_android_graphics_Matrix_native_1postConcat"},
+        {"android/graphics/Matrix", "native_setRectToRect",
+         "(JLandroid/graphics/RectF;Landroid/graphics/RectF;I)Z",
+         "Java_android_graphics_Matrix_native_1setRectToRect"},
+        {"android/graphics/Matrix", "native_invert", "(JJ)Z",
+         "Java_android_graphics_Matrix_native_1invert"},
+        {"android/graphics/Matrix", "native_mapPoints",
+         "(J[FI[FIIZ)V", "Java_android_graphics_Matrix_native_1mapPoints"},
+        {"android/graphics/Matrix", "native_mapRect",
+         "(JLandroid/graphics/RectF;Landroid/graphics/RectF;)Z",
+         "Java_android_graphics_Matrix_native_1mapRect"},
+        {"android/graphics/Matrix", "native_setValues", "(J[F)V",
+         "Java_android_graphics_Matrix_native_1setValues"},
+        {"android/graphics/Matrix", "native_equals", "(JJ)Z",
+         "Java_android_graphics_Matrix_native_1equals"},
+        {"android/graphics/Matrix", "finalizer", "(J)V",
+         "Java_android_graphics_Matrix_finalizer"},
         // ATL constructs the Activity's Window/FrameLayout during
         // attachBaseContext. Its View native constructor is the only widget
         // entry needed before Roblox's GameActivity callback registration.
@@ -1076,6 +1157,7 @@ extern "C" void* nuah_jvm_game_activity(NuahJvm* jvm) {
 
 extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
   if (!jvm || !jvm->env) return 0;
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state Context.createApplication begin\n");
   jclass context_class = find_class(jvm->env, "android/content/Context");
   if (!context_class) return 0;
   const jmethodID create_application = jvm->env->GetStaticMethodID(
@@ -1090,31 +1172,36 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
     clear_exception(jvm->env, "Context.createApplication");
     return 0;
   }
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state Context.createApplication done\n");
 
   // Roblox disables AndroidX Startup's WorkManager provider in its manifest,
   // but MainGameActivity still uses WorkManager during onCreate.  Invoke the
   // library's own Initializer contract once, with the real Application
   // object, instead of recreating WorkManager or adding framework shims.
-  jclass work_initializer =
-      find_class(jvm->env, "androidx/work/WorkManagerInitializer");
-  if (work_initializer) {
-    const jmethodID initializer_ctor =
-        jvm->env->GetMethodID(work_initializer, "<init>", "()V");
-    const jmethodID initializer_create = jvm->env->GetMethodID(
-        work_initializer, "create",
-        "(Landroid/content/Context;)Ljava/lang/Object;");
-    if (initializer_ctor && initializer_create) {
-      jobject initializer =
-          jvm->env->NewObject(work_initializer, initializer_ctor);
-      if (initializer) {
-        (void)jvm->env->CallObjectMethod(initializer, initializer_create,
-                                         application);
-        if (jvm->env->ExceptionCheck())
-          clear_exception(jvm->env, "WorkManagerInitializer.create");
+  if (!std::getenv("NUAH_SKIP_WORKMANAGER_INIT")) {
+    jclass work_initializer =
+        find_class(jvm->env, "androidx/work/WorkManagerInitializer");
+    if (work_initializer) {
+      const jmethodID initializer_ctor =
+          jvm->env->GetMethodID(work_initializer, "<init>", "()V");
+      const jmethodID initializer_create = jvm->env->GetMethodID(
+          work_initializer, "create",
+          "(Landroid/content/Context;)Ljava/lang/Object;");
+      if (initializer_ctor && initializer_create) {
+        jobject initializer =
+            jvm->env->NewObject(work_initializer, initializer_ctor);
+        if (initializer) {
+          (void)jvm->env->CallObjectMethod(initializer, initializer_create,
+                                           application);
+          if (jvm->env->ExceptionCheck())
+            clear_exception(jvm->env, "WorkManagerInitializer.create");
+        }
+      } else {
+        clear_exception(jvm->env, "WorkManagerInitializer methods");
       }
-    } else {
-      clear_exception(jvm->env, "WorkManagerInitializer methods");
     }
+  } else if (trace_enabled()) {
+    std::fprintf(stderr, "nuah ART: skipping WorkManager pre-initialization\n");
   }
 
   // Do not call RobloxApplication.onCreate here.  That method is the full
@@ -1128,6 +1215,7 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
   jclass roblox_application =
       find_class(jvm->env, "com/roblox/client/RobloxApplication");
   if (!roblox_application) return 0;
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state RobloxApplication class ready\n");
   const jfieldID application_field = jvm->env->GetStaticFieldID(
       roblox_application, "b", "Landroid/content/Context;");
   if (!application_field) {
@@ -1140,12 +1228,14 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
     clear_exception(jvm->env, "RobloxApplication.b");
     return 0;
   }
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state RobloxApplication.b set\n");
 
   // rh.y0.e0() supplies the files/cache/device-id values consumed by the
   // native settings bridge. Seed its prefs singleton as well: tj.b.l(),
   // called by MainGameActivity, reads it before native initialization.
   jclass paths = find_class(jvm->env, "rh/y0");
   if (!paths) return 0;
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0 class ready\n");
   const jmethodID prepare_paths = jvm->env->GetStaticMethodID(
       paths, "e0", "(Landroid/content/Context;)V");
   if (!prepare_paths) {
@@ -1157,6 +1247,7 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
     clear_exception(jvm->env, "rh.y0.e0");
     return 0;
   }
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.e0 done\n");
 
   const jmethodID prefs_factory = jvm->env->GetStaticMethodID(
       paths, "S",
@@ -1171,8 +1262,10 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
     clear_exception(jvm->env, "rh.y0.S");
     return 0;
   }
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.S done\n");
   const jfieldID prefs_field = jvm->env->GetStaticFieldID(
       paths, "r", "Landroid/content/SharedPreferences;");
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.r lookup\n");
   if (!prefs_field) {
     clear_exception(jvm->env, "rh.y0.r lookup");
     return 0;
@@ -1182,6 +1275,7 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
     clear_exception(jvm->env, "rh.y0.r");
     return 0;
   }
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.r set\n");
   return 1;
 }
 
@@ -1446,9 +1540,11 @@ extern "C" int nuah_jvm_dispatch_lifecycle(NuahJvm* jvm,
 
 extern "C" int nuah_jvm_dispatch_window_focus(NuahJvm* jvm, int has_focus) {
   if (!jvm || !jvm->activity) return 0;
-  // This is the Java Activity callback Sober receives from Android. It then
-  // invokes GameActivity.onWindowFocusChangedNative and requests focus for
-  // the SurfaceView, making subsequent KeyEvents visible to Roblox.
+  /* Use one normal virtual dispatch, exactly like Android's Activity window
+   * manager. Do not call ATL's standalone activity_window_ready() here: Nuah
+   * is not running ATL's main executable, so that symbol has no activity
+   * backlog in this process. Calling both the base and concrete methods also
+   * delivers focus twice and can corrupt ART/Roblox renderer state. */
   jmethodID method = find_instance_method(
       jvm->env, "com/google/androidgamesdk/GameActivity",
       "onWindowFocusChanged", "(Z)V");
