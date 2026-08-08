@@ -18,11 +18,11 @@ Services/WebKit -> framed IPC -> supervisor -> native game runtime -> Roblox
 - Native Vulkan Android-surface translation to host Wayland.
 - An explicit Android ABI registry with fail-loud unsupported calls.
 
-Nuah has never produced a playable Roblox session. The native path is an
-experimental Android-facing façade: it can exercise parts of loading and JNI
-registration, but it must not be described as a working or legacy runtime.
-The ATL build is disabled by default (`NUAH_BUILD_ATL=OFF`) and is not the
-target runtime.
+The current local MVP reaches a rendered Roblox place and accepts the
+keyboard/mouse path: W/A/S/D movement, arrow-key camera input, number keys,
+relative mouse movement, buttons, and wheel events. The ATL build remains
+disabled by default (`NUAH_BUILD_ATL=OFF`); the playable path uses the
+libhybris loader with the installed API-36 ART provider.
 
 ## Build and run
 
@@ -30,17 +30,36 @@ target runtime.
 cmake -S . -B build -G Ninja -DNUAH_BUILD_ATL=OFF
 cmake --build build --target nuah nuah-services
 ./build/nuah config
-./build/nuah native-run --apk /path/to/base.apk --split /path/to/split_config.x86_64.apk --uri 'roblox://placeId=1818'
 ```
 
-`native-run` is the only supported Nuah game path. It uses NuahJVM, an
-isolated adapter around the licensed android2gnulinux JNI core, loads the
-x86_64 Roblox image through libhybris, and prepares the JavaVM passed to
-`JNI_OnLoad`. The default `NUAH_FAST_MVP=1` route attempts the smallest direct
-NativeGLInterface bootstrap needed to reach a first frame; it is still
-experimental and currently does not claim a playable result. Set
+`native-run` is the supported Nuah game path. From the repository root, this
+is the known-working local launch (adjust the provider/APK paths if they are
+installed elsewhere):
+
+```sh
+SOBER_DATA="$HOME/.var/app/org.vinegarhq.Sober/data/sober"
+export NUAH_HYBRIS_LIBRARY=/tmp/nuah-hybris-local/lib/libhybris-common.so
+export HYBRIS_LINKER_DIR=/tmp/nuah-hybris-local/lib/libhybris/linker
+export LD_LIBRARY_PATH=/usr/local/lib64/art:/tmp/nuah-hybris-local/lib
+export LD_PRELOAD=/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:/usr/local/lib64/art/libandroidfw.so
+export NUAH_BOOTSTRAP_TRACE=1
+export NUAH_INPUT_TRACE=1
+export NUAH_RECOVER_RENDER_FPE=1
+export NUAH_MOUSE_CAPTURE=1
+
+./build/nuah native-run \
+  --apk "$SOBER_DATA/packages/x86_64/com.roblox.client/base.apk" \
+  --split "$SOBER_DATA/packages/x86_64/com.roblox.client/split_config.x86_64.apk" \
+  --data "$HOME/.local/share/nuah" \
+  --uri 'roblox://placeId=1818'
+```
+
+This uses NuahJVM, an isolated adapter around the licensed android2gnulinux
+JNI core, loads the x86_64 Roblox image through libhybris, and prepares the
+JavaVM passed to `JNI_OnLoad`. `NUAH_FAST_MVP=1` is the default direct
+NativeGLInterface bootstrap that reaches the first frame. Set
 `NUAH_FAST_MVP=0` only to compare the older parameter-setter ABI while
-diagnosing the boundary; it is not an alternate working runtime.
+diagnosing the boundary; it is not the normal launch path.
 `NUAH_NATIVE_BIONIC_SMOKE=1` retains the separate API-36 Bionic-loader probe.
 `atl-run` is outside the Nuah native MVP and is never selected by the Services
 supervisor.
@@ -50,11 +69,9 @@ dependency. This supplies the official Android JNI ABI declarations only;
 `libnativehelper`'s runtime invocation library delegates to ART and is not
 used as an ART substitute.
 
-The current native smoke path proves only portions of loading, relocation, and
-JNI registration through the libhybris Android linker, including host-backed
-DT_NEEDED libraries. A visible window or a successful `JNI_OnLoad` smoke is
-not a playable game; the remaining Android-native bootstrap, object, surface,
-lifecycle, and rendering contracts must still be proven.
+The current native path exercises loading, relocation, JNI registration,
+Android lifecycle/surface setup, rendering, authenticated place joining, and
+the Sober-style keyboard/mouse callbacks through the libhybris Android linker.
 
 ## Documentation-driven Android façade
 
