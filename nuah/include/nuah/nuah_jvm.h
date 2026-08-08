@@ -71,6 +71,18 @@ int nuah_jvm_dispatch_key(NuahJvm* jvm, int keycode, int action, int repeat,
 int nuah_jvm_dispatch_motion(NuahJvm* jvm, int action, int button, double x,
                              double y, double dx, double dy,
                              unsigned long long event_time_ms);
+/* NativeInputInterface uses a separate PC mouse path in the Android client.
+ * Keep the old MotionEvent entry point for compatibility, but let the SDL
+ * bridge identify motion/button/wheel events so the real Roblox methods can
+ * receive them without pretending a mouse is a touchscreen. */
+enum NuahPointerEventType {
+  NUAH_POINTER_MOTION = 2,
+  NUAH_POINTER_BUTTON = 3,
+  NUAH_POINTER_WHEEL = 4,
+};
+int nuah_jvm_dispatch_pointer(NuahJvm* jvm, int pointer_type, int action,
+                              int button, double x, double y, double dx,
+                              double dy, unsigned long long event_time_ms);
 
 #ifdef __cplusplus
 }

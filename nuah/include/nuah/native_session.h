@@ -36,6 +36,10 @@ int nuah_native_session_dispatch_pointer(NuahNativeSession* session,
                                          int action, int button, double x,
                                          double y, double dx, double dy,
                                          unsigned long long event_time_ms);
+int nuah_native_session_dispatch_pointer_event(
+    NuahNativeSession* session, int pointer_type, int action, int button,
+    double x, double y, double dx, double dy,
+    unsigned long long event_time_ms);
 
 #ifdef __cplusplus
 }

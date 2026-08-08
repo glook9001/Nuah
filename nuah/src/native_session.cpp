@@ -80,3 +80,13 @@ extern "C" int nuah_native_session_dispatch_pointer(
                                             dx, dy, event_time_ms)
                  : 0;
 }
+
+extern "C" int nuah_native_session_dispatch_pointer_event(
+    NuahNativeSession* session, int pointer_type, int action, int button,
+    double x, double y, double dx, double dy,
+    unsigned long long event_time_ms) {
+  return session ? nuah_jvm_dispatch_pointer(
+                       session->jvm, pointer_type, action, button, x, y, dx,
+                       dy, event_time_ms)
+                 : 0;
+}

@@ -28,6 +28,14 @@ struct NuahJvm {
   jobject surface = nullptr;
   jobject key_event = nullptr;
   jobject motion_event = nullptr;
+  jclass native_input_interface = nullptr;
+  jmethodID native_pass_mouse_move = nullptr;
+  jmethodID native_pass_mouse_button = nullptr;
+  jmethodID native_pass_mouse_wheel = nullptr;
+  bool native_input_lookup_attempted = false;
+  jclass native_gl_interface = nullptr;
+  jmethodID native_pass_key_event = nullptr;
+  bool native_gl_lookup_attempted = false;
   jlong native_handle = 0;
   NuahNativeWindow* surface_window = nullptr;
   std::string class_path;
@@ -187,6 +195,70 @@ std::string join(const std::vector<std::string>& values) {
 void delete_global(JNIEnv* env, jobject& object) {
   if (env && object) env->DeleteGlobalRef(object);
   object = nullptr;
+}
+
+void delete_global_class(JNIEnv* env, jclass& klass) {
+  if (env && klass) env->DeleteGlobalRef(klass);
+  klass = nullptr;
+}
+
+jmethodID find_static_method(JNIEnv* env, jclass klass, const char* name,
+                             const char* signature) {
+  if (!env || !klass) return nullptr;
+  jmethodID method = env->GetStaticMethodID(klass, name, signature);
+  if (!method) clear_exception(env, name);
+  return method;
+}
+
+bool ensure_native_input_methods(NuahJvm* jvm) {
+  if (!jvm || !jvm->env) return false;
+  if (jvm->native_input_lookup_attempted)
+    return jvm->native_input_interface != nullptr;
+  jvm->native_input_lookup_attempted = true;
+  jclass local = find_class(
+      jvm->env, "com/roblox/engine/jni/NativeInputInterface");
+  if (!local) return false;
+  jvm->native_input_interface = static_cast<jclass>(
+      jvm->env->NewGlobalRef(local));
+  jvm->env->DeleteLocalRef(local);
+  if (!jvm->native_input_interface) return false;
+  jvm->native_pass_mouse_move = find_static_method(
+      jvm->env, jvm->native_input_interface, "nativePassMouseMove",
+      "(FFFF)V");
+  jvm->native_pass_mouse_button = find_static_method(
+      jvm->env, jvm->native_input_interface, "nativePassMouseButton",
+      "(FFZI)V");
+  jvm->native_pass_mouse_wheel = find_static_method(
+      jvm->env, jvm->native_input_interface, "nativePassMouseWheel",
+      "(FFF)V");
+  if (input_trace_enabled()) {
+    std::fprintf(stderr,
+                 "nuah input: NativeInputInterface move=%p button=%p "
+                 "wheel=%p\n",
+                 reinterpret_cast<void*>(jvm->native_pass_mouse_move),
+                 reinterpret_cast<void*>(jvm->native_pass_mouse_button),
+                 reinterpret_cast<void*>(jvm->native_pass_mouse_wheel));
+  }
+  return jvm->native_pass_mouse_move || jvm->native_pass_mouse_button ||
+         jvm->native_pass_mouse_wheel;
+}
+
+bool ensure_native_gl_method(NuahJvm* jvm) {
+  if (!jvm || !jvm->env) return false;
+  if (jvm->native_gl_lookup_attempted)
+    return jvm->native_gl_interface != nullptr &&
+           jvm->native_pass_key_event != nullptr;
+  jvm->native_gl_lookup_attempted = true;
+  jclass local = find_class(
+      jvm->env, "com/roblox/engine/jni/NativeGLInterface");
+  if (!local) return false;
+  jvm->native_gl_interface = static_cast<jclass>(
+      jvm->env->NewGlobalRef(local));
+  jvm->env->DeleteLocalRef(local);
+  if (!jvm->native_gl_interface) return false;
+  jvm->native_pass_key_event = find_static_method(
+      jvm->env, jvm->native_gl_interface, "nativePassKeyEvent", "(ZIIZ)V");
+  return jvm->native_pass_key_event != nullptr;
 }
 
 jobject make_empty(JNIEnv* env, const char* class_name) {
@@ -1109,6 +1181,8 @@ extern "C" void nuah_jvm_destroy(NuahJvm* jvm) {
   delete_global(jvm->env, jvm->activity);
   delete_global(jvm->env, jvm->key_event);
   delete_global(jvm->env, jvm->motion_event);
+  delete_global_class(jvm->env, jvm->native_input_interface);
+  delete_global_class(jvm->env, jvm->native_gl_interface);
   // ART cannot safely be destroyed while Roblox worker threads are alive.  It
   // is intentionally kept resident until process exit, just like ATL's VM.
   delete jvm;
@@ -1647,12 +1721,29 @@ extern "C" int nuah_jvm_dispatch_key(
       if (input_trace_enabled())
         std::fprintf(stderr, "nuah input: %s result=%d\n", activity_name,
                      result == JNI_TRUE ? 1 : 0);
-      return result == JNI_TRUE;
+      if (result == JNI_TRUE) return 1;
     }
     // A missing optional NativeGLInterface binding should not permanently
     // drop input. Clear it and use the registered GameActivity callback as a
     // diagnostic fallback; normal keys never take this branch.
     clear_exception(jvm->env, activity_name);
+  }
+
+  /* Sober's hardware-keyboard branch calls this static native directly from
+   * MainGameActivity.  If the façade's Configuration did not make that
+   * branch report handled=true, use the same exact Roblox method rather than
+   * dropping W/A/S/D and number keys at the generic GameActivity fallback. */
+  if (ensure_native_gl_method(jvm)) {
+    jvm->env->CallStaticVoidMethod(
+        jvm->native_gl_interface, jvm->native_pass_key_event,
+        key_down ? JNI_TRUE : JNI_FALSE, static_cast<jint>(scancode),
+        static_cast<jint>(keycode), repeat ? JNI_TRUE : JNI_FALSE);
+    if (!jvm->env->ExceptionCheck()) {
+      if (input_trace_enabled())
+        std::fprintf(stderr, "nuah input: NativeGLInterface.nativePassKeyEvent direct\n");
+      return 1;
+    }
+    clear_exception(jvm->env, "NativeGLInterface.nativePassKeyEvent");
   }
 
   if (!method) return 0;
@@ -1668,10 +1759,62 @@ extern "C" int nuah_jvm_dispatch_key(
   return result == JNI_TRUE;
 }
 
-extern "C" int nuah_jvm_dispatch_motion(
-    NuahJvm* jvm, int action, int button, double x, double y, double dx,
-    double dy, unsigned long long event_time_ms) {
+extern "C" int nuah_jvm_dispatch_pointer(
+    NuahJvm* jvm, int pointer_type, int action, int button, double x,
+    double y, double dx, double dy, unsigned long long event_time_ms) {
   if (!jvm) return 0;
+
+  /* This is the path used by Sober's il.e adapter for a desktop mouse.  The
+   * previous Nuah implementation converted every pointer event into a
+   * touchscreen MotionEvent, which leaves Roblox's PC camera/input layer
+   * untouched.  Call the APK's own NativeInputInterface methods first and
+   * retain the MotionEvent route only as a compatibility fallback. */
+  if (ensure_native_input_methods(jvm)) {
+    bool dispatched = false;
+    if (pointer_type == NUAH_POINTER_MOTION &&
+        jvm->native_pass_mouse_move) {
+      jvm->env->CallStaticVoidMethod(
+          jvm->native_input_interface, jvm->native_pass_mouse_move,
+          static_cast<jfloat>(x), static_cast<jfloat>(y),
+          static_cast<jfloat>(dx), static_cast<jfloat>(dy));
+      dispatched = true;
+    } else if (pointer_type == NUAH_POINTER_BUTTON &&
+               jvm->native_pass_mouse_button) {
+      /* Sober passes MotionEvent.actionButton - 1: Android's primary button
+       * is 1, while NativeInputInterface's left-button value is 0. */
+      const jint native_button = button > 0 ? button - 1 : 0;
+      jvm->env->CallStaticVoidMethod(
+          jvm->native_input_interface, jvm->native_pass_mouse_button,
+          static_cast<jfloat>(x), static_cast<jfloat>(y),
+          action != 0 ? JNI_TRUE : JNI_FALSE, native_button);
+      dispatched = true;
+    } else if (pointer_type == NUAH_POINTER_WHEEL &&
+               jvm->native_pass_mouse_wheel) {
+      /* SDL reports vertical wheel movement in dy, matching Android's
+       * AXIS_VSCROLL value used by Sober. Preserve horizontal wheel input if
+       * the vertical axis is zero. */
+      const double amount = dy != 0.0 ? dy : dx;
+      jvm->env->CallStaticVoidMethod(
+          jvm->native_input_interface, jvm->native_pass_mouse_wheel,
+          static_cast<jfloat>(x), static_cast<jfloat>(y),
+          static_cast<jfloat>(amount));
+      dispatched = true;
+    }
+    if (dispatched) {
+      if (jvm->env->ExceptionCheck()) {
+        clear_exception(jvm->env, "NativeInputInterface mouse dispatch");
+      } else {
+        if (input_trace_enabled()) {
+          std::fprintf(stderr,
+                       "nuah input: mouse type=%d action=%d button=%d "
+                       "x=%.2f y=%.2f dx=%.2f dy=%.2f\n",
+                       pointer_type, action, button, x, y, dx, dy);
+        }
+        return 1;
+      }
+    }
+  }
+
   jmethodID method = find_instance_method(
       jvm->env, "com/google/androidgamesdk/GameActivity", "onTouchEventNative",
       "(JLandroid/view/MotionEvent;IIIIIJJIIIIIIFF)Z");
@@ -1699,4 +1842,11 @@ extern "C" int nuah_jvm_dispatch_motion(
     return 0;
   }
   return result == JNI_TRUE;
+}
+
+extern "C" int nuah_jvm_dispatch_motion(
+    NuahJvm* jvm, int action, int button, double x, double y, double dx,
+    double dy, unsigned long long event_time_ms) {
+  return nuah_jvm_dispatch_pointer(jvm, NUAH_POINTER_MOTION, action, button,
+                                   x, y, dx, dy, event_time_ms);
 }

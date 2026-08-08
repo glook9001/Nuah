@@ -4,11 +4,34 @@
 #include <SDL3/SDL.h>
 
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace {
 std::atomic<NuahInputSink> sink{nullptr};
 std::atomic<void*> sink_data{nullptr};
 std::atomic<bool> quit_requested{false};
+
+bool mouse_capture_enabled() {
+  const char* value = std::getenv("NUAH_MOUSE_CAPTURE");
+  return !value || std::strcmp(value, "0") != 0;
+}
+
+void set_relative_mouse_mode(SDL_Window* window, bool enabled) {
+  if (!window) return;
+  if (!SDL_SetWindowRelativeMouseMode(window, enabled)) {
+    const char* trace = std::getenv("NUAH_INPUT_TRACE");
+    if (trace && *trace)
+      std::fprintf(stderr, "nuah input: relative mouse mode %s failed: %s\n",
+                   enabled ? "on" : "off", SDL_GetError());
+    return;
+  }
+  const char* trace = std::getenv("NUAH_INPUT_TRACE");
+  if (trace && *trace)
+    std::fprintf(stderr, "nuah input: relative mouse mode %s\n",
+                 enabled ? "on" : "off");
+}
 
 void emit(const NuahInputEvent& event) {
   const auto callback = sink.load(std::memory_order_acquire);
@@ -125,9 +148,9 @@ void native_session_sink(const NuahInputEvent* event, void* user_data) {
   } else if (event->type == NUAH_INPUT_POINTER_MOTION ||
              event->type == NUAH_INPUT_POINTER_BUTTON ||
              event->type == NUAH_INPUT_POINTER_WHEEL) {
-    nuah_native_session_dispatch_pointer(
-        session, event->action, event->button, event->x, event->y, event->dx,
-        event->dy, event->timestamp_ns / 1000000ULL);
+    nuah_native_session_dispatch_pointer_event(
+        session, event->type, event->action, event->button, event->x,
+        event->y, event->dx, event->dy, event->timestamp_ns / 1000000ULL);
   }
 }
 }
@@ -160,6 +183,11 @@ extern "C" int nuah_input_pump(void) {
         translated.action = event.type == SDL_EVENT_KEY_DOWN ? 1 : 0;
         translated.repeat = event.key.repeat ? 1 : 0;
         translated.modifiers = android_meta_state_from_sdl(event.key.mod);
+        if (event.type == SDL_EVENT_KEY_DOWN &&
+            translated.android_keycode == NUAH_KEY_ESCAPE) {
+          set_relative_mouse_mode(SDL_GetWindowFromID(event.key.windowID),
+                                  false);
+        }
         emit(translated);
         ++count;
         break;
@@ -170,6 +198,12 @@ extern "C" int nuah_input_pump(void) {
         translated.y = event.motion.y;
         translated.dx = event.motion.xrel;
         translated.dy = event.motion.yrel;
+        /* Wayland emits an initial cursor-position notification while the
+         * SDL surface is being realized. Sober's Android adapter only calls
+         * nativePassMouseMove for an actual motion/captured-pointer delta;
+         * forwarding this (0,0) bootstrap event can reach Roblox before its
+         * input state exists and corrupt its render startup. */
+        if (translated.dx == 0.0 && translated.dy == 0.0) break;
         emit(translated);
         ++count;
         break;
@@ -180,12 +214,23 @@ extern "C" int nuah_input_pump(void) {
         translated.button = static_cast<int>(event.button.button);
         translated.x = event.button.x;
         translated.y = event.button.y;
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+            translated.button == SDL_BUTTON_LEFT && mouse_capture_enabled()) {
+          /* Sober's SurfaceView requests pointer capture when Roblox enters
+           * mouse-lock mode. Nuah has no Android View hierarchy, so mirror
+           * that contract at the SDL boundary: a game click captures relative
+           * motion, and Escape releases it. */
+          set_relative_mouse_mode(SDL_GetWindowFromID(event.button.windowID),
+                                  true);
+        }
         emit(translated);
         ++count;
         break;
       case SDL_EVENT_MOUSE_WHEEL:
         translated.type = NUAH_INPUT_POINTER_WHEEL;
         translated.action = 2;
+        translated.x = event.wheel.mouse_x;
+        translated.y = event.wheel.mouse_y;
         translated.dx = event.wheel.x;
         translated.dy = event.wheel.y;
         emit(translated);

@@ -515,3 +515,14 @@ int nuah_jvm_dispatch_motion(NuahJvm* jvm, int action, int button, double x,
                                        event_time_ms, 0, 0, action_button,
                                        button, 0, 0, 1.0f, 1.0f) == JNI_TRUE;
 }
+
+/* The compatibility adapter has no Java static-call surface for
+ * NativeInputInterface. Keep the new typed entry point ABI-compatible by
+ * using its existing MotionEvent path when this backend is selected. */
+int nuah_jvm_dispatch_pointer(NuahJvm* jvm, int pointer_type, int action,
+                              int button, double x, double y, double dx,
+                              double dy, unsigned long long event_time_ms) {
+  (void)pointer_type;
+  return nuah_jvm_dispatch_motion(jvm, action, button, x, y, dx, dy,
+                                  event_time_ms);
+}

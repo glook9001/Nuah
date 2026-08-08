@@ -1155,6 +1155,27 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       "com/roblox/engine/jni/NativeGLInterface", "nativePassKeyEvent",
       "(ZIIZ)V",
       "Java_com_roblox_engine_jni_NativeGLInterface_nativePassKeyEvent");
+  // Sober's desktop-input adapter bypasses a synthetic touchscreen event for
+  // mouse-capable devices and calls these exact Roblox entry points. Register
+  // them before MainGameActivity is created so ART can resolve the static
+  // methods when Nuah dispatches SDL events later on the same Java thread.
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeInputInterface", "nativePassMouseMove",
+      "(FFFF)V",
+      "Java_com_roblox_engine_jni_NativeInputInterface_nativePassMouseMove");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeInputInterface", "nativePassMouseButton",
+      "(FFZI)V",
+      "Java_com_roblox_engine_jni_NativeInputInterface_nativePassMouseButton");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeInputInterface", "nativePassMouseWheel",
+      "(FFF)V",
+      "Java_com_roblox_engine_jni_NativeInputInterface_nativePassMouseWheel");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeInputInterface",
+      "nativeGetMainWindowIsMouseLockedCenter", "()Z",
+      "Java_com_roblox_engine_jni_NativeInputInterface_"
+      "nativeGetMainWindowIsMouseLockedCenter");
   g_roblox_set_multiple_cookies =
       reinterpret_cast<RobloxSetMultipleCookies>(image.symbol(
           "Java_com_roblox_engine_jni_NativeSettingsInterface_"
