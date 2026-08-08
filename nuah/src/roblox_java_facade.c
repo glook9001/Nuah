@@ -257,7 +257,10 @@ NUAH_CONFIGURATION_INT(screenHeightDp, 720)
 NUAH_CONFIGURATION_INT(screenLayout, 2)
 NUAH_CONFIGURATION_INT(screenWidthDp, 1280)
 NUAH_CONFIGURATION_INT(smallestScreenWidthDp, 720)
-NUAH_CONFIGURATION_INT(touchscreen, 1)
+/* Android Configuration.TOUCHSCREEN_FINGER (3). NOTOUCH (1) suppresses the
+ * Roblox Movement Mode selector even when PlatformParams advertises a hybrid
+ * keyboard/mouse/touch device. */
+NUAH_CONFIGURATION_INT(touchscreen, 3)
 NUAH_CONFIGURATION_INT(uiMode, 0)
 
 jfloat android_content_res_Configuration_fontScale(
@@ -470,7 +473,12 @@ jfloat com_roblox_engine_jni_model_PlatformParams_dpiScale(
 
 PLATFORM_BOOLEAN(isKeyboardDevice, JNI_TRUE)
 PLATFORM_BOOLEAN(isMouseDevice, JNI_TRUE)
-PLATFORM_BOOLEAN(isTouchDevice, JNI_FALSE)
+/* Sober presents a hybrid Android input surface: Roblox can see the
+ * physical keyboard/mouse while the Android settings still expose the
+ * movement-mode selector.  Keeping TouchEnabled true is the capability
+ * advertisement; it does not synthesize touch events, which continue to be
+ * absent unless SDL reports them. */
+PLATFORM_BOOLEAN(isTouchDevice, JNI_TRUE)
 PLATFORM_INT(viewportHeightMm, 190)
 PLATFORM_INT(viewportWidthMm, 340)
 

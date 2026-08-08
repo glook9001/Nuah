@@ -1,4 +1,5 @@
 #include "nuah/nuah_jvm.h"
+#include "nuah/input_bridge.h"
 #include "nuah/native_window_bridge.h"
 
 #include <jni.h>
@@ -89,6 +90,22 @@ using AtlJniSetup = void (*)(JNIEnv*);
 using GtkInitCheck = int (*)();
 
 bool trace_enabled();
+
+bool is_gameplay_key(int keycode) {
+  /* Roblox's desktop movement/camera layer consumes these through
+   * NativeGLInterface.nativePassKeyEvent.  MainGameActivity.onKeyDown can
+   * report handled without forwarding them when the Android View hierarchy
+   * is only a façade, so do not use that return value as proof that Roblox
+   * received the key. */
+  return (keycode >= NUAH_KEY_0 && keycode <= NUAH_KEY_9) ||
+         (keycode >= NUAH_KEY_DPAD_UP && keycode <= NUAH_KEY_DPAD_RIGHT) ||
+         (keycode >= NUAH_KEY_A && keycode <= NUAH_KEY_Z) ||
+         keycode == NUAH_KEY_TAB || keycode == NUAH_KEY_SPACE ||
+         keycode == NUAH_KEY_ENTER || keycode == NUAH_KEY_SHIFT_LEFT ||
+         keycode == NUAH_KEY_SHIFT_RIGHT || keycode == NUAH_KEY_CTRL_LEFT ||
+         keycode == NUAH_KEY_CTRL_RIGHT || keycode == NUAH_KEY_ALT_LEFT ||
+         keycode == NUAH_KEY_ALT_RIGHT;
+}
 
 void* api_symbol(const NuahJvm* jvm, const char* symbol) {
   if (!jvm || !jvm->api_native || !symbol) return nullptr;
@@ -1304,52 +1321,82 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
   }
   if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state RobloxApplication.b set\n");
 
-  // rh.y0.e0() supplies the files/cache/device-id values consumed by the
-  // native settings bridge. Seed its prefs singleton as well: tj.b.l(),
-  // called by MainGameActivity, reads it before native initialization.
+  // Older Roblox builds kept the files/cache/device-id bootstrap in rh.y0
+  // (e0/S/r).  That class is obfuscated and its methods move between APK
+  // releases; newer builds initialize the same state from their own
+  // Application/Activity startup.  Probe the old helpers when present, but
+  // never make an optional obfuscated method a hard launch dependency.
   jclass paths = find_class(jvm->env, "rh/y0");
-  if (!paths) return 0;
-  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0 class ready\n");
-  const jmethodID prepare_paths = jvm->env->GetStaticMethodID(
+  if (!paths) {
+    clear_exception(jvm->env, "rh.y0 class lookup");
+    if (trace_enabled())
+      std::fprintf(stderr, "nuah ART: optional rh.y0 bootstrap absent\n");
+    return 1;
+  }
+  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state %s class ready\n",
+                                     "rh.y0");
+
+  jmethodID prepare_paths = jvm->env->GetStaticMethodID(
       paths, "e0", "(Landroid/content/Context;)V");
+  /* The current APK moved this exact helper from rh.y0 to rh.z0.  Select it
+   * by contract (method signature), not by an obfuscated class name. */
   if (!prepare_paths) {
-    clear_exception(jvm->env, "rh.y0.e0 lookup");
-    return 0;
+    clear_exception(jvm->env, "rh.y0.e0 optional lookup");
+    jclass moved_paths = find_class(jvm->env, "rh/z0");
+    if (moved_paths) {
+      const jmethodID moved_prepare = jvm->env->GetStaticMethodID(
+          moved_paths, "e0", "(Landroid/content/Context;)V");
+      if (moved_prepare) {
+        paths = moved_paths;
+        prepare_paths = moved_prepare;
+        if (trace_enabled())
+          std::fprintf(stderr, "nuah ART: app-state helper moved to rh.z0\n");
+      } else {
+        clear_exception(jvm->env, "rh.z0.e0 optional lookup");
+      }
+    } else {
+      clear_exception(jvm->env, "rh.z0 class lookup");
+    }
   }
-  jvm->env->CallStaticVoidMethod(paths, prepare_paths, application);
-  if (jvm->env->ExceptionCheck()) {
-    clear_exception(jvm->env, "rh.y0.e0");
-    return 0;
+  if (prepare_paths) {
+    jvm->env->CallStaticVoidMethod(paths, prepare_paths, application);
+    if (jvm->env->ExceptionCheck())
+      clear_exception(jvm->env, "rh.y0.e0");
+    else if (trace_enabled())
+      std::fprintf(stderr, "nuah ART: app-state rh.y0.e0 done\n");
+  } else {
+    clear_exception(jvm->env, "rh.y0.e0 optional lookup");
+    if (trace_enabled())
+      std::fprintf(stderr, "nuah ART: optional rh.y0.e0 absent; continuing\n");
   }
-  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.e0 done\n");
 
   const jmethodID prefs_factory = jvm->env->GetStaticMethodID(
       paths, "S",
       "(Landroid/content/Context;)Landroid/content/SharedPreferences;");
-  if (!prefs_factory) {
-    clear_exception(jvm->env, "rh.y0.S lookup");
-    return 0;
+  if (prefs_factory) {
+    jobject prefs =
+        jvm->env->CallStaticObjectMethod(paths, prefs_factory, application);
+    if (prefs && !jvm->env->ExceptionCheck()) {
+      if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.S done\n");
+      const jfieldID prefs_field = jvm->env->GetStaticFieldID(
+          paths, "r", "Landroid/content/SharedPreferences;");
+      if (prefs_field) {
+        jvm->env->SetStaticObjectField(paths, prefs_field, prefs);
+        if (jvm->env->ExceptionCheck())
+          clear_exception(jvm->env, "rh.y0.r");
+        else if (trace_enabled())
+          std::fprintf(stderr, "nuah ART: app-state rh.y0.r set\n");
+      } else {
+        clear_exception(jvm->env, "rh.y0.r optional lookup");
+      }
+    } else {
+      clear_exception(jvm->env, "rh.y0.S optional");
+    }
+  } else {
+    clear_exception(jvm->env, "rh.y0.S optional lookup");
+    if (trace_enabled())
+      std::fprintf(stderr, "nuah ART: optional rh.y0.S/r absent; continuing\n");
   }
-  jobject prefs =
-      jvm->env->CallStaticObjectMethod(paths, prefs_factory, application);
-  if (!prefs || jvm->env->ExceptionCheck()) {
-    clear_exception(jvm->env, "rh.y0.S");
-    return 0;
-  }
-  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.S done\n");
-  const jfieldID prefs_field = jvm->env->GetStaticFieldID(
-      paths, "r", "Landroid/content/SharedPreferences;");
-  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.r lookup\n");
-  if (!prefs_field) {
-    clear_exception(jvm->env, "rh.y0.r lookup");
-    return 0;
-  }
-  jvm->env->SetStaticObjectField(paths, prefs_field, prefs);
-  if (jvm->env->ExceptionCheck()) {
-    clear_exception(jvm->env, "rh.y0.r");
-    return 0;
-  }
-  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.r set\n");
   return 1;
 }
 
@@ -1714,6 +1761,27 @@ extern "C" int nuah_jvm_dispatch_key(
       event_time_ms));
   if (!event) return 0;
 
+  /* This is the actual Sober desktop-keyboard contract, recovered from the
+   * APK's kl.g helper:
+   *   nativePassKeyEvent(down, event.getScanCode(), event.getKeyCode(), repeat)
+   * The first integer is the raw Android/evdev scan code, not the logical
+   * Android key code. */
+  if (is_gameplay_key(keycode) && ensure_native_gl_method(jvm)) {
+    jvm->env->CallStaticVoidMethod(
+        jvm->native_gl_interface, jvm->native_pass_key_event,
+        key_down ? JNI_TRUE : JNI_FALSE, static_cast<jint>(scancode),
+        static_cast<jint>(keycode), repeat ? JNI_TRUE : JNI_FALSE);
+    if (!jvm->env->ExceptionCheck()) {
+      if (input_trace_enabled())
+        std::fprintf(stderr,
+                     "nuah input: Roblox key dispatched keycode=%d "
+                     "scancode=%d down=%d repeat=%d\n",
+                     keycode, scancode, key_down ? 1 : 0, repeat ? 1 : 0);
+      return 1;
+    }
+    clear_exception(jvm->env, "NativeGLInterface gameplay key");
+  }
+
   if (activity_method) {
     const jboolean result = jvm->env->CallBooleanMethod(
         jvm->activity, activity_method, keycode, event);
@@ -1780,9 +1848,19 @@ extern "C" int nuah_jvm_dispatch_pointer(
       dispatched = true;
     } else if (pointer_type == NUAH_POINTER_BUTTON &&
                jvm->native_pass_mouse_button) {
-      /* Sober passes MotionEvent.actionButton - 1: Android's primary button
-       * is 1, while NativeInputInterface's left-button value is 0. */
-      const jint native_button = button > 0 ? button - 1 : 0;
+      /* Sober passes MotionEvent.actionButton - 1. SDL numbers buttons as
+       * 1=left, 2=middle, 3=right, while Android uses button bit values
+       * 1=primary, 2=secondary, 4=tertiary. Therefore right is native 1
+       * (not SDL 3 - 1 == 2), and middle is native 3. */
+      jint native_button = 0;
+      switch (button) {
+        case 1: native_button = 0; break;  // Android BUTTON_PRIMARY - 1
+        case 3: native_button = 1; break;  // BUTTON_SECONDARY - 1
+        case 2: native_button = 3; break;  // BUTTON_TERTIARY - 1
+        case 4: native_button = 7; break;  // BUTTON_BACK - 1
+        case 5: native_button = 15; break; // BUTTON_FORWARD - 1
+        default: native_button = button > 0 ? button - 1 : 0; break;
+      }
       jvm->env->CallStaticVoidMethod(
           jvm->native_input_interface, jvm->native_pass_mouse_button,
           static_cast<jfloat>(x), static_cast<jfloat>(y),

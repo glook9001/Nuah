@@ -13,6 +13,16 @@ std::atomic<NuahInputSink> sink{nullptr};
 std::atomic<void*> sink_data{nullptr};
 std::atomic<bool> quit_requested{false};
 
+/* Android's captured-pointer path does not report a new absolute pointer
+ * position.  Sober's kl.e adapter keeps the last position and accumulates
+ * MotionEvent AXIS_RELATIVE_X/Y into it before calling Roblox.  Keep the
+ * same small state at the SDL boundary so MouseBehavior/MouseIcon sees the
+ * same coordinates in a captured game window. */
+double pointer_x = 0.0;
+double pointer_y = 0.0;
+bool pointer_position_valid = false;
+bool relative_mouse_mode = false;
+
 bool mouse_capture_enabled() {
   const char* value = std::getenv("NUAH_MOUSE_CAPTURE");
   return !value || std::strcmp(value, "0") != 0;
@@ -27,6 +37,7 @@ void set_relative_mouse_mode(SDL_Window* window, bool enabled) {
                    enabled ? "on" : "off", SDL_GetError());
     return;
   }
+  relative_mouse_mode = enabled;
   const char* trace = std::getenv("NUAH_INPUT_TRACE");
   if (trace && *trace)
     std::fprintf(stderr, "nuah input: relative mouse mode %s\n",
@@ -108,6 +119,70 @@ extern "C" int nuah_android_keycode_from_scancode(int scancode) {
   }
 }
 
+extern "C" int nuah_android_scancode_from_sdl(int scancode) {
+  /* Linux evdev values are the raw scan codes Android puts in KeyEvent.
+   * Keep this table physical/layout-independent; the keyCode mapping above
+   * remains responsible for the logical Android key. */
+  switch (scancode) {
+    case SDL_SCANCODE_ESCAPE: return 1;
+    case SDL_SCANCODE_1: return 2;
+    case SDL_SCANCODE_2: return 3;
+    case SDL_SCANCODE_3: return 4;
+    case SDL_SCANCODE_4: return 5;
+    case SDL_SCANCODE_5: return 6;
+    case SDL_SCANCODE_6: return 7;
+    case SDL_SCANCODE_7: return 8;
+    case SDL_SCANCODE_8: return 9;
+    case SDL_SCANCODE_9: return 10;
+    case SDL_SCANCODE_0: return 11;
+    case SDL_SCANCODE_TAB: return 15;
+    case SDL_SCANCODE_Q: return 16;
+    case SDL_SCANCODE_W: return 17;
+    case SDL_SCANCODE_E: return 18;
+    case SDL_SCANCODE_R: return 19;
+    case SDL_SCANCODE_T: return 20;
+    case SDL_SCANCODE_Y: return 21;
+    case SDL_SCANCODE_U: return 22;
+    case SDL_SCANCODE_I: return 23;
+    case SDL_SCANCODE_O: return 24;
+    case SDL_SCANCODE_P: return 25;
+    case SDL_SCANCODE_A: return 30;
+    case SDL_SCANCODE_S: return 31;
+    case SDL_SCANCODE_D: return 32;
+    case SDL_SCANCODE_F: return 33;
+    case SDL_SCANCODE_G: return 34;
+    case SDL_SCANCODE_H: return 35;
+    case SDL_SCANCODE_J: return 36;
+    case SDL_SCANCODE_K: return 37;
+    case SDL_SCANCODE_L: return 38;
+    case SDL_SCANCODE_Z: return 44;
+    case SDL_SCANCODE_X: return 45;
+    case SDL_SCANCODE_C: return 46;
+    case SDL_SCANCODE_V: return 47;
+    case SDL_SCANCODE_B: return 48;
+    case SDL_SCANCODE_N: return 49;
+    case SDL_SCANCODE_M: return 50;
+    case SDL_SCANCODE_LSHIFT: return 42;
+    case SDL_SCANCODE_RSHIFT: return 54;
+    case SDL_SCANCODE_LCTRL: return 29;
+    case SDL_SCANCODE_RCTRL: return 97;
+    case SDL_SCANCODE_LALT: return 56;
+    case SDL_SCANCODE_RALT: return 100;
+    case SDL_SCANCODE_SPACE: return 57;
+    case SDL_SCANCODE_RETURN:
+    case SDL_SCANCODE_KP_ENTER: return 28;
+    case SDL_SCANCODE_BACKSPACE: return 14;
+    case SDL_SCANCODE_UP: return 103;
+    case SDL_SCANCODE_LEFT: return 105;
+    case SDL_SCANCODE_RIGHT: return 106;
+    case SDL_SCANCODE_DOWN: return 108;
+    default:
+      /* For keys outside the MVP, retaining SDL's value is more useful than
+       * dropping the event; the gameplay keys above always use raw evdev. */
+      return scancode;
+  }
+}
+
 /* SDL and Android intentionally use different bit assignments for modifier
  * state.  Passing SDL_KMOD values through made Shift/Alt appear as unrelated
  * Android flags, so Java/Roblox could reject otherwise valid KeyEvents. */
@@ -172,10 +247,13 @@ extern "C" int nuah_input_pump(void) {
         break;
       case SDL_EVENT_KEY_DOWN:
       case SDL_EVENT_KEY_UP:
+      {
         translated.type = NUAH_INPUT_KEY;
-        translated.physical_scancode = static_cast<int>(event.key.scancode);
-        translated.android_keycode = nuah_android_keycode_from_scancode(
-            translated.physical_scancode);
+        const int sdl_scancode = static_cast<int>(event.key.scancode);
+        translated.physical_scancode =
+            nuah_android_scancode_from_sdl(sdl_scancode);
+        translated.android_keycode =
+            nuah_android_keycode_from_scancode(sdl_scancode);
         if (translated.android_keycode == NUAH_KEY_UNKNOWN) {
           translated.android_keycode =
               nuah_android_keycode_from_ascii(static_cast<int>(event.key.key));
@@ -191,13 +269,31 @@ extern "C" int nuah_input_pump(void) {
         emit(translated);
         ++count;
         break;
+      }
       case SDL_EVENT_MOUSE_MOTION:
         translated.type = NUAH_INPUT_POINTER_MOTION;
         translated.action = 2;
-        translated.x = event.motion.x;
-        translated.y = event.motion.y;
         translated.dx = event.motion.xrel;
         translated.dy = event.motion.yrel;
+        if (relative_mouse_mode) {
+          /* SDL's relative-mode x/y may be the lock-center (often 0,0) on
+           * Wayland.  Sober instead supplies the accumulated virtual
+           * pointer position together with the relative delta. */
+          if (!pointer_position_valid) {
+            pointer_x = event.motion.x;
+            pointer_y = event.motion.y;
+            pointer_position_valid = true;
+          } else {
+            pointer_x += translated.dx;
+            pointer_y += translated.dy;
+          }
+        } else {
+          pointer_x = event.motion.x;
+          pointer_y = event.motion.y;
+          pointer_position_valid = true;
+        }
+        translated.x = pointer_x;
+        translated.y = pointer_y;
         /* Wayland emits an initial cursor-position notification while the
          * SDL surface is being realized. Sober's Android adapter only calls
          * nativePassMouseMove for an actual motion/captured-pointer delta;
@@ -212,14 +308,19 @@ extern "C" int nuah_input_pump(void) {
         translated.type = NUAH_INPUT_POINTER_BUTTON;
         translated.action = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? 1 : 0;
         translated.button = static_cast<int>(event.button.button);
+        pointer_x = event.button.x;
+        pointer_y = event.button.y;
+        pointer_position_valid = true;
         translated.x = event.button.x;
         translated.y = event.button.y;
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-            translated.button == SDL_BUTTON_LEFT && mouse_capture_enabled()) {
+            (translated.button == SDL_BUTTON_LEFT ||
+             translated.button == SDL_BUTTON_RIGHT) &&
+            mouse_capture_enabled()) {
           /* Sober's SurfaceView requests pointer capture when Roblox enters
            * mouse-lock mode. Nuah has no Android View hierarchy, so mirror
-           * that contract at the SDL boundary: a game click captures relative
-           * motion, and Escape releases it. */
+           * that contract at the SDL boundary: a game click or right-button
+           * camera drag captures relative motion, and Escape releases it. */
           set_relative_mouse_mode(SDL_GetWindowFromID(event.button.windowID),
                                   true);
         }
@@ -229,8 +330,13 @@ extern "C" int nuah_input_pump(void) {
       case SDL_EVENT_MOUSE_WHEEL:
         translated.type = NUAH_INPUT_POINTER_WHEEL;
         translated.action = 2;
-        translated.x = event.wheel.mouse_x;
-        translated.y = event.wheel.mouse_y;
+        if (!pointer_position_valid) {
+          pointer_x = event.wheel.mouse_x;
+          pointer_y = event.wheel.mouse_y;
+          pointer_position_valid = true;
+        }
+        translated.x = pointer_x;
+        translated.y = pointer_y;
         translated.dx = event.wheel.x;
         translated.dy = event.wheel.y;
         emit(translated);

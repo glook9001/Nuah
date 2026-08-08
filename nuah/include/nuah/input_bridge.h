@@ -37,6 +37,10 @@ enum NuahAndroidKeyCode {
 int nuah_android_keycode_from_ascii(int ascii);
 /* Translate physical SDL scancodes for layout-independent movement keys. */
 int nuah_android_keycode_from_scancode(int scancode);
+/* Translate SDL's scancode enum to Android KeyEvent.getScanCode() values.
+ * Android reports the raw evdev scan code for a physical keyboard; passing
+ * SDL's enum here makes Roblox's hardware-key path see a different key. */
+int nuah_android_scancode_from_sdl(int scancode);
 
 enum NuahInputEventType {
   NUAH_INPUT_KEY = 1,

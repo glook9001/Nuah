@@ -87,9 +87,16 @@ void fatal_signal_handler(int signal_number, siginfo_t* info,
       NuahBootstrapDiagnostics mapping{};
       const uintptr_t pc = static_cast<uintptr_t>(
           context->uc_mcontext.gregs[REG_RIP]);
+      const auto* instruction = reinterpret_cast<const unsigned char*>(pc);
+      const auto* preceding = instruction - 2;
+      /* The offset moves with every Roblox APK.  The fault itself is stable:
+       * `xor edx, edx; div ecx`, with ecx zero and the pixel extent in r14d.
+       * Match those bytes and the register precondition instead of pinning a
+       * build-specific libroblox offset. */
       if (locate_mapping(pc, &mapping) &&
           std::strstr(mapping.module_path, "/libroblox.so") &&
-          mapping.module_offset == 0x323372a &&
+          preceding[0] == 0x31 && preceding[1] == 0xd2 &&
+          instruction[0] == 0xf7 && instruction[1] == 0xf1 &&
           context->uc_mcontext.gregs[REG_RCX] == 0 &&
           context->uc_mcontext.gregs[REG_R14] != 0) {
         constexpr uint64_t kFallbackDivisor = 512;

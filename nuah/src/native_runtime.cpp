@@ -493,7 +493,7 @@ jobject make_real_init_params(JNIEnv* env, jobject activity) {
       set_float_field(platform, platform_class, "dpiScale", 1.0f) &&
       set_bool_field(platform, platform_class, "isKeyboardDevice", JNI_TRUE) &&
       set_bool_field(platform, platform_class, "isMouseDevice", JNI_TRUE) &&
-      set_bool_field(platform, platform_class, "isTouchDevice", JNI_FALSE) &&
+      set_bool_field(platform, platform_class, "isTouchDevice", JNI_TRUE) &&
       set_int_field(platform, platform_class, "viewportHeightMm", 190) &&
       set_int_field(platform, platform_class, "viewportWidthMm", 340) &&
       set_string_field(device, device_class, "appBuildVariant", "release") &&
@@ -612,11 +612,9 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       env->FindClass("com/roblox/engine/jni/autovalue/StartGameParams$Builder");
   jclass platform_class =
       env->FindClass("com/roblox/engine/jni/model/PlatformParams");
-  jclass game_platform_class = env->FindClass("ml/a");
   jclass device_class =
       env->FindClass("com/roblox/engine/jni/model/DeviceParams");
-  if (!params_class || !builder_class || !platform_class ||
-      !game_platform_class || !device_class) {
+  if (!params_class || !builder_class || !platform_class || !device_class) {
     clear_java_exception(env, "StartGameParams classes");
     return nullptr;
   }
@@ -624,19 +622,16 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       params_class, "builder",
       "()Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;");
   const jmethodID platform_ctor = env->GetMethodID(platform_class, "<init>", "()V");
-  const jmethodID game_platform_ctor = env->GetMethodID(
-      game_platform_class, "<init>",
-      "(Lcom/roblox/engine/jni/model/PlatformParams;)V");
-  if (!builder_method || !platform_ctor || !game_platform_ctor) {
+  if (!builder_method || !platform_ctor) {
     clear_java_exception(env, "StartGameParams constructors");
     return nullptr;
   }
   jobject builder = env->CallStaticObjectMethod(params_class, builder_method);
-  jobject base_platform = env->NewObject(platform_class, platform_ctor);
-  jobject platform = base_platform
-                         ? env->NewObject(game_platform_class,
-                                         game_platform_ctor, base_platform)
-                         : nullptr;
+  /* StartGameParams has always declared PlatformParams at its ABI boundary.
+   * Older APKs added an ml/a subclass with an isTablet field, but current
+   * releases repurpose that obfuscated name.  Passing the base documented
+   * model keeps the bridge compatible with both generations. */
+  jobject platform = env->NewObject(platform_class, platform_ctor);
   if (!builder || !platform || env->ExceptionCheck()) {
     clear_java_exception(env, "StartGameParams allocation");
     return nullptr;
@@ -721,12 +716,29 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
   jstring asset = env->NewStringUTF(content);
   env->SetObjectField(platform, platform_asset, asset);
   env->DeleteLocalRef(asset);
-  const jfieldID tablet = env->GetFieldID(game_platform_class, "isTablet", "Z");
-  if (!tablet) {
-    clear_java_exception(env, "StartGameParams platform tablet flag");
+  const jfieldID dpi = env->GetFieldID(platform_class, "dpiScale", "F");
+  const jfieldID keyboard =
+      env->GetFieldID(platform_class, "isKeyboardDevice", "Z");
+  const jfieldID mouse = env->GetFieldID(platform_class, "isMouseDevice", "Z");
+  const jfieldID touch = env->GetFieldID(platform_class, "isTouchDevice", "Z");
+  const jfieldID viewport_height =
+      env->GetFieldID(platform_class, "viewportHeightMm", "I");
+  const jfieldID viewport_width =
+      env->GetFieldID(platform_class, "viewportWidthMm", "I");
+  if (!dpi || !keyboard || !mouse || !touch || !viewport_height ||
+      !viewport_width) {
+    clear_java_exception(env, "StartGameParams platform capabilities");
     return nullptr;
   }
-  env->SetBooleanField(platform, tablet, JNI_FALSE);
+  /* Keep the same hybrid capability advertisement used by InitParams.  The
+   * input bridge still sends real SDL mouse/keyboard events; isTouchDevice is
+   * only the Android capability bit that makes Roblox expose Movement Mode. */
+  env->SetFloatField(platform, dpi, 1.0f);
+  env->SetBooleanField(platform, keyboard, JNI_TRUE);
+  env->SetBooleanField(platform, mouse, JNI_TRUE);
+  env->SetBooleanField(platform, touch, JNI_TRUE);
+  env->SetIntField(platform, viewport_height, 190);
+  env->SetIntField(platform, viewport_width, 340);
   if (env->ExceptionCheck()) {
     clear_java_exception(env, "StartGameParams platform fields");
     return nullptr;
@@ -862,7 +874,7 @@ jobject make_real_platform_params(JNIEnv* env, const char* content_path) {
       set_float("dpiScale", 1.0f) &&
       set_bool("isKeyboardDevice", JNI_TRUE) &&
       set_bool("isMouseDevice", JNI_TRUE) &&
-      set_bool("isTouchDevice", JNI_FALSE) &&
+      set_bool("isTouchDevice", JNI_TRUE) &&
       set_int("viewportHeightMm", 190) &&
       set_int("viewportWidthMm", 340);
   if (!ok || env->ExceptionCheck()) {

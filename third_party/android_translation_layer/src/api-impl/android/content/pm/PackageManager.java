@@ -2184,6 +2184,13 @@ public class PackageManager {
 	 */
 	public boolean hasSystemFeature(String name) {
 		switch (name) {
+			/* Nuah exposes a hybrid SDL keyboard/mouse surface, but Roblox's
+			 * Android settings use this package capability as the gate for the
+			 * Movement Mode selector.  ATL previously returned false here even
+			 * though Configuration.touchscreen and InputDevice already advertise
+			 * a finger-capable pointer device. */
+			case FEATURE_TOUCHSCREEN:
+			case FEATURE_TOUCHSCREEN_MULTITOUCH:
 			case "android.hardware.touchscreen.multitouch.distinct":
 				return true;
 			case FEATURE_AUTOMOTIVE:
