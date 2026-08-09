@@ -1,8 +1,10 @@
 #include "nuah/input_bridge.h"
 #include "nuah/native_session.h"
+#include "nuah/perf_metrics.h"
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -22,31 +24,257 @@ double pointer_x = 0.0;
 double pointer_y = 0.0;
 bool pointer_position_valid = false;
 bool relative_mouse_mode = false;
+/* SDL/Wayland may enqueue one absolute motion sample when a relative-pointer
+ * constraint is released.  It is a compositor transition, not user input;
+ * forwarding it would overwrite Roblox's captured coordinates (often with
+ * 0,0) immediately after Escape. */
+bool suppress_next_absolute_motion = false;
+bool host_window_focused = false;
+/* Android focus is a state, not an event stream.  Wayland can report a short
+ * compositor focus blip while the surface is resized or Roblox changes its
+ * input mode; forwarding that blip as Activity false/true leaves the native
+ * input queue in the same stuck state that Alt-Tab happens to repair. */
+bool android_focus_sent = false;
+SDL_Cursor* invisible_cursor = nullptr;
+/* SDL may not deliver a button-up after a compositor focus transition.  Keep
+ * the host-side button state so we can synthesize releases instead of leaving
+ * Roblox's NativeInputInterface believing that fire is still held. */
+unsigned int buttons_down = 0;
+bool focus_loss_pending = false;
+SDL_Window* focus_loss_window = nullptr;
+Uint64 focus_loss_deadline_ns = 0;
+
+/* Pointer-constraint handoff can be longer than a normal compositor focus
+ * blip on a busy Wayland session.  Keep the shipping behavior conservative,
+ * but make the grace period tunable for diagnosing Roblox surface stalls. */
+Uint64 focus_loss_grace_ns() {
+  constexpr Uint64 kDefaultGraceNs = 750000000ULL;
+  const char* value = std::getenv("NUAH_FOCUS_LOSS_GRACE_MS");
+  if (!value || !*value) return kDefaultGraceNs;
+  char* end = nullptr;
+  const unsigned long long parsed = std::strtoull(value, &end, 10);
+  if (end == value || *end != '\0' || parsed > 60000ULL) {
+    return kDefaultGraceNs;
+  }
+  return static_cast<Uint64>(parsed) * 1000000ULL;
+}
 
 bool mouse_capture_enabled() {
   const char* value = std::getenv("NUAH_MOUSE_CAPTURE");
+  /* Roblox's desktop adapter uses Android pointer capture whenever its own
+   * mouse-lock callback says the camera is centered.  Keep that contract by
+   * default; NUAH_MOUSE_CAPTURE=0 remains a diagnostic escape hatch for
+   * compositors without relative-pointer support. */
   return !value || std::strcmp(value, "0") != 0;
 }
 
-void set_relative_mouse_mode(SDL_Window* window, bool enabled) {
-  if (!window) return;
-  if (!SDL_SetWindowRelativeMouseMode(window, enabled)) {
-    const char* trace = std::getenv("NUAH_INPUT_TRACE");
-    if (trace && *trace)
+bool input_trace_enabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("NUAH_INPUT_TRACE");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
+}
+
+bool set_relative_mouse_mode(SDL_Window* window, bool enabled);
+void release_pressed_buttons(SDL_Window* window,
+                             unsigned long long timestamp);
+
+SDL_Cursor* get_invisible_cursor() {
+  if (invisible_cursor) return invisible_cursor;
+  /* SDL's monochrome cursor format uses a zero mask for transparent pixels.
+   * Keep this cursor process-local; it is only installed while Roblox owns
+   * the pointer through mouse-lock. */
+  static const Uint8 pixels[8] = {};
+  static const Uint8 mask[8] = {};
+  invisible_cursor = SDL_CreateCursor(pixels, mask, 8, 8, 0, 0);
+  return invisible_cursor;
+}
+
+void set_host_cursor_hidden(bool hidden) {
+  if (hidden) {
+    if (SDL_Cursor* cursor = get_invisible_cursor())
+      (void)SDL_SetCursor(cursor);
+    (void)SDL_HideCursor();
+  } else {
+    (void)SDL_SetCursor(SDL_GetDefaultCursor());
+    (void)SDL_ShowCursor();
+  }
+}
+
+NuahNativeSession* bound_native_session() {
+  return static_cast<NuahNativeSession*>(
+      sink_data.load(std::memory_order_acquire));
+}
+
+/* Match Sober's kl.e adapter: persistent capture follows Roblox's
+ * nativeGetMainWindowIsMouseLockedCenter() result.  The View requests pointer
+ * capture from its generic-motion path; button edges do not change it. */
+bool sync_mouse_lock(SDL_Window* window, NuahNativeSession* session,
+                     bool discard_on_lock) {
+  if (!window || !session) return false;
+  if (!mouse_capture_enabled()) {
+    if (relative_mouse_mode) set_relative_mouse_mode(window, false);
+    return false;
+  }
+  const int locked = nuah_native_session_is_mouse_locked_center(session);
+  if (locked < 0) return false;
+  const bool should_capture = locked != 0;
+  if (should_capture == relative_mouse_mode) return false;
+  /* When Roblox leaves mouse-lock (death, a menu, or a surface rebuild),
+   * release anything held in the old input epoch before removing the SDL
+   * constraint.  Otherwise a lost Android button-up can keep firing disabled
+   * until an external focus cycle.  Do not release on acquisition: a held
+   * left/right button must remain held while the camera enters lock mode. */
+  if (!should_capture && buttons_down)
+    release_pressed_buttons(window, SDL_GetTicksNS());
+  const bool capture_changed = set_relative_mouse_mode(window, should_capture);
+  /* Android's generic-motion path requests capture and drops that one event;
+   * the following captured event is the first one sent to Roblox. */
+  return discard_on_lock && should_capture && capture_changed;
+}
+
+bool set_relative_mouse_mode(SDL_Window* window, bool enabled) {
+  if (!window) return false;
+  if (relative_mouse_mode == enabled &&
+      SDL_GetWindowRelativeMouseMode(window) == enabled)
+    return true;
+  if (enabled) {
+    suppress_next_absolute_motion = false;
+    /* Do not teleport the logical pointer to an artificial centre when
+     * Roblox asks for capture.  Sober keeps the last pointer
+     * position and then accumulates captured relative deltas.  Preserve the
+     * last SDL position when available; only seed it from SDL when this is
+     * the first event in the window. */
+    if (!pointer_position_valid) {
+      float mouse_x = 0.0f;
+      float mouse_y = 0.0f;
+      (void)SDL_GetMouseState(&mouse_x, &mouse_y);
+      pointer_x = mouse_x;
+      pointer_y = mouse_y;
+      pointer_position_valid = true;
+    }
+  }
+  if (!enabled && relative_mouse_mode)
+    suppress_next_absolute_motion = true;
+  const bool relative_ok = SDL_SetWindowRelativeMouseMode(window, enabled);
+  /* SDL may complete a Wayland pointer-constraint transition asynchronously;
+   * use SDL's reported state rather than assuming a failed request changed
+   * nothing.  This prevents the next lock query from dropping every motion
+   * event while the modes disagree. */
+  relative_mouse_mode = SDL_GetWindowRelativeMouseMode(window);
+  if (!relative_ok) {
+    if (input_trace_enabled())
       std::fprintf(stderr, "nuah input: relative mouse mode %s failed: %s\n",
                    enabled ? "on" : "off", SDL_GetError());
-    return;
+    /* Hiding the host cursor is independent of relative-pointer support.
+     * Do not add a mouse grab fallback here: on Wayland it can steal focus and
+     * is the source of intermittent button/capture transitions. */
   }
-  relative_mouse_mode = enabled;
-  const char* trace = std::getenv("NUAH_INPUT_TRACE");
-  if (trace && *trace)
+  if (input_trace_enabled())
     std::fprintf(stderr, "nuah input: relative mouse mode %s\n",
                  enabled ? "on" : "off");
+  return relative_mouse_mode == enabled;
 }
 
 void emit(const NuahInputEvent& event) {
   const auto callback = sink.load(std::memory_order_acquire);
   if (callback) callback(&event, sink_data.load(std::memory_order_acquire));
+}
+
+unsigned int button_bit(int button) {
+  return button >= 1 && button <= 31 ? (1u << (button - 1)) : 0u;
+}
+
+/* Relative camera coordinates may legitimately accumulate past the view
+ * edges.  Roblox still expects discrete button/wheel coordinates inside the
+ * Android surface, however.  Normalize only those discrete events; leave
+ * pointer_x/pointer_y untouched so relative camera motion remains continuous. */
+void surface_pointer_position(SDL_Window* window, double* x, double* y) {
+  if (!x || !y) return;
+  int width = 0;
+  int height = 0;
+  if (!window || SDL_GetWindowSize(window, &width, &height) <= 0 ||
+      width <= 0 || height <= 0)
+    return;
+  *x = std::clamp(*x, 0.0, static_cast<double>(width - 1));
+  *y = std::clamp(*y, 0.0, static_cast<double>(height - 1));
+}
+
+void release_pressed_buttons(SDL_Window* window, unsigned long long timestamp) {
+  double event_x = pointer_x;
+  double event_y = pointer_y;
+  surface_pointer_position(window, &event_x, &event_y);
+  for (int button = 1; button <= 5; ++button) {
+    const unsigned int bit = button_bit(button);
+    if (!(buttons_down & bit)) continue;
+    NuahInputEvent release{};
+    release.type = NUAH_INPUT_POINTER_BUTTON;
+    release.action = 0;
+    release.button = button;
+    release.timestamp_ns = timestamp;
+    release.x = event_x;
+    release.y = event_y;
+    emit(release);
+    buttons_down &= ~bit;
+  }
+  /* A focus loss also ends Android pointer capture.  Roblox's next locked
+   * motion will request it again through the normal generic-motion path. */
+  (void)set_relative_mouse_mode(window, false);
+}
+
+/* A Wayland pointer-constraint transition can briefly lose the SDL focus
+ * event that normally brackets a button release.  Once the compositor has
+ * settled, reconcile SDL's physical button mask with the events already sent
+ * to Roblox.  This is intentionally limited to the five standard buttons;
+ * wheel and motion continue through their normal SDL events. */
+void reconcile_mouse_buttons(SDL_Window* window, unsigned long long timestamp) {
+  if (!window || !(SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS)) return;
+  float host_x = 0.0f;
+  float host_y = 0.0f;
+  const SDL_MouseButtonFlags host_buttons =
+      SDL_GetMouseState(&host_x, &host_y);
+  if (!relative_mouse_mode && !pointer_position_valid) {
+    pointer_x = host_x;
+    pointer_y = host_y;
+    pointer_position_valid = true;
+  }
+  for (int button = 1; button <= 5; ++button) {
+    const unsigned int bit = button_bit(button);
+    const bool host_down = (host_buttons & SDL_BUTTON_MASK(button)) != 0;
+    const bool sent_down = (buttons_down & bit) != 0;
+    if (host_down == sent_down) continue;
+    NuahInputEvent event{};
+    event.type = NUAH_INPUT_POINTER_BUTTON;
+    event.action = host_down ? 1 : 0;
+    event.button = button;
+    event.timestamp_ns = timestamp;
+    event.x = pointer_x;
+    event.y = pointer_y;
+    emit(event);
+    if (host_down)
+      buttons_down |= bit;
+    else
+      buttons_down &= ~bit;
+  }
+}
+
+void service_focus_loss() {
+  if (!focus_loss_pending || !focus_loss_window) return;
+  if (SDL_GetWindowFlags(focus_loss_window) & SDL_WINDOW_INPUT_FOCUS) {
+    focus_loss_pending = false;
+    focus_loss_window = nullptr;
+    return;
+  }
+  if (SDL_GetTicksNS() < focus_loss_deadline_ns) return;
+  release_pressed_buttons(focus_loss_window, SDL_GetTicksNS());
+  if (android_focus_sent) {
+    if (NuahNativeSession* session = bound_native_session())
+      (void)nuah_native_session_dispatch_window_focus(session, 0);
+    android_focus_sent = false;
+  }
+  focus_loss_pending = false;
+  focus_loss_window = nullptr;
 }
 }
 
@@ -232,9 +460,20 @@ void native_session_sink(const NuahInputEvent* event, void* user_data) {
 
 extern "C" void nuah_input_bind_native_session(NuahNativeSession* session) {
   nuah_input_set_sink(native_session_sink, session);
+  /* native_runtime has already delivered the initial Android focus callback
+   * before binding the SDL pump.  Seed the debounce state from SDL so the
+   * first queued focus event does not replay a duplicate true/false pair. */
+  host_window_focused = SDL_GetKeyboardFocus() != nullptr;
+  android_focus_sent = host_window_focused;
+}
+
+extern "C" void nuah_input_set_host_cursor_hidden(int hidden) {
+  set_host_cursor_hidden(hidden != 0);
 }
 
 extern "C" int nuah_input_pump(void) {
+  const Uint64 pump_start = nuah_perf_trace_enabled() ? SDL_GetTicksNS() : 0;
+  service_focus_loss();
   SDL_Event event{};
   int count = 0;
   while (SDL_PollEvent(&event)) {
@@ -243,8 +482,49 @@ extern "C" int nuah_input_pump(void) {
     switch (event.type) {
       case SDL_EVENT_QUIT:
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        release_pressed_buttons(
+            SDL_GetWindowFromID(event.window.windowID), event.common.timestamp);
         quit_requested.store(true, std::memory_order_release);
         break;
+      case SDL_EVENT_WINDOW_FOCUS_LOST: {
+        host_window_focused = false;
+        set_host_cursor_hidden(false);
+        /* Do not notify Roblox yet.  If the compositor gives the window back
+         * before the grace period expires, this was only a transient pointer
+         * or resize transition and Android would not have delivered a real
+         * Activity focus loss either. */
+        focus_loss_pending = true;
+        focus_loss_window = SDL_GetWindowFromID(event.window.windowID);
+        /* Pointer constraints can produce a transient SDL focus pair while
+         * Wayland hands the relative stream to the surface.  Keep the
+         * existing relative request alive during that pair; tearing it down
+         * here is what lets the pointer escape and also makes Roblox receive
+         * an artificial focus loss in the middle of a shot.  A real loss is
+         * handled after the grace period below. */
+        focus_loss_deadline_ns = SDL_GetTicksNS() + focus_loss_grace_ns();
+        if (input_trace_enabled()) {
+          std::fprintf(stderr,
+                       "nuah input: focus loss pending, grace=%llums\n",
+                       static_cast<unsigned long long>(
+                           focus_loss_grace_ns() / 1000000ULL));
+        }
+        break;
+      }
+      case SDL_EVENT_WINDOW_FOCUS_GAINED: {
+        host_window_focused = true;
+        /* Roblox's Android surface owns the visible cursor; the desktop
+         * cursor must not be composited on top of it. */
+        set_host_cursor_hidden(true);
+        focus_loss_pending = false;
+        focus_loss_window = nullptr;
+        if (!android_focus_sent)
+          if (NuahNativeSession* session = bound_native_session())
+            if (nuah_native_session_dispatch_window_focus(session, 1) != 0)
+              android_focus_sent = true;
+        (void)sync_mouse_lock(SDL_GetWindowFromID(event.window.windowID),
+                              bound_native_session(), false);
+        break;
+      }
       case SDL_EVENT_KEY_DOWN:
       case SDL_EVENT_KEY_UP:
       {
@@ -261,32 +541,45 @@ extern "C" int nuah_input_pump(void) {
         translated.action = event.type == SDL_EVENT_KEY_DOWN ? 1 : 0;
         translated.repeat = event.key.repeat ? 1 : 0;
         translated.modifiers = android_meta_state_from_sdl(event.key.mod);
-        if (event.type == SDL_EVENT_KEY_DOWN &&
-            translated.android_keycode == NUAH_KEY_ESCAPE) {
-          set_relative_mouse_mode(SDL_GetWindowFromID(event.key.windowID),
-                                  false);
-        }
         emit(translated);
+        /* Escape changes Roblox's MouseBehavior from the key callback.  Sober
+         * re-evaluates that state on the same input turn before the following
+         * menu click; do the query here instead of waiting for another motion
+         * event (which may not exist when the user clicks immediately). */
+        if (translated.android_keycode == NUAH_KEY_ESCAPE &&
+            event.type == SDL_EVENT_KEY_DOWN && relative_mouse_mode) {
+          (void)sync_mouse_lock(SDL_GetKeyboardFocus(),
+                                bound_native_session(), false);
+        }
+        /* Roblox's NativeInputInterface lock state is the authority for
+         * whether the camera/menu owns pointer capture. The next motion/wheel
+         * query applies that state; changing SDL in a key event can move the
+         * Wayland pointer out of this surface. */
         ++count;
         break;
       }
       case SDL_EVENT_MOUSE_MOTION:
+        if (sync_mouse_lock(SDL_GetWindowFromID(event.motion.windowID),
+                            bound_native_session(), true))
+          break;
         translated.type = NUAH_INPUT_POINTER_MOTION;
         translated.action = 2;
         translated.dx = event.motion.xrel;
         translated.dy = event.motion.yrel;
+        if (!relative_mouse_mode && suppress_next_absolute_motion) {
+          suppress_next_absolute_motion = false;
+          /* Keep the last virtual position. Do not turn the compositor's
+           * release notification into a Roblox mouse move. */
+          break;
+        }
         if (relative_mouse_mode) {
-          /* SDL's relative-mode x/y may be the lock-center (often 0,0) on
-           * Wayland.  Sober instead supplies the accumulated virtual
-           * pointer position together with the relative delta. */
-          if (!pointer_position_valid) {
-            pointer_x = event.motion.x;
-            pointer_y = event.motion.y;
-            pointer_position_valid = true;
-          } else {
-            pointer_x += translated.dx;
-            pointer_y += translated.dy;
-          }
+          /* SDL relative mode continues producing xrel/yrel at the window
+           * edge.  Mirror Sober's captured-pointer path: keep a virtual
+           * position and accumulate the relative axes instead of snapping
+           * the coordinates back to the window centre on every event. */
+          pointer_x += translated.dx;
+          pointer_y += translated.dy;
+          pointer_position_valid = true;
         } else {
           pointer_x = event.motion.x;
           pointer_y = event.motion.y;
@@ -305,29 +598,65 @@ extern "C" int nuah_input_pump(void) {
         break;
       case SDL_EVENT_MOUSE_BUTTON_DOWN:
       case SDL_EVENT_MOUSE_BUTTON_UP:
+      {
+        /* Match Android's generic-motion listener for button transitions, but
+         * never discard a button event when a pointer constraint is being
+         * acquired. */
+        SDL_Window* event_window =
+            SDL_GetWindowFromID(event.button.windowID);
+        const bool button_down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        const int event_button = static_cast<int>(event.button.button);
+        const bool was_relative = relative_mouse_mode;
+        /* If a menu just opened, no motion event is guaranteed to arrive
+         * between Escape and this click.  Reconcile an already-active lock
+         * before translating the edge, but never acquire capture from a click
+         * when SDL is currently absolute. */
+        if (relative_mouse_mode)
+          (void)sync_mouse_lock(event_window, bound_native_session(), false);
         translated.type = NUAH_INPUT_POINTER_BUTTON;
-        translated.action = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? 1 : 0;
-        translated.button = static_cast<int>(event.button.button);
-        pointer_x = event.button.x;
-        pointer_y = event.button.y;
-        pointer_position_valid = true;
-        translated.x = event.button.x;
-        translated.y = event.button.y;
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-            (translated.button == SDL_BUTTON_LEFT ||
-             translated.button == SDL_BUTTON_RIGHT) &&
-            mouse_capture_enabled()) {
-          /* Sober's SurfaceView requests pointer capture when Roblox enters
-           * mouse-lock mode. Nuah has no Android View hierarchy, so mirror
-           * that contract at the SDL boundary: a game click or right-button
-           * camera drag captures relative motion, and Escape releases it. */
-          set_relative_mouse_mode(SDL_GetWindowFromID(event.button.windowID),
-                                  true);
+        translated.action = button_down ? 1 : 0;
+        translated.button = event_button;
+        /* Sober's Android adapter never takes the button event coordinates
+         * as a new pointer position: y(MotionEvent) uses the last position
+         * maintained by move/hover (f19785m/f19786n) for both press and
+         * release.  Wayland may report a compositor-transition button at
+         * (0,0); accepting that sample here makes an ordinary click appear
+         * to teleport the Roblox pointer.  Seed only the very first event,
+         * then leave pointer_x/pointer_y owned by motion. */
+        if (!pointer_position_valid || (was_relative && !relative_mouse_mode)) {
+          pointer_x = event.button.x;
+          pointer_y = event.button.y;
+          pointer_position_valid = true;
         }
+        double event_x = pointer_x;
+        double event_y = pointer_y;
+        /* Match Sober's last-position semantics, but keep discrete edges
+         * inside the Android surface.  Relative camera motion is allowed to
+         * accumulate outside the view; a menu/fire hit-test is not.  Never
+         * enter SDL relative mode from a click: Wayland may warp the host
+         * pointer during that transition and the click then appears at 0,0. */
+        surface_pointer_position(event_window, &event_x, &event_y);
+        translated.x = event_x;
+        translated.y = event_y;
+        const unsigned int bit = button_bit(translated.button);
+        if (button_down)
+          buttons_down |= bit;
+        else
+          buttons_down &= ~bit;
+        /* Deliver the click exactly as Sober does.  Capture is synchronized
+         * from Roblox's lock-state callback on motion/focus events; changing
+         * SDL's mode here can swallow the click or leave aim/fire stuck. */
         emit(translated);
         ++count;
         break;
-      case SDL_EVENT_MOUSE_WHEEL:
+      }
+      case SDL_EVENT_MOUSE_WHEEL: {
+        /* Match Android's generic-motion ordering: the first event that
+         * requests pointer capture is dropped by the View; the next wheel is
+         * delivered after the constraint is active. */
+        if (sync_mouse_lock(SDL_GetWindowFromID(event.wheel.windowID),
+                            bound_native_session(), true))
+          break;
         translated.type = NUAH_INPUT_POINTER_WHEEL;
         translated.action = 2;
         if (!pointer_position_valid) {
@@ -335,17 +664,41 @@ extern "C" int nuah_input_pump(void) {
           pointer_y = event.wheel.mouse_y;
           pointer_position_valid = true;
         }
-        translated.x = pointer_x;
-        translated.y = pointer_y;
+        double event_x = pointer_x;
+        double event_y = pointer_y;
+        SDL_Window* event_window =
+            SDL_GetWindowFromID(event.wheel.windowID);
+        surface_pointer_position(event_window, &event_x, &event_y);
+        translated.x = event_x;
+        translated.y = event_y;
         translated.dx = event.wheel.x;
         translated.dy = event.wheel.y;
         emit(translated);
         ++count;
         break;
+      }
       default:
         break;
     }
   }
+  service_focus_loss();
+  if (SDL_Window* focus = SDL_GetMouseFocus(); focus) {
+    set_host_cursor_hidden(true);
+  }
+  /* SDL_GetMouseState is not authoritative while a Wayland relative-pointer
+   * constraint is active: some compositors report a cleared button mask even
+   * though the physical button remains down.  Polling it here would inject a
+   * synthetic release after a valid press and make FPS shooting stop.  Focus
+   * transitions already release held buttons; keep reconciliation opt-in for
+   * compositor diagnostics only. */
+  if (!focus_loss_pending) {
+    const char* reconcile = std::getenv("NUAH_RECONCILE_BUTTONS");
+    if (reconcile && *reconcile && std::strcmp(reconcile, "0") != 0)
+      reconcile_mouse_buttons(SDL_GetMouseFocus(), SDL_GetTicksNS());
+  }
+  if (pump_start != 0)
+    nuah_perf_record_input(SDL_GetTicksNS() - pump_start,
+                           static_cast<unsigned int>(count));
   return count;
 }
 

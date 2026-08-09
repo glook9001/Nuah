@@ -69,6 +69,9 @@ typedef struct NuahNativeSession NuahNativeSession;
 
 void nuah_input_set_sink(NuahInputSink sink, void* user_data);
 void nuah_input_bind_native_session(NuahNativeSession* session);
+/* The Roblox surface draws its own pointer.  Hide/show the host compositor
+ * cursor independently of relative-pointer capture. */
+void nuah_input_set_host_cursor_hidden(int hidden);
 int nuah_input_quit_requested(void);
 void nuah_input_reset_quit(void);
 int nuah_input_pump(void);

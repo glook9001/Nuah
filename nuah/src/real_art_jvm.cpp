@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dlfcn.h>
 #include <filesystem>
 #include <string>
@@ -33,6 +34,7 @@ struct NuahJvm {
   jmethodID native_pass_mouse_move = nullptr;
   jmethodID native_pass_mouse_button = nullptr;
   jmethodID native_pass_mouse_wheel = nullptr;
+  jmethodID native_get_mouse_locked_center = nullptr;
   bool native_input_lookup_attempted = false;
   jclass native_gl_interface = nullptr;
   jmethodID native_pass_key_event = nullptr;
@@ -92,7 +94,7 @@ using GtkInitCheck = int (*)();
 bool trace_enabled();
 
 bool is_gameplay_key(int keycode) {
-  /* Roblox's desktop movement/camera layer consumes these through
+  /* Roblox's desktop input layer consumes these through
    * NativeGLInterface.nativePassKeyEvent.  MainGameActivity.onKeyDown can
    * report handled without forwarding them when the Android View hierarchy
    * is only a façade, so do not use that return value as proof that Roblox
@@ -104,7 +106,7 @@ bool is_gameplay_key(int keycode) {
          keycode == NUAH_KEY_ENTER || keycode == NUAH_KEY_SHIFT_LEFT ||
          keycode == NUAH_KEY_SHIFT_RIGHT || keycode == NUAH_KEY_CTRL_LEFT ||
          keycode == NUAH_KEY_CTRL_RIGHT || keycode == NUAH_KEY_ALT_LEFT ||
-         keycode == NUAH_KEY_ALT_RIGHT;
+         keycode == NUAH_KEY_ALT_RIGHT || keycode == NUAH_KEY_ESCAPE;
 }
 
 void* api_symbol(const NuahJvm* jvm, const char* symbol) {
@@ -145,12 +147,12 @@ void initialize_atl_host_state(NuahJvm* jvm) {
 
 bool trace_enabled() {
   const char* value = std::getenv("NUAH_BOOTSTRAP_TRACE");
-  return value && *value;
+  return value && *value && std::strcmp(value, "0") != 0;
 }
 
 bool input_trace_enabled() {
   const char* value = std::getenv("NUAH_INPUT_TRACE");
-  return value && *value;
+  return value && *value && std::strcmp(value, "0") != 0;
 }
 
 void clear_exception(JNIEnv* env, const char* boundary) {
@@ -248,13 +250,17 @@ bool ensure_native_input_methods(NuahJvm* jvm) {
   jvm->native_pass_mouse_wheel = find_static_method(
       jvm->env, jvm->native_input_interface, "nativePassMouseWheel",
       "(FFF)V");
+  jvm->native_get_mouse_locked_center = find_static_method(
+      jvm->env, jvm->native_input_interface,
+      "nativeGetMainWindowIsMouseLockedCenter", "()Z");
   if (input_trace_enabled()) {
     std::fprintf(stderr,
                  "nuah input: NativeInputInterface move=%p button=%p "
-                 "wheel=%p\n",
+                 "wheel=%p locked=%p\n",
                  reinterpret_cast<void*>(jvm->native_pass_mouse_move),
                  reinterpret_cast<void*>(jvm->native_pass_mouse_button),
-                 reinterpret_cast<void*>(jvm->native_pass_mouse_wheel));
+                 reinterpret_cast<void*>(jvm->native_pass_mouse_wheel),
+                 reinterpret_cast<void*>(jvm->native_get_mouse_locked_center));
   }
   return jvm->native_pass_mouse_move || jvm->native_pass_mouse_button ||
          jvm->native_pass_mouse_wheel;
@@ -1838,6 +1844,19 @@ extern "C" int nuah_jvm_dispatch_pointer(
    * untouched.  Call the APK's own NativeInputInterface methods first and
    * retain the MotionEvent route only as a compatibility fallback. */
   if (ensure_native_input_methods(jvm)) {
+    /* Sober asks Roblox for its mouse-lock state before handling every
+     * generic mouse event.  Besides deciding whether Android requests pointer
+     * capture, this enters the current native input context after a Roblox
+     * data-model/surface reset.  Keep the query even when Nuah deliberately
+     * leaves SDL in absolute mode; otherwise a post-respawn click can reach a
+     * stale input context until an external focus cycle (Alt-Tab) refreshes it.
+     */
+    if (jvm->native_get_mouse_locked_center) {
+      (void)jvm->env->CallStaticBooleanMethod(
+          jvm->native_input_interface, jvm->native_get_mouse_locked_center);
+      if (jvm->env->ExceptionCheck())
+        clear_exception(jvm->env, "NativeInputInterface mouse-lock heartbeat");
+    }
     bool dispatched = false;
     if (pointer_type == NUAH_POINTER_MOTION &&
         jvm->native_pass_mouse_move) {
@@ -1920,6 +1939,19 @@ extern "C" int nuah_jvm_dispatch_pointer(
     return 0;
   }
   return result == JNI_TRUE;
+}
+
+extern "C" int nuah_jvm_is_mouse_locked_center(NuahJvm* jvm) {
+  if (!jvm || !ensure_native_input_methods(jvm) ||
+      !jvm->native_get_mouse_locked_center)
+    return -1;
+  const jboolean locked = jvm->env->CallStaticBooleanMethod(
+      jvm->native_input_interface, jvm->native_get_mouse_locked_center);
+  if (jvm->env->ExceptionCheck()) {
+    clear_exception(jvm->env, "NativeInputInterface mouse-lock query");
+    return -1;
+  }
+  return locked == JNI_TRUE ? 1 : 0;
 }
 
 extern "C" int nuah_jvm_dispatch_motion(

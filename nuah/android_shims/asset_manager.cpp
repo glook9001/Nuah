@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <sys/types.h>
@@ -18,6 +19,13 @@
 namespace {
 struct NuahAssetManager {
   std::vector<std::string> apks;
+  std::mutex mutex;
+  /* A missing packaged asset is stable for the lifetime of an APK.  Remember
+   * it so Roblox's repeated optional-probe pattern does not reopen and scan
+   * every ZIP on each frame/bootstrap retry.  This is deliberately only a
+   * negative cache: successful assets retain their existing ownership and
+   * memory behavior, while remote asset delivery remains Roblox-owned. */
+  std::unordered_set<std::string> missing;
 };
 
 struct NuahAsset {
@@ -122,6 +130,13 @@ void* AAssetManager_open(void* opaque_manager, const char* filename, int) {
     return nullptr;
   }
   auto* asset_manager = static_cast<NuahAssetManager*>(opaque_manager);
+  {
+    std::scoped_lock lock(asset_manager->mutex);
+    if (asset_manager->missing.contains(filename)) {
+      errno = ENOENT;
+      return nullptr;
+    }
+  }
   const std::string member = std::string("assets/") + filename;
   for (const auto& apk : asset_manager->apks) {
     if (auto asset = read_member(apk, member)) {
@@ -134,6 +149,10 @@ void* AAssetManager_open(void* opaque_manager, const char* filename, int) {
   }
   if (trace_enabled()) {
     std::fprintf(stderr, "nuah assets: missing %s\n", filename);
+  }
+  {
+    std::scoped_lock lock(asset_manager->mutex);
+    asset_manager->missing.emplace(filename);
   }
   errno = ENOENT;
   return nullptr;

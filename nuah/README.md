@@ -43,8 +43,9 @@ export HYBRIS_LINKER_DIR=/tmp/nuah-hybris-local/lib/libhybris/linker
 export LD_LIBRARY_PATH=/usr/local/lib64/art:/tmp/nuah-hybris-local/lib
 export LD_PRELOAD=/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:/usr/local/lib64/art/libandroidfw.so
 export NUAH_BOOTSTRAP_TRACE=1
-export NUAH_INPUT_TRACE=1
 export NUAH_RECOVER_RENDER_FPE=1
+# Sober-style relative pointer lock is the default. Set this to 0 only as a
+# diagnostic fallback on a compositor without Wayland relative-pointer support.
 export NUAH_MOUSE_CAPTURE=1
 
 ./build/nuah native-run \
@@ -72,6 +73,39 @@ used as an ART substitute.
 The current native path exercises loading, relocation, JNI registration,
 Android lifecycle/surface setup, rendering, authenticated place joining, and
 the Sober-style keyboard/mouse callbacks through the libhybris Android linker.
+
+When no client-settings response is supplied, the native launcher now selects
+Vulkan by default. Set `NUAH_GRAPHICS_BACKEND=opengl` (or `gles`) for the
+explicit OpenGL fallback; an explicit `NUAH_CLIENT_SETTINGS_JSON` or
+`NUAH_CLIENT_SETTINGS_PATH` always takes precedence.
+
+## Vulkan performance checks
+
+Vulkan is the normal renderer.  The bridge leaves the driver's present-mode
+choice untouched by default.  For an A/B run, set one of these before starting
+`native-run`:
+
+```sh
+NUAH_VULKAN_PRESENT_MODE=fifo      # compositor-paced, usually smoothest
+NUAH_VULKAN_PRESENT_MODE=immediate # lowest queue latency, may tear
+NUAH_VULKAN_PRESENT_MODE=mailbox   # low latency when the driver advertises it
+```
+
+The requested mode is only moved to the front when the host driver advertises
+it; Nuah never reports an invented mode.  `NUAH_PERF_TRACE=1` enables one-line
+per-second summaries for Vulkan presents, SDL input-pump time, and JNI key or
+pointer dispatch latency.  It is disabled by default and does not add a
+logging or locking path to normal gameplay.  For system-level attribution,
+attach `perf` to the native child after the room is visible:
+
+```sh
+perf stat -p "$(pgrep -n -f './build/nuah native-run')" \
+  -e cycles,instructions,context-switches,cache-misses -I 1000
+```
+
+Compare the same room and camera movement for each mode.  A high Roblox
+userspace sample share with a stable present interval points at game workload;
+large present intervals or bridge latency point at the WSI/input boundary.
 
 ## Documentation-driven Android façade
 

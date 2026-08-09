@@ -83,6 +83,10 @@ enum NuahPointerEventType {
 int nuah_jvm_dispatch_pointer(NuahJvm* jvm, int pointer_type, int action,
                               int button, double x, double y, double dx,
                               double dy, unsigned long long event_time_ms);
+/* Query Roblox's own mouse-lock state.  Sober uses this native callback to
+ * decide when SurfaceView should request/release pointer capture; Nuah uses
+ * the same state to synchronize SDL relative-mouse mode. */
+int nuah_jvm_is_mouse_locked_center(NuahJvm* jvm);
 
 #ifdef __cplusplus
 }

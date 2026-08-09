@@ -194,6 +194,7 @@ add_library(nuah_core
   nuah/src/jni_contract.cpp
   nuah/src/jni_manifest.cpp
   nuah/src/input_bridge.cpp
+  nuah/src/perf_metrics.cpp
   nuah/src/native_session.cpp
   nuah/src/window_session.cpp
   nuah/src/real_art_jvm.cpp

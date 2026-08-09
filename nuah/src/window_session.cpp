@@ -45,6 +45,14 @@ extern "C" NuahWindowSession* nuah_window_session_create(
   // A native launch can originate from a terminal or a WebKit child.  Ask
   // SDL/Wayland to activate the newly-created game surface instead of leaving
   // the previous error page in front of it.
+  /* Keep the game as a plain xdg_toplevel.  Libdecor can create a second
+   * decoration object before the first Vulkan commit; on some KDE sessions
+   * that leaves the SDL surface mapped only as an input/thumbnail surface.
+   * Roblox supplies its own Android-style surface, so server-side Wayland
+   * decorations are the least surprising host boundary. */
+  SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland");
+  SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, "0");
+  SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_PREFER_LIBDECOR, "0");
   SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "1");
   SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "1");
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) return nullptr;
@@ -62,11 +70,33 @@ extern "C" NuahWindowSession* nuah_window_session_create(
     SDL_Quit();
     return nullptr;
   }
+  if (trace) {
+    const auto properties = SDL_GetWindowProperties(session->host);
+    const auto* video_driver = SDL_GetCurrentVideoDriver();
+    const auto* wayland_surface = SDL_GetPointerProperty(
+        properties, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
+    const auto* wayland_toplevel = SDL_GetPointerProperty(
+        properties, SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_POINTER, nullptr);
+    std::fprintf(stderr,
+                 "nuah window: video=%s flags=0x%llx size=%dx%d wayland_surface=%p wayland_toplevel=%p\n",
+                 video_driver ? video_driver : "unknown",
+                 static_cast<unsigned long long>(SDL_GetWindowFlags(session->host)),
+                 width, height, wayland_surface, wayland_toplevel);
+  }
   // Wayland compositors may leave a newly-created SDL surface behind the
   // browser that launched it.  Explicitly map and raise the game window so
   // the first frame and keyboard focus are delivered to Roblox.
   SDL_ShowWindow(session->host);
   SDL_RaiseWindow(session->host);
+  /* Flush the initial xdg_toplevel commit before ART/Roblox starts its
+   * synchronous surface bootstrap.  Without this, the compositor can defer
+   * mapping until after the first frame while the native launch thread is
+   * still blocked in JNI, which looks like a ghost window to the user. */
+  SDL_PumpEvents();
+  /* The Android/Roblox surface supplies its own cursor.  Hide the Wayland/KDE
+   * host cursor as soon as the game window is mapped; input capture remains a
+   * separate state controlled by Roblox's mouse-lock callback. */
+  nuah_input_set_host_cursor_hidden(1);
   if (const char* always_on_top = std::getenv("NUAH_WINDOW_ALWAYS_ON_TOP");
       always_on_top && *always_on_top && std::strcmp(always_on_top, "0") != 0) {
     (void)SDL_SetWindowAlwaysOnTop(session->host, true);
@@ -92,6 +122,7 @@ extern "C" NuahWindowSession* nuah_window_session_create(
 
 extern "C" void nuah_window_session_destroy(NuahWindowSession* session) {
   if (!session) return;
+  nuah_input_set_host_cursor_hidden(0);
   nuah_native_window_set_default(nullptr);
   nuah_native_window_unregister_surface(session);
   SDL_DestroyWindow(session->host);

@@ -53,11 +53,10 @@ NuahNativeWindow* resolve_window_locked(NuahNativeWindow* value) {
   return found == egl_registry.end() ? value : found->second;
 }
 
-void destroy_egl_window(NuahNativeWindow* window) {
-  if (!window || !window->egl_window) return;
+void destroy_egl_window_handle(void* egl_window) {
+  if (!egl_window) return;
   auto& api = wayland_egl_api();
-  if (api.destroy) api.destroy(window->egl_window);
-  window->egl_window = nullptr;
+  if (api.destroy) api.destroy(egl_window);
 }
 }  // namespace
 
@@ -75,7 +74,6 @@ extern "C" NuahNativeWindow* nuah_native_window_register_surface(
 
   std::scoped_lock lock(registry_mutex);
   if (registry.contains(surface)) {
-    destroy_egl_window(window);
     delete window;
     return nullptr;
   }
@@ -145,12 +143,24 @@ extern "C" void nuah_native_window_acquire(NuahNativeWindow* window) {
 }
 
 extern "C" void nuah_native_window_release(NuahNativeWindow* window) {
-  std::scoped_lock lock(registry_mutex);
-  window = resolve_window_locked(window);
-  if (window &&
-      window->references.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-    if (window->egl_window) egl_registry.erase(window->egl_window);
-    destroy_egl_window(window);
+  void* egl_window = nullptr;
+  bool delete_window = false;
+  {
+    std::scoped_lock lock(registry_mutex);
+    window = resolve_window_locked(window);
+    if (window &&
+        window->references.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      egl_window = window->egl_window;
+      if (egl_window) egl_registry.erase(egl_window);
+      window->egl_window = nullptr;
+      delete_window = true;
+    }
+  }
+  /* Wayland is an external client library.  Never call it while holding the
+   * registry mutex: a compositor/client callback can re-enter ANativeWindow
+   * bookkeeping and otherwise form a registry -> Wayland -> registry cycle. */
+  if (delete_window) {
+    destroy_egl_window_handle(egl_window);
     delete window;
   }
 }
@@ -195,12 +205,23 @@ extern "C" void nuah_native_window_update_geometry(
     NuahNativeWindow* window,
     int width,
     int height) {
-  std::scoped_lock lock(registry_mutex);
-  window = resolve_window_locked(window);
-  if (!window || width <= 0 || height <= 0) return;
-  window->width.store(width, std::memory_order_relaxed);
-  window->height.store(height, std::memory_order_relaxed);
-  if (window->egl_window) {
+  if (width <= 0 || height <= 0) return;
+  void* egl_window = nullptr;
+  NuahNativeWindow* retained = nullptr;
+  {
+    std::scoped_lock lock(registry_mutex);
+    window = resolve_window_locked(window);
+    if (!window) return;
+    window->width.store(width, std::memory_order_relaxed);
+    window->height.store(height, std::memory_order_relaxed);
+    if (window->egl_window) {
+      /* Keep the façade alive while the external Wayland call runs. */
+      window->references.fetch_add(1, std::memory_order_relaxed);
+      retained = window;
+      egl_window = window->egl_window;
+    }
+  }
+  if (egl_window) {
     using Resize = void (*)(void*, int, int, int, int);
     static Resize resize = [] {
       auto& wayland = wayland_egl_api();
@@ -209,6 +230,9 @@ extern "C" void nuah_native_window_update_geometry(
                        ::dlsym(wayland.library, "wl_egl_window_resize"))
                  : nullptr;
     }();
-    if (resize) resize(window->egl_window, width, height, 0, 0);
+    if (resize) resize(egl_window, width, height, 0, 0);
+  }
+  if (retained) {
+    nuah_native_window_release(retained);
   }
 }

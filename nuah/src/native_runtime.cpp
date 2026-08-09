@@ -70,6 +70,51 @@ void clear_java_exception(JNIEnv* env, const char* boundary) {
   env->ExceptionClear();
 }
 
+/* An Android install may leave an empty Sober-compatible assets/content
+ * directory behind while ATL has already unpacked the real APK assets under
+ * the app-private files directory.  Existence alone is therefore not a
+ * usable asset-root test.  Check for one regular file without walking the
+ * whole tree; this keeps startup cheap while rejecting empty placeholders. */
+bool asset_tree_has_files(const std::filesystem::path& root) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(root, error) || error) return false;
+  std::filesystem::recursive_directory_iterator entries(
+      root, std::filesystem::directory_options::skip_permission_denied, error);
+  const std::filesystem::recursive_directory_iterator end;
+  while (entries != end) {
+    if (!error && std::filesystem::is_regular_file(entries->path(), error))
+      return true;
+    error.clear();
+    entries.increment(error);
+  }
+  return false;
+}
+
+void configure_mesa_shader_cache(const std::filesystem::path& profile) {
+  const char* mode = ::getenv("NUAH_SHADER_CACHE");
+  if (mode && std::strcmp(mode, "0") == 0) return;
+
+  const auto directory = profile / "mesa-shader-cache";
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error) {
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+        trace && *trace) {
+      std::cerr << "nuah graphics: shader cache unavailable: "
+                << error.message() << '\n';
+    }
+    return;
+  }
+  if (!std::getenv("MESA_SHADER_CACHE_DIR"))
+    (void)::setenv("MESA_SHADER_CACHE_DIR", directory.c_str(), 1);
+  if (!std::getenv("MESA_SHADER_CACHE_MAX_SIZE"))
+    (void)::setenv("MESA_SHADER_CACHE_MAX_SIZE", "128M", 1);
+  if (!std::getenv("MESA_SHADER_CACHE_DISABLE"))
+    (void)::setenv("MESA_SHADER_CACHE_DISABLE", "false", 1);
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::cerr << "nuah graphics: Mesa shader cache=" << directory << '\n';
+}
+
 /* The current x86_64 Roblox image's implementation is a six-byte function
  * that returns the constant 3.  libhybris does not expose that versioned
  * symbol through android_dlsym, so register the observed contract directly
@@ -1065,6 +1110,7 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       ::setenv("ANDROID_APP_DATA_DIR", app_data_directory.c_str(), 1) != 0) {
     throw std::runtime_error("cannot configure Android app-private data directory");
   }
+  configure_mesa_shader_cache(app_data_directory);
   // Reuse ATL's APK-native extraction routine. This is the Android contract
   // System.loadLibrary expects; do not fabricate host substitutes for app
   // libraries such as libzstd-jni.
@@ -1322,16 +1368,35 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         "GameActivity initializeNativeCode returned no native handle");
   }
   std::filesystem::path content_directory;
+  std::filesystem::path extra_content_directory;
   if (const char* override_path = ::getenv("NUAH_CONTENT_PATH");
       override_path && *override_path) {
     content_directory = override_path;
+    extra_content_directory = content_directory.parent_path() / "ExtraContent";
   } else {
-    const auto sober_content =
+    /* Prefer the APK-native extraction root.  Sober's shared directory is a
+     * useful cache when populated, but on a fresh install its content and
+     * ExtraContent directories are often empty placeholders. */
+    const auto app_assets = app_data_directory / "files/assets";
+    const auto app_assets_legacy = app_data_directory / "assets";
+    const auto data_assets = data_directory / "assets";
+    const auto sober_assets =
         std::filesystem::path("/home/pepe/.var/app/org.vinegarhq.Sober/data/"
-                              "sober/assets/content");
-    content_directory = std::filesystem::is_directory(sober_content)
-                            ? sober_content
-                            : data_directory / "assets/content";
+                              "sober/assets");
+    const std::array<std::filesystem::path, 4> asset_roots = {
+        app_assets, app_assets_legacy, data_assets, sober_assets};
+    for (const auto& root : asset_roots) {
+      const auto candidate = root / "content";
+      const auto candidate_extra = root / "ExtraContent";
+      if (!asset_tree_has_files(candidate)) continue;
+      content_directory = candidate;
+      extra_content_directory = candidate_extra;
+      break;
+    }
+    if (content_directory.empty()) {
+      content_directory = app_assets / "content";
+      extra_content_directory = app_assets / "ExtraContent";
+    }
   }
   std::filesystem::create_directories(content_directory, data_error);
   if (data_error) {
@@ -1340,7 +1405,22 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   }
   auto content_path = std::filesystem::absolute(content_directory).string();
   if (!content_path.ends_with('/')) content_path += '/';
+  /* InitParams and the Java façade read this environment value before the
+   * later MainGameActivity.nativeSetAssetPath call.  Keep all three launch
+   * boundaries on the same real directory instead of letting the first one
+   * silently receive an empty path. */
+  if (::setenv("NUAH_CONTENT_PATH", content_path.c_str(), 1) != 0) {
+    throw std::runtime_error("cannot publish Roblox content path");
+  }
   nuah_roblox_java_facade_set_content_path(content_path.c_str());
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::cerr << "nuah assets: content=" << content_path
+              << " files=" << (asset_tree_has_files(content_directory) ? 1 : 0)
+              << " extra=" << std::filesystem::absolute(extra_content_directory)
+              << " extra_files="
+              << (asset_tree_has_files(extra_content_directory) ? 1 : 0)
+              << '\n';
+  }
 
   auto* env = reinterpret_cast<JNIEnv*>(nuah_jvm_jni_env(jvm));
   jclass main_activity =
@@ -1402,11 +1482,13 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   /* The Android activity fetches these flags before it initializes the data
    * model.  Calling V2 directly skips that contract and Roblox aborts with
    * "Can't initialize the TaskScheduler before flags have been loaded".
-   * Accept a supplied response for real sessions; the empty application
-   * settings document is only the offline diagnostic fallback. */
+   * Accept a supplied response for real sessions.  When no server response
+   * was supplied, use the Vulkan path as the native desktop default and keep
+   * an explicit OpenGL escape hatch for drivers that need it. */
   report_bootstrap_stage("ROBLOX_CLIENT_SETTINGS_INIT");
   const char* settings_json = ::getenv("NUAH_CLIENT_SETTINGS_JSON");
   std::string settings_storage;
+  std::string default_settings_storage;
   if (const char* settings_path = ::getenv("NUAH_CLIENT_SETTINGS_PATH");
       settings_path && *settings_path) {
     std::ifstream settings_file(settings_path, std::ios::binary);
@@ -1423,7 +1505,31 @@ int run_nuah_jni(const NativeLaunchOptions& options,
     settings_json = settings_storage.c_str();
   }
   if (!settings_json || !*settings_json) {
-    settings_json = "{\"applicationSettings\":{}}";
+    const char* requested_backend = ::getenv("NUAH_GRAPHICS_BACKEND");
+    const bool prefer_opengl =
+        requested_backend &&
+        (std::strcmp(requested_backend, "opengl") == 0 ||
+         std::strcmp(requested_backend, "gles") == 0 ||
+         std::strcmp(requested_backend, "gl") == 0);
+    if (prefer_opengl) {
+      default_settings_storage =
+          "{\"applicationSettings\":{"
+          "\"FFlagDebugGraphicsPreferOpenGL\":true,"
+          "\"FFlagDebugGraphicsPreferVulkan\":false,"
+          "\"FFlagDebugGraphicsDisableVulkan\":true}}";
+    } else {
+      default_settings_storage =
+          "{\"applicationSettings\":{"
+          "\"FFlagDebugGraphicsPreferVulkan\":true,"
+          "\"FFlagDebugGraphicsPreferOpenGL\":false,"
+          "\"FFlagDebugGraphicsDisableVulkan\":false}}";
+    }
+    settings_json = default_settings_storage.c_str();
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+        trace && *trace) {
+      std::cerr << "nuah graphics: default backend="
+                << (prefer_opengl ? "opengl" : "vulkan") << '\n';
+    }
   }
   const jstring settings = env->NewStringUTF(settings_json);
   const jstring settings_signature = env->NewStringUTF("");

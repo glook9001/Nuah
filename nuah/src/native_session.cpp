@@ -1,4 +1,16 @@
 #include "nuah/native_session.h"
+#include "nuah/perf_metrics.h"
+
+#include <chrono>
+
+namespace {
+uint64_t monotonic_ns() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+}  // namespace
 
 struct NuahNativeSession {
   NuahJvm* jvm = nullptr;
@@ -68,9 +80,15 @@ extern "C" int nuah_native_session_dispatch_surface_destroyed(
 extern "C" int nuah_native_session_dispatch_key(
     NuahNativeSession* session, int keycode, int action, int repeat,
     int scancode, unsigned int modifiers, unsigned long long event_time_ms) {
-  return session ? nuah_jvm_dispatch_key(session->jvm, keycode, action, repeat,
-                                         scancode, modifiers, event_time_ms)
-                 : 0;
+  const bool trace = nuah_perf_trace_enabled() != 0;
+  const uint64_t started = trace ? monotonic_ns() : 0;
+  const int result =
+      session ? nuah_jvm_dispatch_key(session->jvm, keycode, action, repeat,
+                                      scancode, modifiers, event_time_ms)
+              : 0;
+  if (trace)
+    nuah_perf_record_jni("key", monotonic_ns() - started, result);
+  return result;
 }
 
 extern "C" int nuah_native_session_dispatch_pointer(
@@ -85,8 +103,19 @@ extern "C" int nuah_native_session_dispatch_pointer_event(
     NuahNativeSession* session, int pointer_type, int action, int button,
     double x, double y, double dx, double dy,
     unsigned long long event_time_ms) {
-  return session ? nuah_jvm_dispatch_pointer(
-                       session->jvm, pointer_type, action, button, x, y, dx,
-                       dy, event_time_ms)
-                 : 0;
+  const bool trace = nuah_perf_trace_enabled() != 0;
+  const uint64_t started = trace ? monotonic_ns() : 0;
+  const int result =
+      session ? nuah_jvm_dispatch_pointer(
+                    session->jvm, pointer_type, action, button, x, y, dx, dy,
+                    event_time_ms)
+              : 0;
+  if (trace)
+    nuah_perf_record_jni("pointer", monotonic_ns() - started, result);
+  return result;
+}
+
+extern "C" int nuah_native_session_is_mouse_locked_center(
+    NuahNativeSession* session) {
+  return session ? nuah_jvm_is_mouse_locked_center(session->jvm) : -1;
 }

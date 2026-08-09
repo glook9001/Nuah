@@ -2,15 +2,29 @@
 #include "nuah/android_abi_registry.h"
 
 #include <cerrno>
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <poll.h>
 #include <vector>
 #include <unistd.h>
 
 namespace {
+bool looper_trace_enabled() {
+  /* ALooper_pollOnce is a hot path when Roblox asks for a non-blocking poll.
+   * The environment never changes during a process, so do not call getenv on
+   * every poll (or every ANativeWindow query) just to decide whether to log. */
+  static const bool enabled = [] {
+    const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+    return trace && *trace && std::strcmp(trace, "0") != 0;
+  }();
+  return enabled;
+}
+
 void unsupported_media(const char* symbol) {
   nuah_android_api_unsupported("libmediandk.so", symbol);
   errno = ENOSYS;
@@ -115,8 +129,7 @@ int ALooper_addFd(void* opaque_looper, int fd, int ident, int events,
     return -1;
   }
   auto* looper = static_cast<NuahLooper*>(opaque_looper);
-  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
-      trace && *trace) {
+  if (looper_trace_enabled()) {
     std::fprintf(stderr,
                  "nuah looper: add thread=%ld looper=%p fd=%d ident=%d "
                  "events=%d callback=%p\n",
@@ -149,43 +162,67 @@ int ALooper_removeFd(void* opaque_looper, int fd) {
 int ALooper_pollOnce(int timeout_ms, int* out_fd, int* out_events,
                      void** out_data) {
   auto* looper = static_cast<NuahLooper*>(ALooper_forThread());
+  /* Most Roblox loopers have one descriptor.  Keep that common case entirely
+   * on the stack; the old vector copy + reserve allocated twice per poll and
+   * was visible while moving the mouse.  Fall back to vectors only if an
+   * embedding registers more than the inline capacity. */
+  constexpr std::size_t kInlineRegistrationCount = 8;
+  std::array<NuahLooperRegistration, kInlineRegistrationCount>
+      inline_registrations{};
   std::vector<NuahLooperRegistration> registrations;
+  const NuahLooperRegistration* registration_data = nullptr;
+  std::size_t registration_count = 0;
   {
     std::scoped_lock lock(looper->mutex);
-    registrations = looper->registrations;
+    registration_count = looper->registrations.size();
+    if (registration_count <= inline_registrations.size()) {
+      std::copy_n(looper->registrations.begin(), registration_count,
+                  inline_registrations.begin());
+      registration_data = inline_registrations.data();
+    } else {
+      registrations = looper->registrations;
+      registration_data = registrations.data();
+    }
   }
-  if (registrations.empty()) {
+  if (registration_count == 0) {
     if (timeout_ms > 0) (void)::poll(nullptr, 0, timeout_ms);
     return -3;  // ALOOPER_POLL_TIMEOUT or no registered source.
   }
+  std::array<pollfd, kInlineRegistrationCount> inline_descriptors{};
   std::vector<pollfd> descriptors;
-  descriptors.reserve(registrations.size());
-  for (const auto& registration : registrations) {
+  pollfd* descriptor_data = nullptr;
+  if (registration_count <= inline_descriptors.size()) {
+    descriptor_data = inline_descriptors.data();
+  } else {
+    descriptors.resize(registration_count);
+    descriptor_data = descriptors.data();
+  }
+  for (std::size_t index = 0; index < registration_count; ++index) {
+    const auto& registration = registration_data[index];
     short events = 0;
     if ((registration.events & 1) != 0) events |= POLLIN;
     if ((registration.events & 2) != 0) events |= POLLOUT;
-    descriptors.push_back({registration.fd, events, 0});
+    descriptor_data[index] = {registration.fd, events, 0};
   }
-  const int ready = ::poll(descriptors.data(), descriptors.size(), timeout_ms);
-  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
-      trace && *trace && looper->polls++ < 12) {
+  const int ready = ::poll(descriptor_data, registration_count, timeout_ms);
+  if (looper_trace_enabled() && looper->polls++ < 12) {
     std::fprintf(stderr,
                  "nuah looper: poll thread=%ld looper=%p sources=%zu "
                  "timeout=%d ready=%d\n",
                  static_cast<long>(::gettid()), static_cast<void*>(looper),
-                 registrations.size(), timeout_ms, ready);
+                 registration_count, timeout_ms, ready);
   }
   if (ready == 0) return -3;  // ALOOPER_POLL_TIMEOUT
   if (ready < 0) return -4;   // ALOOPER_POLL_ERROR
-  for (std::size_t index = 0; index < descriptors.size(); ++index) {
-    if (!descriptors[index].revents) continue;
+  for (std::size_t index = 0; index < registration_count; ++index) {
+    if (!descriptor_data[index].revents) continue;
     int android_events = 0;
-    if ((descriptors[index].revents & POLLIN) != 0) android_events |= 1;
-    if ((descriptors[index].revents & POLLOUT) != 0) android_events |= 2;
-    if ((descriptors[index].revents & POLLERR) != 0) android_events |= 4;
-    if ((descriptors[index].revents & POLLHUP) != 0) android_events |= 8;
-    if ((descriptors[index].revents & POLLNVAL) != 0) android_events |= 16;
-    const auto registration = registrations[index];
+    if ((descriptor_data[index].revents & POLLIN) != 0) android_events |= 1;
+    if ((descriptor_data[index].revents & POLLOUT) != 0) android_events |= 2;
+    if ((descriptor_data[index].revents & POLLERR) != 0) android_events |= 4;
+    if ((descriptor_data[index].revents & POLLHUP) != 0) android_events |= 8;
+    if ((descriptor_data[index].revents & POLLNVAL) != 0) android_events |= 16;
+    const auto registration = registration_data[index];
     if (registration.callback) {
       if (!registration.callback(registration.fd, android_events,
                                  registration.data)) {
@@ -202,19 +239,19 @@ int ALooper_pollOnce(int timeout_ms, int* out_fd, int* out_events,
 }
 
 void ANativeWindow_acquire(void* window) {
-  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+  if (looper_trace_enabled())
     std::fprintf(stderr, "nuah android: ANativeWindow_acquire(%p)\n", window);
   nuah_native_window_acquire(static_cast<NuahNativeWindow*>(window));
 }
 void ANativeWindow_release(void* window) {
-  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+  if (looper_trace_enabled())
     std::fprintf(stderr, "nuah android: ANativeWindow_release(%p)\n", window);
   nuah_native_window_release(static_cast<NuahNativeWindow*>(window));
 }
 void* ANativeWindow_fromSurface(void*, void* surface) {
   auto* window = nuah_native_window_from_surface(surface);
   if (!window) window = nuah_native_window_default();
-  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+  if (looper_trace_enabled())
     std::fprintf(stderr, "nuah android: ANativeWindow_fromSurface(surface=%p) -> %p\n",
                  surface, static_cast<void*>(window));
   /* Return the façade itself.  The EGL adapter uses the façade to obtain the
@@ -224,12 +261,12 @@ void* ANativeWindow_fromSurface(void*, void* surface) {
   return window;
 }
 int ANativeWindow_getWidth(void* window) {
-  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+  if (looper_trace_enabled())
     std::fprintf(stderr, "nuah android: ANativeWindow_getWidth(%p)\n", window);
   return nuah_native_window_width(static_cast<NuahNativeWindow*>(window));
 }
 int ANativeWindow_getHeight(void* window) {
-  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+  if (looper_trace_enabled())
     std::fprintf(stderr, "nuah android: ANativeWindow_getHeight(%p)\n", window);
   return nuah_native_window_height(static_cast<NuahNativeWindow*>(window));
 }

@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -486,6 +487,39 @@ std::filesystem::path prepare_atl_native_libraries(
       ::setenv("TMPDIR", temporary_directory.c_str(), 1) != 0) {
     ::close(lock_fd);
     throw std::runtime_error("cannot configure ATL profile temporary directory");
+  }
+  /* Mesa owns shader compilation for both the OpenGL and Vulkan paths.  Keep
+   * its disk cache inside the per-APK profile so shader binaries survive a
+   * relaunch without being shared with another driver, game build, or user.
+   * Respect explicit Mesa/NUAH settings; the cache is an optimization and
+   * must never make a launch fail if the profile is read-only. */
+  const char* shader_cache_mode = std::getenv("NUAH_SHADER_CACHE");
+  if (!shader_cache_mode || std::string_view(shader_cache_mode) != "0") {
+    const auto shader_cache_directory =
+        std::filesystem::path(data) / "mesa-shader-cache";
+    std::error_code shader_cache_error;
+    std::filesystem::create_directories(shader_cache_directory,
+                                         shader_cache_error);
+    if (!shader_cache_error) {
+      if (!std::getenv("MESA_SHADER_CACHE_DIR")) {
+        ::setenv("MESA_SHADER_CACHE_DIR", shader_cache_directory.c_str(), 1);
+      }
+      if (!std::getenv("MESA_SHADER_CACHE_MAX_SIZE")) {
+        ::setenv("MESA_SHADER_CACHE_MAX_SIZE", "128M", 1);
+      }
+      if (!std::getenv("MESA_SHADER_CACHE_DISABLE")) {
+        ::setenv("MESA_SHADER_CACHE_DISABLE", "false", 1);
+      }
+      if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+          trace && *trace) {
+        std::cerr << "nuah graphics: Mesa shader cache="
+                  << shader_cache_directory << '\n';
+      }
+    } else if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+               trace && *trace) {
+      std::cerr << "nuah graphics: shader cache unavailable: "
+                << shader_cache_error.message() << '\n';
+    }
   }
   // Roblox uses android.webkit.WebView for its desktop-visible login flow.
   // ATL ships a WebKitGTK backend but leaves it opt-in because lightweight

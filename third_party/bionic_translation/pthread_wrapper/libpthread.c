@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <errno.h>
 #include <memory.h>
 #include <pthread.h>
 #include <semaphore.h>
@@ -145,6 +146,43 @@ static bool is_mapped(void *mem, const size_t sz)
 	unsigned char vec[(sz + ps - 1) / ps];
 	return !mincore(mem, sz, vec);
 }
+
+/* mmap() returns page-aligned addresses, so the low bit is available as a
+ * private initialized marker in the out-of-line host mutex pointer. Android
+ * owns the surrounding bionic_mutex_t bytes and never observes this pointer;
+ * only this wrapper dereferences it. The old path called mincore() for every
+ * lock/unlock to rediscover the same mapping, which is expensive in Roblox's
+ * hot worker and looper paths. */
+#define BIONIC_MUTEX_MAPPED_TAG ((uintptr_t)1)
+
+static inline pthread_mutex_t *mutex_native(const bionic_mutex_t *mutex)
+{
+	return (pthread_mutex_t *)((uintptr_t)mutex->glibc &
+	                           ~BIONIC_MUTEX_MAPPED_TAG);
+}
+
+static inline bool mutex_is_mapped(const bionic_mutex_t *mutex)
+{
+	const uintptr_t raw = (uintptr_t)mutex->glibc;
+	if (raw & BIONIC_MUTEX_MAPPED_TAG)
+		return true;
+	return mutex->glibc && is_mapped(mutex->glibc, sizeof(*mutex->glibc));
+}
+
+static inline void mutex_set_native(bionic_mutex_t *mutex,
+					    pthread_mutex_t *native)
+{
+	if (native == (pthread_mutex_t *)MAP_FAILED) {
+		mutex->glibc = NULL;
+		return;
+	}
+	assert(((uintptr_t)native & BIONIC_MUTEX_MAPPED_TAG) == 0);
+	mutex->glibc = (pthread_mutex_t *)((uintptr_t)native |
+					  BIONIC_MUTEX_MAPPED_TAG);
+}
+
+#define INIT_MUTEX_IF_NOT_MAPPED(x, init) \
+	do { if (!mutex_is_mapped(x)) init(x); } while (0)
 
 void bionic___pthread_cleanup_push(struct bionic_pthread_cleanup_t *c, void (*routine)(void*), void *arg)
 {
@@ -460,8 +498,13 @@ static void default_pthread_mutex_init(bionic_mutex_t *mutex)
 		           &type_word, sizeof(type_word)))
 			continue;
 
-		mutex->glibc = mmap(NULL, sizeof(*mutex->glibc), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-		memcpy(mutex->glibc, &bionic_mutex_init_map[i].glibc, sizeof(bionic_mutex_init_map[i].glibc));
+		pthread_mutex_t *native = mmap(NULL, sizeof(*native),
+					       PROT_READ | PROT_WRITE,
+					       MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+		mutex_set_native(mutex, native);
+		if (mutex->glibc)
+			memcpy(mutex_native(mutex), &bionic_mutex_init_map[i].glibc,
+			       sizeof(bionic_mutex_init_map[i].glibc));
 		return;
 	}
 
@@ -471,13 +514,12 @@ static void default_pthread_mutex_init(bionic_mutex_t *mutex)
 	 * mutex is safer than aborting the entire runtime.  Explicit
 	 * pthread_mutex_init() calls still preserve their requested attributes.
 	 */
-	mutex->glibc = mmap(NULL, sizeof(*mutex->glibc), PROT_READ | PROT_WRITE,
-	                    MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-	if (mutex->glibc == MAP_FAILED) {
-		mutex->glibc = NULL;
+	pthread_mutex_t *native = mmap(NULL, sizeof(*native), PROT_READ | PROT_WRITE,
+	                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	mutex_set_native(mutex, native);
+	if (!mutex->glibc)
 		return;
-	}
-	memset(mutex->glibc, 0, sizeof(*mutex->glibc));
+	memset(mutex_native(mutex), 0, sizeof(*native));
 	fprintf(stderr,
 	        "bionic pthread: unknown static mutex initializer 0x%08x; using normal mutex\n",
 	        type_word);
@@ -487,9 +529,11 @@ int bionic_pthread_mutex_destroy(bionic_mutex_t *mutex)
 {
 	assert(mutex);
 	int ret = 0;
-	if (IS_MAPPED(mutex)) {
-		ret = pthread_mutex_destroy(mutex->glibc);
-		munmap(mutex->glibc, sizeof(*mutex->glibc));
+	if (mutex_is_mapped(mutex)) {
+		pthread_mutex_t *native = mutex_native(mutex);
+		ret = pthread_mutex_destroy(native);
+		munmap(native, sizeof(*native));
+		mutex->glibc = NULL;
 	}
 	return ret;
 }
@@ -500,30 +544,35 @@ int bionic_pthread_mutex_init(bionic_mutex_t *mutex, const bionic_mutexattr_t *a
 	// From PTHREAD_MUTEX_INIT(3)
 	// Attempting to initialize an already initialized mutex result in undefined behavior.
 	*mutex = (bionic_mutex_t){0};
-	mutex->glibc = mmap(NULL, sizeof(*mutex->glibc), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-	return pthread_mutex_init(mutex->glibc, (attr ? attr->glibc : NULL));
+	pthread_mutex_t *native = mmap(NULL, sizeof(*native), PROT_READ | PROT_WRITE,
+	                               MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	mutex_set_native(mutex, native);
+	return mutex->glibc
+		       ? pthread_mutex_init(mutex_native(mutex),
+					      (attr ? attr->glibc : NULL))
+		       : ENOMEM;
 }
 
 int
 bionic_pthread_mutex_lock(bionic_mutex_t *mutex)
 {
 	assert(mutex);
-	INIT_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
-	return pthread_mutex_lock(mutex->glibc);
+	INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
+	return mutex->glibc ? pthread_mutex_lock(mutex_native(mutex)) : ENOMEM;
 }
 
 int bionic_pthread_mutex_trylock(bionic_mutex_t *mutex)
 {
 	assert(mutex);
-	INIT_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
-	return pthread_mutex_trylock(mutex->glibc);
+	INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
+	return mutex->glibc ? pthread_mutex_trylock(mutex_native(mutex)) : ENOMEM;
 }
 
 int bionic_pthread_mutex_unlock(bionic_mutex_t *mutex)
 {
 	assert(mutex);
-	INIT_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
-	return pthread_mutex_unlock(mutex->glibc);
+	INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
+	return mutex->glibc ? pthread_mutex_unlock(mutex_native(mutex)) : ENOMEM;
 }
 
 /* ---------------------------------------------------------------------------------------------- *
@@ -608,16 +657,21 @@ int
 bionic_pthread_cond_wait(bionic_cond_t *cond, bionic_mutex_t *mutex) {
 	assert(cond && mutex);
 	INIT_IF_NOT_MAPPED(cond, default_pthread_cond_init);
-	INIT_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
-	return pthread_cond_wait(cond->glibc, mutex->glibc);
+	INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
+	return mutex->glibc
+		       ? pthread_cond_wait(cond->glibc, mutex_native(mutex))
+		       : ENOMEM;
 }
 
 int bionic_pthread_cond_timedwait(bionic_cond_t *cond, bionic_mutex_t *mutex, const struct timespec *abs_timeout)
 {
 	assert(cond && mutex);
 	INIT_IF_NOT_MAPPED(cond, default_pthread_cond_init);
-	INIT_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
-	return pthread_cond_timedwait(cond->glibc, mutex->glibc, abs_timeout);
+	INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
+	return mutex->glibc
+		       ? pthread_cond_timedwait(cond->glibc, mutex_native(mutex),
+						 abs_timeout)
+		       : ENOMEM;
 }
 
 int bionic_pthread_cond_timedwait_relative_np(bionic_cond_t *cond, bionic_mutex_t *mutex, const struct timespec *reltime)
