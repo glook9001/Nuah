@@ -26,6 +26,12 @@ struct State {
   uint64_t next_report_ns = 0;
 };
 
+struct Report {
+  bool ready = false;
+  Aggregate input;
+  std::array<Aggregate, 3> jni{};
+};
+
 State& state() {
   static State value;
   return value;
@@ -81,15 +87,22 @@ void print_aggregate(const char* name, const Aggregate& aggregate) {
                static_cast<unsigned long long>(aggregate.slow));
 }
 
-void report_if_due(State& value, uint64_t now) {
+void take_report_if_due(State& value, uint64_t now, Report& report) {
   if (value.next_report_ns == 0) value.next_report_ns = now + 1000000000ULL;
   if (now < value.next_report_ns) return;
   value.next_report_ns = now + 1000000000ULL;
-  print_aggregate("input", value.input);
-  for (std::size_t index = 0; index < value.jni.size(); ++index)
-    print_aggregate(jni_name(index), value.jni[index]);
+  report.ready = true;
+  report.input = value.input;
+  report.jni = value.jni;
   value.input = {};
   value.jni = {};
+}
+
+void print_report(const Report& report) {
+  if (!report.ready) return;
+  print_aggregate("input", report.input);
+  for (std::size_t index = 0; index < report.jni.size(); ++index)
+    print_aggregate(jni_name(index), report.jni[index]);
 }
 }  // namespace
 
@@ -99,16 +112,24 @@ extern "C" void nuah_perf_record_input(uint64_t duration_ns,
                                          unsigned int event_count) {
   if (!enabled()) return;
   State& value = state();
-  std::scoped_lock lock(value.mutex);
-  add(value.input, duration_ns, event_count);
-  report_if_due(value, now_ns());
+  Report report;
+  {
+    std::scoped_lock lock(value.mutex);
+    add(value.input, duration_ns, event_count);
+    take_report_if_due(value, now_ns(), report);
+  }
+  print_report(report);
 }
 
 extern "C" void nuah_perf_record_jni(const char* kind, uint64_t duration_ns,
                                       int /*result*/) {
   if (!enabled()) return;
   State& value = state();
-  std::scoped_lock lock(value.mutex);
-  add(jni_aggregate(kind, value), duration_ns, 1);
-  report_if_due(value, now_ns());
+  Report report;
+  {
+    std::scoped_lock lock(value.mutex);
+    add(jni_aggregate(kind, value), duration_ns, 1);
+    take_report_if_due(value, now_ns(), report);
+  }
+  print_report(report);
 }

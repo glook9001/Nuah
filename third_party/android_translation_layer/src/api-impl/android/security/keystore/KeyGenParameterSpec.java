@@ -3,7 +3,7 @@ package android.security.keystore;
 import java.security.spec.AlgorithmParameterSpec;
 import java.util.Date;
 
-public class KeyGenParameterSpec {
+public class KeyGenParameterSpec implements AlgorithmParameterSpec {
 
 	private String keystoreAlias;
 	private int purposes;

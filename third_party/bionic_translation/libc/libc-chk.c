@@ -230,6 +230,18 @@ ssize_t bionic___sendto_chk(int socket_fd, const void* buffer, size_t length,
 			destination_length);
 }
 
+/* The Android linker first tries its bionic_ wrapper namespace, but native
+ * relocations may also ask the provider directly for the public spelling.
+ * Export both spellings from libc_bio so the lookup does not depend on an
+ * LD_PRELOAD overlay being present. */
+ssize_t __sendto_chk(int socket_fd, const void* buffer, size_t length,
+			     size_t buffer_size, int flags,
+			     const struct sockaddr* destination,
+			     socklen_t destination_length) {
+	return bionic___sendto_chk(socket_fd, buffer, length, buffer_size, flags,
+					destination, destination_length);
+}
+
 /* NOTE: fortify level 2 is not meant for production, so arguably if some app uses it we should
  * fix it for them and have _chk2 functions not actually check anything */
 

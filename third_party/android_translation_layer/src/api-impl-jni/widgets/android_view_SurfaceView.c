@@ -1,5 +1,4 @@
 #include <gtk/gtk.h>
-#include <pthread.h>
 #include <unistd.h>
 
 #include "../defines.h"
@@ -130,7 +129,6 @@ struct jni_callback_data {
 	gboolean surface_created;
 	gboolean surface_changed;
 	guint surface_ready_attempts;
-	gboolean late_dispatch_started;
 	gboolean surface_replay_queued;
 	jclass game_activity_class;
 	jfieldID native_handle;
@@ -200,37 +198,6 @@ static gboolean surface_replay_on_main(gpointer opaque)
 	if (detach)
 		(*d->jvm)->DetachCurrentThread(d->jvm);
 	return G_SOURCE_REMOVE;
-}
-
-static void *late_surface_dispatch(void *opaque)
-{
-	struct jni_callback_data *d = opaque;
-	/* GameActivity installs its SurfaceHolder callbacks asynchronously.  A
-	 * single replay can land before that registration; retry for a bounded
-	 * startup window so we don't make SurfaceView lifecycle timing fatal. */
-	for (int attempt = 0; attempt < 10; ++attempt) {
-		g_usleep(100000);
-		/* This worker only invokes SurfaceView.post(), which transfers the
-		 * actual callbacks to Java's main Handler.  Do not call Roblox's native
-		 * lifecycle methods from here. */
-		if (!d->native_window_notified) {
-			JNIEnv *env = NULL;
-			jboolean detach = JNI_FALSE;
-			if ((*d->jvm)->GetEnv(d->jvm, (void **)&env, JNI_VERSION_1_6) != JNI_OK &&
-			    (*d->jvm)->AttachCurrentThread(d->jvm, (void **)&env, NULL) == JNI_OK)
-				detach = JNI_TRUE;
-			if (env) {
-				d->surface_created = TRUE;
-				dispatch_activity_surface(d, env, 1280, 720);
-				d->surface_changed = TRUE;
-			}
-			if (detach)
-				(*d->jvm)->DetachCurrentThread(d->jvm);
-		}
-		if (d->native_window_notified && d->surface_changed)
-			return NULL;
-	}
-	return NULL;
 }
 
 static gboolean dispatch_surface_changed(struct jni_callback_data *d)
@@ -328,14 +295,6 @@ static void on_realize(GtkWidget *self, struct jni_callback_data *d)
 	 * g_idle/g_timeout sources never execute.  The realize signal itself is on
 	 * GTK's UI thread, so deliver the Android surface callbacks synchronously. */
 	on_realize_delayed(d);
-	/* GameActivity may register its native callbacks after the first GTK
-	 * realization.  Replay the lifecycle once registration has completed. */
-	if (!d->late_dispatch_started) {
-		d->late_dispatch_started = TRUE;
-		pthread_t thread;
-		if (pthread_create(&thread, NULL, late_surface_dispatch, d) == 0)
-			pthread_detach(thread);
-	}
 }
 
 JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv *env, jobject this, jobject context, jobject attrs)
@@ -373,7 +332,6 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 	callback_data->surface_created = FALSE;
 	callback_data->surface_changed = FALSE;
 	callback_data->surface_ready_attempts = 0;
-	callback_data->late_dispatch_started = FALSE;
 	jmethodID get_context = (*env)->GetMethodID(env, callback_data->this_class,
 	                                            "getContext", "()Landroid/content/Context;");
 	jobject view_context = (*env)->CallObjectMethod(env, this, get_context);
@@ -406,13 +364,6 @@ JNIEXPORT jlong JNICALL Java_android_view_SurfaceView_native_1constructor(JNIEnv
 
 	g_signal_connect(dummy, "resize", G_CALLBACK(on_resize), callback_data);
 	g_signal_connect(dummy, "realize", G_CALLBACK(on_realize), callback_data);
-	/* Start replay even when the host loop does not emit GTK realize. */
-	if (!callback_data->late_dispatch_started) {
-		callback_data->late_dispatch_started = TRUE;
-		pthread_t thread;
-		if (pthread_create(&thread, NULL, late_surface_dispatch, callback_data) == 0)
-			pthread_detach(thread);
-	}
 
 	return _INTPTR(graphics_offload);
 }

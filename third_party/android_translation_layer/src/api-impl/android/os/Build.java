@@ -84,6 +84,9 @@ public class Build {
 	/** Product SKU exposed by API 35+ device builds. */
 	public static final String SKU = getString("ro.product.sku");
 
+	/** System-on-chip model exposed by modern Android builds. */
+	public static final String SOC_MODEL = getString("ro.soc.model");
+
 	/**
 	 * The system bootloader version number.
 	 */

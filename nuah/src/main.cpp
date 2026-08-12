@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <atomic>
 #include <cerrno>
+#include <cstring>
 #include <glib.h>
 #include <iostream>
 #include <mutex>
@@ -17,9 +18,67 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 std::mutex service_write_mutex;
+
+void reexec_with_bundled_pthread_bridge(char** argv) {
+  /* libhybris already forwards Android pthread/TLS calls into the process's
+   * one host libc domain.  Re-execing with Nuah's compatibility DSO adds a
+   * second wrapper layer and showed up as avoidable mutex contention in the
+   * heavy-room profile.  Keep that DSO available for ABI comparison and old
+   * hosts, but make the single-domain libhybris path the product default. */
+  const char* requested = std::getenv("NUAH_USE_BUNDLED_PTHREAD_BRIDGE");
+  if (!requested || std::strcmp(requested, "0") == 0) return;
+  if (const char* ready = std::getenv("NUAH_PTHREAD_BRIDGE_READY");
+      ready && std::strcmp(ready, "1") == 0) {
+    return;
+  }
+
+  const auto executable = std::filesystem::canonical("/proc/self/exe");
+  std::vector<std::filesystem::path> candidates;
+  if (const char* configured = std::getenv("NUAH_BIONIC_TRANSLATION_DIR");
+      configured && *configured) {
+    candidates.emplace_back(configured);
+  }
+  candidates.emplace_back(executable.parent_path() / "bionic-translation");
+  candidates.emplace_back(executable.parent_path() / "lib/nuah/bionic-translation");
+
+  std::filesystem::path selected;
+  for (const auto& candidate : candidates) {
+    if (std::filesystem::is_regular_file(candidate / "libpthread_bio.so.0")) {
+      selected = candidate;
+      break;
+    }
+  }
+  if (selected.empty()) {
+    if (const char* trace = std::getenv("NUAH_PERF_TRACE");
+        trace && *trace && std::strcmp(trace, "0") != 0) {
+      std::cerr << "nuah performance: bundled pthread bridge unavailable; "
+                   "using host fallback\n";
+    }
+    return;
+  }
+
+  std::string library_path = selected.string();
+  if (const char* existing = std::getenv("LD_LIBRARY_PATH");
+      existing && *existing) {
+    library_path += ':';
+    library_path += existing;
+  }
+  if (::setenv("LD_LIBRARY_PATH", library_path.c_str(), 1) != 0 ||
+      ::setenv("NUAH_PTHREAD_BRIDGE_READY", "1", 1) != 0) {
+    throw std::runtime_error("cannot select Nuah's pthread bridge");
+  }
+  if (const char* trace = std::getenv("NUAH_PERF_TRACE");
+      trace && *trace && std::strcmp(trace, "0") != 0) {
+    std::cerr << "nuah performance: pthread bridge="
+              << (selected / "libpthread_bio.so.0") << '\n';
+  }
+  ::execv(executable.c_str(), argv);
+  throw std::runtime_error("cannot restart Nuah with its pthread bridge");
+}
 
 bool send_service_control(int fd, std::uint8_t opcode,
                           const std::string& payload, std::string& error) {
@@ -341,8 +400,14 @@ int main(int argc, char** argv) {
         else if (key == "--activity") options.activity = value;
         else if (key == "--uri") options.uri = value;
         else if (key == "--data") options.data_directory = value;
-        else if (key == "--width") options.width = std::stoi(value);
-        else if (key == "--height") options.height = std::stoi(value);
+        else if (key == "--width") {
+          options.width = std::stoi(value);
+          options.dimensions_explicit = true;
+        }
+        else if (key == "--height") {
+          options.height = std::stoi(value);
+          options.dimensions_explicit = true;
+        }
         else throw std::runtime_error("unknown ATL option: " + key);
       }
       if (options.apk.empty()) {
@@ -352,6 +417,7 @@ int main(int argc, char** argv) {
             "[--width <px>] [--height <px>]");
       }
       if (std::string(argv[1]) == "native-run") {
+        reexec_with_bundled_pthread_bridge(argv);
         return nuah::run_native(options);
       }
       nuah::exec_atl(options);

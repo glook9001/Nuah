@@ -160,6 +160,9 @@ public final class ContextImpl extends Context {
 				return new UsbManager();
 			case "vibrator":
 				return (vibrator != null) ? vibrator : (vibrator = new Vibrator());
+			case "vibrator_manager":
+				return (vibrator_manager != null) ? vibrator_manager
+						: (vibrator_manager = new VibratorManager());
 			case "power":
 				return new PowerManager();
 			case "display":

@@ -36,14 +36,15 @@ public class AndroidKeyStore extends KeyStoreSpi {
 
 	@Override
 	public Certificate engineGetCertificate(String alias) {
-		// TODO Auto-generated method stub
-		throw new UnsupportedOperationException("Unimplemented method 'engineGetCertificate'");
+		/* The host-backed quote path stores the private key only.  Android's
+		 * keystore returns null when no certificate was provisioned, which is
+		 * preferable to throwing from a best-effort cleanup/probe. */
+		return null;
 	}
 
 	@Override
 	public Date engineGetCreationDate(String alias) {
-		// TODO Auto-generated method stub
-		throw new UnsupportedOperationException("Unimplemented method 'engineGetCreationDate'");
+		return null;
 	}
 
 	@Override
@@ -67,8 +68,7 @@ public class AndroidKeyStore extends KeyStoreSpi {
 
 	@Override
 	public void engineDeleteEntry(String alias) throws KeyStoreException {
-		// TODO Auto-generated method stub
-		throw new UnsupportedOperationException("Unimplemented method 'engineDeleteEntry'");
+		if (alias != null) map.remove(alias);
 	}
 
 	@Override
@@ -86,8 +86,7 @@ public class AndroidKeyStore extends KeyStoreSpi {
 
 	@Override
 	public int engineSize() {
-		// TODO Auto-generated method stub
-		throw new UnsupportedOperationException("Unimplemented method 'engineSize'");
+		return map.size();
 	}
 
 	@Override

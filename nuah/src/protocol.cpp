@@ -1,10 +1,12 @@
 #include "nuah/protocol.hpp"
 
 #include <sys/socket.h>
+#include <poll.h>
 #include <unistd.h>
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 
 namespace nuah {
@@ -12,12 +14,44 @@ namespace {
 constexpr std::uint32_t kMagic = 0x4e554148;  // "NUAH"
 constexpr std::uint16_t kVersion = 1;
 constexpr std::uint32_t kMaximumPayload = 64 * 1024;
+constexpr auto kWriteTimeout = std::chrono::seconds(5);
 struct WireHeader { std::uint32_t magic; std::uint16_t version; std::uint16_t opcode; std::uint32_t request_id; std::uint32_t length; };
 bool transfer(int fd, void* buffer, std::size_t size, bool write, std::string& error) {
   auto* bytes = static_cast<std::byte*>(buffer); std::size_t done = 0;
+  const auto deadline = std::chrono::steady_clock::now() + kWriteTimeout;
   while (done < size) {
-    const auto n = write ? ::send(fd, bytes + done, size - done, MSG_NOSIGNAL) : ::recv(fd, bytes + done, size - done, 0);
+    if (write) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        error = "socket send timed out";
+        return false;
+      }
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - now);
+      struct pollfd descriptor{fd, POLLOUT, 0};
+      const int ready = ::poll(&descriptor, 1,
+                               static_cast<int>(remaining.count()));
+      if (ready == 0) {
+        error = "socket send timed out";
+        return false;
+      }
+      if (ready < 0) {
+        if (errno == EINTR) continue;
+        error = "socket poll failed";
+        return false;
+      }
+      if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        error = "socket is not writable";
+        return false;
+      }
+    }
+    const auto n = write
+                      ? ::send(fd, bytes + done, size - done,
+                               MSG_NOSIGNAL | MSG_DONTWAIT)
+                      : ::recv(fd, bytes + done, size - done, 0);
     if (n < 0 && errno == EINTR) continue;
+    if (n < 0 && write && (errno == EAGAIN || errno == EWOULDBLOCK))
+      continue;
     if (n <= 0) { error = n == 0 ? "peer disconnected" : "socket transfer failed"; return false; }
     done += static_cast<std::size_t>(n);
   }

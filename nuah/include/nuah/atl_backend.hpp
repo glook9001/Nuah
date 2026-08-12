@@ -15,6 +15,7 @@ struct AtlLaunchOptions {
   std::optional<std::filesystem::path> data_directory;
   int width = 1280;
   int height = 720;
+  bool dimensions_explicit = false;
 };
 
 using NativeLaunchOptions = AtlLaunchOptions;

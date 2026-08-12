@@ -7,6 +7,8 @@
 
 #include <dlfcn.h>
 
+#include <atomic>
+#include <chrono>
 #include <mutex>
 #include <cstdio>
 #include <cstdlib>
@@ -14,14 +16,32 @@
 #include <unordered_map>
 
 namespace {
-void* host_egl() {
-  static void* handle = ::dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL);
+struct LazyLibrary {
+  std::atomic<void*> handle{nullptr};
+  std::atomic<unsigned> state{0};
+};
+
+void* load_library(LazyLibrary& library, const char* name) {
+  if (void* handle = library.handle.load(std::memory_order_acquire))
+    return handle;
+  unsigned expected = 0;
+  if (!library.state.compare_exchange_strong(expected, 1,
+                                             std::memory_order_acq_rel))
+    return nullptr;
+  void* handle = ::dlopen(name, RTLD_NOW | RTLD_LOCAL);
+  library.handle.store(handle, std::memory_order_release);
+  library.state.store(2, std::memory_order_release);
   return handle;
 }
 
+void* host_egl() {
+  static LazyLibrary library;
+  return load_library(library, "libEGL.so.1");
+}
+
 void* host_gles() {
-  static void* handle = ::dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_LOCAL);
-  return handle;
+  static LazyLibrary library;
+  return load_library(library, "libGLESv2.so.2");
 }
 
 template <typename Function>
@@ -61,6 +81,88 @@ EGLDisplay display_for_window(NuahNativeWindow* window) {
 
 std::mutex surfaces_mutex;
 std::unordered_map<EGLSurface, NuahNativeWindow*> surfaces;
+
+bool owns_surface(EGLSurface surface) {
+  if (!surface) return false;
+  std::scoped_lock lock(surfaces_mutex);
+  return surfaces.find(surface) != surfaces.end();
+}
+
+/* ATL's Java EGL implementation creates an ATLSurface object rather than a
+ * host EGLSurface.  Nuah's libandroid provider is intentionally local, while
+ * ATL's companion libandroid.so.0 is global, so RTLD_DEFAULT is the narrow
+ * escape hatch for those foreign surfaces.  Never use it for a Nuah-owned
+ * surface: the host Mesa calls below are the correct ABI there. */
+template <typename Function>
+Function atl_egl_function(const char* name) {
+  return reinterpret_cast<Function>(::dlsym(RTLD_DEFAULT, name));
+}
+
+struct EglPerfMetrics {
+  std::mutex mutex;
+  uint64_t count = 0;
+  uint64_t interval_total_ns = 0;
+  uint64_t interval_max_ns = 0;
+  uint64_t call_total_ns = 0;
+  uint64_t call_max_ns = 0;
+  uint64_t previous_ns = 0;
+  uint64_t next_report_ns = 0;
+};
+
+EglPerfMetrics& egl_perf_metrics() {
+  static EglPerfMetrics value;
+  return value;
+}
+
+bool egl_perf_enabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("NUAH_PERF_TRACE");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
+}
+
+uint64_t egl_monotonic_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<
+      std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void record_egl_swap(uint64_t started_ns, uint64_t finished_ns) {
+  if (!egl_perf_enabled()) return;
+  auto& metrics = egl_perf_metrics();
+  std::scoped_lock lock(metrics.mutex);
+  ++metrics.count;
+  const uint64_t call_ns = finished_ns - started_ns;
+  metrics.call_total_ns += call_ns;
+  metrics.call_max_ns = std::max(metrics.call_max_ns, call_ns);
+  if (metrics.previous_ns != 0) {
+    const uint64_t interval_ns = finished_ns - metrics.previous_ns;
+    metrics.interval_total_ns += interval_ns;
+    metrics.interval_max_ns = std::max(metrics.interval_max_ns, interval_ns);
+  }
+  metrics.previous_ns = finished_ns;
+  if (metrics.next_report_ns == 0)
+    metrics.next_report_ns = finished_ns + 1000000000ULL;
+  if (finished_ns < metrics.next_report_ns) return;
+  const uint64_t intervals = metrics.count > 1 ? metrics.count - 1 : 0;
+  std::fprintf(stderr,
+               "nuah perf: egl swaps=%llu avg_interval_us=%llu "
+               "max_interval_us=%llu avg_call_us=%llu max_call_us=%llu\n",
+               static_cast<unsigned long long>(metrics.count),
+               static_cast<unsigned long long>(
+                   intervals ? metrics.interval_total_ns / intervals / 1000ULL : 0),
+               static_cast<unsigned long long>(metrics.interval_max_ns / 1000ULL),
+               static_cast<unsigned long long>(metrics.call_total_ns /
+                                               metrics.count / 1000ULL),
+               static_cast<unsigned long long>(metrics.call_max_ns / 1000ULL));
+  metrics.count = 0;
+  metrics.interval_total_ns = 0;
+  metrics.interval_max_ns = 0;
+  metrics.call_total_ns = 0;
+  metrics.call_max_ns = 0;
+  metrics.previous_ns = 0;
+  metrics.next_report_ns = finished_ns + 1000000000ULL;
+}
 
 bool egl_trace_enabled() {
   static const bool enabled = [] {
@@ -122,6 +224,12 @@ EGLSurface bionic_eglCreateWindowSurface(EGLDisplay display, EGLConfig config,
 }
 
 EGLBoolean bionic_eglDestroySurface(EGLDisplay display, EGLSurface surface) {
+  if (!owns_surface(surface)) {
+    using Destroy = EGLBoolean (*)(EGLDisplay, EGLSurface);
+    if (const auto atl = atl_egl_function<Destroy>(
+            "bionic_eglDestroySurface"))
+      return atl(display, surface);
+  }
   const auto function = require_egl<PFNEGLDESTROYSURFACEPROC>(
       "eglDestroySurface");
   const EGLBoolean result = function ? function(display, surface) : EGL_FALSE;
@@ -140,14 +248,29 @@ EGLBoolean bionic_eglDestroySurface(EGLDisplay display, EGLSurface surface) {
 
 EGLBoolean bionic_eglMakeCurrent(EGLDisplay display, EGLSurface draw,
                                  EGLSurface read, EGLContext context) {
+  if ((draw && !owns_surface(draw)) || (read && !owns_surface(read))) {
+    using MakeCurrent = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface,
+                                       EGLContext);
+    if (const auto atl = atl_egl_function<MakeCurrent>(
+            "bionic_eglMakeCurrent"))
+      return atl(display, draw, read, context);
+  }
   const auto function = require_egl<PFNEGLMAKECURRENTPROC>("eglMakeCurrent");
   return function ? function(display, draw, read, context) : EGL_FALSE;
 }
 
 EGLBoolean bionic_eglSwapBuffers(EGLDisplay display, EGLSurface surface) {
+  if (!owns_surface(surface)) {
+    using SwapBuffers = EGLBoolean (*)(EGLDisplay, EGLSurface);
+    if (const auto atl = atl_egl_function<SwapBuffers>(
+            "bionic_eglSwapBuffers"))
+      return atl(display, surface);
+  }
   const auto function = require_egl<PFNEGLSWAPBUFFERSPROC>("eglSwapBuffers");
   static unsigned long calls = 0;
+  const uint64_t started_ns = egl_perf_enabled() ? egl_monotonic_ns() : 0;
   const EGLBoolean result = function ? function(display, surface) : EGL_FALSE;
+  if (egl_perf_enabled()) record_egl_swap(started_ns, egl_monotonic_ns());
   if (egl_trace_enabled() && calls++ < 20) {
     std::fprintf(stderr, "nuah egl: swap surface=%p result=%d\n",
                  static_cast<void*>(surface), result == EGL_TRUE ? 1 : 0);
@@ -157,6 +280,34 @@ EGLBoolean bionic_eglSwapBuffers(EGLDisplay display, EGLSurface surface) {
 
 EGLBoolean bionic_eglQuerySurface(EGLDisplay display, EGLSurface surface,
                                   EGLint attribute, EGLint* value) {
+  if (!owns_surface(surface)) {
+    using QuerySurface = EGLBoolean (*)(EGLDisplay, EGLSurface, EGLint,
+                                        EGLint*);
+    if (const auto atl = atl_egl_function<QuerySurface>(
+            "bionic_eglQuerySurface")) {
+      const EGLBoolean result = atl(display, surface, attribute, value);
+      if (result == EGL_TRUE ||
+          (attribute != EGL_WIDTH && attribute != EGL_HEIGHT))
+        return result;
+    }
+    /* A foreign surface can be an ATL object whose query implementation is
+     * unavailable during early bootstrap.  The active Nuah façade still has
+     * the authoritative geometry; use it instead of passing an invalid
+     * ATLSurface pointer to Mesa's eglQuerySurface. */
+    if (value && (attribute == EGL_WIDTH || attribute == EGL_HEIGHT)) {
+      NuahNativeWindow* window = nuah_native_window_default();
+      if (window) {
+        const int dimension = attribute == EGL_WIDTH
+                                  ? nuah_native_window_width(window)
+                                  : nuah_native_window_height(window);
+        nuah_native_window_release(window);
+        if (dimension > 0) {
+          *value = dimension;
+          return EGL_TRUE;
+        }
+      }
+    }
+  }
   const auto function = require_egl<PFNEGLQUERYSURFACEPROC>("eglQuerySurface");
   const EGLBoolean result =
       function ? function(display, surface, attribute, value) : EGL_FALSE;
@@ -188,6 +339,8 @@ void (*bionic_eglGetProcAddress(const char* name))(void) {
     return reinterpret_cast<void (*)(void)>(&bionic_eglMakeCurrent);
   if (std::strcmp(name, "eglSwapBuffers") == 0)
     return reinterpret_cast<void (*)(void)>(&bionic_eglSwapBuffers);
+  if (std::strcmp(name, "eglQuerySurface") == 0)
+    return reinterpret_cast<void (*)(void)>(&bionic_eglQuerySurface);
   using GetProcAddress = void (*(*)(const char*))(void);
   const auto function = require_egl<GetProcAddress>("eglGetProcAddress");
   return function ? function(name) : nullptr;

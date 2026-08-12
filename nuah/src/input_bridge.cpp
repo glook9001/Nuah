@@ -186,6 +186,46 @@ unsigned int button_bit(int button) {
   return button >= 1 && button <= 31 ? (1u << (button - 1)) : 0u;
 }
 
+/* The host window may be maximized while the Android surface stays at its
+ * launch size (NUAH_LOCK_SURFACE_SIZE).  SDL reports host-window coordinates,
+ * but Roblox hit-tests against the Android surface.  Keep the host-space
+ * virtual pointer internally and translate only at the boundary. */
+bool locked_surface_dimensions(int* width, int* height) {
+  if (!width || !height) return false;
+  const char* locked = std::getenv("NUAH_LOCK_SURFACE_SIZE");
+  if (!locked || !*locked || std::strcmp(locked, "0") == 0) return false;
+  const char* width_value = std::getenv("NUAH_SURFACE_WIDTH");
+  const char* height_value = std::getenv("NUAH_SURFACE_HEIGHT");
+  if (!width_value || !height_value) return false;
+  char* width_end = nullptr;
+  char* height_end = nullptr;
+  const long parsed_width = std::strtol(width_value, &width_end, 10);
+  const long parsed_height = std::strtol(height_value, &height_end, 10);
+  if (width_end == width_value || *width_end != '\0' ||
+      height_end == height_value || *height_end != '\0' ||
+      parsed_width <= 0 || parsed_height <= 0)
+    return false;
+  *width = static_cast<int>(parsed_width);
+  *height = static_cast<int>(parsed_height);
+  return true;
+}
+
+void map_host_delta_to_surface(SDL_Window* window, double* dx, double* dy) {
+  if (!dx || !dy) return;
+  int surface_width = 0;
+  int surface_height = 0;
+  int host_width = 0;
+  int host_height = 0;
+  if (!locked_surface_dimensions(&surface_width, &surface_height) ||
+      !window || SDL_GetWindowSize(window, &host_width, &host_height) <= 0 ||
+      host_width <= 0 || host_height <= 0)
+    return;
+  *dx *= static_cast<double>(surface_width) /
+         static_cast<double>(host_width);
+  *dy *= static_cast<double>(surface_height) /
+         static_cast<double>(host_height);
+}
+
 /* Relative camera coordinates may legitimately accumulate past the view
  * edges.  Roblox still expects discrete button/wheel coordinates inside the
  * Android surface, however.  Normalize only those discrete events; leave
@@ -199,6 +239,15 @@ void surface_pointer_position(SDL_Window* window, double* x, double* y) {
     return;
   *x = std::clamp(*x, 0.0, static_cast<double>(width - 1));
   *y = std::clamp(*y, 0.0, static_cast<double>(height - 1));
+  int surface_width = 0;
+  int surface_height = 0;
+  if (!locked_surface_dimensions(&surface_width, &surface_height)) return;
+  *x = std::clamp(*x * static_cast<double>(surface_width) /
+                      static_cast<double>(width),
+                  0.0, static_cast<double>(surface_width - 1));
+  *y = std::clamp(*y * static_cast<double>(surface_height) /
+                      static_cast<double>(height),
+                  0.0, static_cast<double>(surface_height - 1));
 }
 
 void release_pressed_buttons(SDL_Window* window, unsigned long long timestamp) {
@@ -476,7 +525,45 @@ extern "C" int nuah_input_pump(void) {
   service_focus_loss();
   SDL_Event event{};
   int count = 0;
-  while (SDL_PollEvent(&event)) {
+  const bool nonblocking_events = [] {
+    const char* value = std::getenv("NUAH_NONBLOCK_WAYLAND_EVENTS");
+    /* Keep this in lock-step with window_session's Wayland pump.  The
+     * non-blocking path starves the shared display round-trip on the Intel
+     * host; the observed result is severe frame pacing loss. */
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  /* Wayland can deliver hundreds of relative-pointer samples between two
+   * 10-ms host pumps. Android's MotionEvent path is allowed to coalesce
+   * history, so forward one event with the accumulated delta instead of
+   * entering Roblox/JNI once per compositor sample. Disable this only when
+   * comparing raw input timing. */
+  static const bool coalesce_motion = [] {
+    const char* value = std::getenv("NUAH_INPUT_COALESCE");
+    return !value || std::strcmp(value, "0") != 0;
+  }();
+  NuahInputEvent pending_motion{};
+  bool has_pending_motion = false;
+  bool motion_lock_synced = false;
+  auto flush_motion = [&] {
+    if (!has_pending_motion) return;
+    emit(pending_motion);
+    ++count;
+    pending_motion = {};
+    has_pending_motion = false;
+  };
+  auto next_event = [&] {
+    if (!nonblocking_events) return SDL_PollEvent(&event);
+    return SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_FIRST,
+                          SDL_EVENT_LAST) > 0;
+  };
+  while (next_event()) {
+    if (event.type != SDL_EVENT_MOUSE_MOTION) {
+      /* Preserve SDL ordering: a key/button/focus event must observe all
+       * preceding motion, and a later motion must re-check Roblox's lock
+       * state after that event has been delivered. */
+      flush_motion();
+      motion_lock_synced = false;
+    }
     NuahInputEvent translated{};
     translated.timestamp_ns = event.common.timestamp;
     switch (event.type) {
@@ -559,13 +646,28 @@ extern "C" int nuah_input_pump(void) {
         break;
       }
       case SDL_EVENT_MOUSE_MOTION:
-        if (sync_mouse_lock(SDL_GetWindowFromID(event.motion.windowID),
-                            bound_native_session(), true))
+        {
+        SDL_Window* event_window =
+            SDL_GetWindowFromID(event.motion.windowID);
+        if (coalesce_motion) {
+          if (!motion_lock_synced) {
+            motion_lock_synced = true;
+            if (sync_mouse_lock(event_window, bound_native_session(), true))
+              break;
+          }
+        } else if (sync_mouse_lock(event_window, bound_native_session(), true)) {
           break;
+        }
         translated.type = NUAH_INPUT_POINTER_MOTION;
         translated.action = 2;
         translated.dx = event.motion.xrel;
         translated.dy = event.motion.yrel;
+        /* SDL's relative deltas are in the maximized host window's space.
+         * Scale them to the locked Android surface before they reach
+         * MotionEvent/Roblox, otherwise camera motion becomes too fast and
+         * edge clicks stop lining up after KDE maximize. */
+        map_host_delta_to_surface(event_window, &translated.dx,
+                                  &translated.dy);
         if (!relative_mouse_mode && suppress_next_absolute_motion) {
           suppress_next_absolute_motion = false;
           /* Keep the last virtual position. Do not turn the compositor's
@@ -585,17 +687,32 @@ extern "C" int nuah_input_pump(void) {
           pointer_y = event.motion.y;
           pointer_position_valid = true;
         }
-        translated.x = pointer_x;
-        translated.y = pointer_y;
+        double surface_x = pointer_x;
+        double surface_y = pointer_y;
+        surface_pointer_position(event_window, &surface_x, &surface_y);
+        translated.x = surface_x;
+        translated.y = surface_y;
         /* Wayland emits an initial cursor-position notification while the
          * SDL surface is being realized. Sober's Android adapter only calls
          * nativePassMouseMove for an actual motion/captured-pointer delta;
          * forwarding this (0,0) bootstrap event can reach Roblox before its
          * input state exists and corrupt its render startup. */
         if (translated.dx == 0.0 && translated.dy == 0.0) break;
-        emit(translated);
-        ++count;
+        if (!coalesce_motion) {
+          emit(translated);
+          ++count;
+        } else if (!has_pending_motion) {
+          pending_motion = translated;
+          has_pending_motion = true;
+        } else {
+          pending_motion.dx += translated.dx;
+          pending_motion.dy += translated.dy;
+          pending_motion.x = translated.x;
+          pending_motion.y = translated.y;
+          pending_motion.timestamp_ns = translated.timestamp_ns;
+        }
         break;
+        }
       case SDL_EVENT_MOUSE_BUTTON_DOWN:
       case SDL_EVENT_MOUSE_BUTTON_UP:
       {
@@ -681,6 +798,7 @@ extern "C" int nuah_input_pump(void) {
         break;
     }
   }
+  flush_motion();
   service_focus_loss();
   if (SDL_Window* focus = SDL_GetMouseFocus(); focus) {
     set_host_cursor_hidden(true);

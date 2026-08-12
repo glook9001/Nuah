@@ -25,6 +25,21 @@ pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
 pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
 pkg_check_modules(NUAH_ARCHIVE REQUIRED IMPORTED_TARGET libarchive)
 
+# Keep the hot Android pthread bridge beside Nuah instead of silently using
+# the distro copy.  The upstream library is deliberately built from its own
+# source file; Nuah does not duplicate the pthread ABI or its implementation.
+# Our pinned copy tags initialized host objects, avoiding an expensive
+# mincore(2) probe on every Android lock/unlock/wait operation.
+add_library(nuah_pthread_bio SHARED
+  third_party/bionic_translation/pthread_wrapper/libpthread.c)
+set_target_properties(nuah_pthread_bio PROPERTIES
+  OUTPUT_NAME pthread_bio
+  SOVERSION 0
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bionic-translation")
+target_compile_definitions(nuah_pthread_bio PRIVATE _GNU_SOURCE)
+target_compile_options(nuah_pthread_bio PRIVATE -O3 -fPIC)
+target_link_libraries(nuah_pthread_bio PRIVATE pthread dl)
+
 option(NUAH_BUILD_ATL "Build the legacy ATL fork during this configure" OFF)
 set(NUAH_SDL3_ROOT "" CACHE PATH
     "Private prefix containing a prebuilt SDL3 development package")
@@ -244,6 +259,7 @@ target_link_libraries(nuah_android_math PRIVATE
 add_library(nuah_android_platform SHARED
   nuah/android_shims/asset_manager.cpp
   nuah/android_shims/egl.cpp
+  nuah/android_shims/looper_fast.cpp
   nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_platform PROPERTIES OUTPUT_NAME android LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
 target_compile_options(nuah_android_platform PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
@@ -340,12 +356,24 @@ add_dependencies(nuah_bootstrap_diagnostics_test nuah_android_bionic)
 add_test(NAME nuah-bootstrap-diagnostics
   COMMAND nuah_bootstrap_diagnostics_test)
 
+add_executable(nuah_bionic_sync_stress_test
+  nuah/tests/bionic_sync_stress_test.cpp)
+target_compile_options(nuah_bionic_sync_stress_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(nuah_bionic_sync_stress_test PRIVATE
+  NUAH_TEST_BIONIC_PATH="$<TARGET_FILE:nuah_pthread_bio>")
+target_link_libraries(nuah_bionic_sync_stress_test PRIVATE dl)
+add_dependencies(nuah_bionic_sync_stress_test nuah_pthread_bio)
+add_test(NAME nuah-bionic-sync-stress
+  COMMAND nuah_bionic_sync_stress_test)
+
 add_executable(nuah nuah/src/main.cpp)
 target_link_libraries(nuah PRIVATE nuah_core)
 set_target_properties(nuah PROPERTIES BUILD_RPATH "$ORIGIN" ENABLE_EXPORTS ON)
 add_dependencies(nuah nuah_atl_runtime)
 add_dependencies(nuah nuah_atl_api_jar)
 add_dependencies(nuah nuah_android_abi_registry_test)
+add_dependencies(nuah nuah_pthread_bio)
 
 add_executable(nuah-services nuah/src/services_main.cpp)
 target_link_libraries(nuah-services PRIVATE nuah_core PkgConfig::NUAH_UI)

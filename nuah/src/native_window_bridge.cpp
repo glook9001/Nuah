@@ -1,18 +1,40 @@
 #include "nuah/native_window_bridge.h"
 
 #include <atomic>
+#include <cstddef>
 #include <dlfcn.h>
 #include <mutex>
 #include <unordered_map>
 
 struct NuahNativeWindow {
+  /* Keep the public prefix byte-for-byte compatible with ATL's
+   * libandroid ANativeWindow.  The JNI EGL implementation in ATL calls its
+   * bionic_egl* entry points with the object returned by Nuah's
+   * ANativeWindow_fromSurface.  Nuah's old private layout put the reference
+   * counter first, so ATL interpreted that counter (and the following
+   * pointers) as egl_window/GTK fields and handed garbage dimensions to EGL.
+   * Direct EGL only needs egl_window, width, and height; the remaining
+   * fields stay null until a future native-surface adapter supplies them. */
+  void* egl_window = nullptr;
+  void* surface_view_widget = nullptr;
+  void* wayland_display = nullptr;
+  void* wayland_surface = nullptr;
+  void* x11_display = nullptr;
+  unsigned long resize_handler = 0;
+  int refcount = 0x3fffffff;  // ATL may release its borrowed ABI view.
+  int width = 0;
+  int height = 0;
+
+  /* Nuah owns the object independently of ATL's ABI-facing refcount. */
   std::atomic<unsigned> references{1};
   void* surface = nullptr;
   void* host_window = nullptr;
-  void* egl_window = nullptr;
-  std::atomic<int> width{0};
-  std::atomic<int> height{0};
 };
+
+static_assert(offsetof(NuahNativeWindow, egl_window) == 0);
+static_assert(offsetof(NuahNativeWindow, surface_view_widget) == 8);
+static_assert(offsetof(NuahNativeWindow, width) == 52);
+static_assert(offsetof(NuahNativeWindow, height) == 56);
 
 namespace {
 std::mutex registry_mutex;
@@ -22,29 +44,47 @@ NuahNativeWindow* default_window = nullptr;
 
 using WaylandEglWindowCreate = void* (*)(void*, int, int);
 using WaylandEglWindowDestroy = void (*)(void*);
+using WaylandEglWindowResize = void (*)(void*, int, int, int, int);
 
 struct WaylandEglApi {
   void* library = nullptr;
   WaylandEglWindowCreate create = nullptr;
   WaylandEglWindowDestroy destroy = nullptr;
+  WaylandEglWindowResize resize = nullptr;
 };
 
+struct WaylandEglState {
+  WaylandEglApi api;
+  std::atomic<unsigned> state{0};  // 0=unloaded, 1=loading, 2=finished
+};
+
+WaylandEglState wayland_egl_state;
+WaylandEglApi empty_wayland_egl_api;
+
 WaylandEglApi& wayland_egl_api() {
-  static WaylandEglApi api = [] {
-    WaylandEglApi result;
-    result.library = ::dlopen("libwayland-egl.so.1", RTLD_NOW | RTLD_LOCAL);
-    if (!result.library) return result;
+  if (wayland_egl_state.state.load(std::memory_order_acquire) == 2)
+    return wayland_egl_state.api;
+  unsigned expected = 0;
+  if (!wayland_egl_state.state.compare_exchange_strong(
+          expected, 1, std::memory_order_acq_rel))
+    return empty_wayland_egl_api;
+  WaylandEglApi result;
+  result.library = ::dlopen("libwayland-egl.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (result.library) {
     result.create = reinterpret_cast<WaylandEglWindowCreate>(
         ::dlsym(result.library, "wl_egl_window_create"));
     result.destroy = reinterpret_cast<WaylandEglWindowDestroy>(
         ::dlsym(result.library, "wl_egl_window_destroy"));
+    result.resize = reinterpret_cast<WaylandEglWindowResize>(
+        ::dlsym(result.library, "wl_egl_window_resize"));
     if (!result.create || !result.destroy) {
       ::dlclose(result.library);
       result = {};
     }
-    return result;
-  }();
-  return api;
+  }
+  wayland_egl_state.api = result;
+  wayland_egl_state.state.store(2, std::memory_order_release);
+  return wayland_egl_state.api;
 }
 
 NuahNativeWindow* resolve_window_locked(NuahNativeWindow* value) {
@@ -69,8 +109,8 @@ extern "C" NuahNativeWindow* nuah_native_window_register_surface(
   auto* window = new NuahNativeWindow;
   window->surface = surface;
   window->host_window = host_window;
-  window->width.store(width, std::memory_order_relaxed);
-  window->height.store(height, std::memory_order_relaxed);
+  window->width = width;
+  window->height = height;
 
   std::scoped_lock lock(registry_mutex);
   if (registry.contains(surface)) {
@@ -168,13 +208,13 @@ extern "C" void nuah_native_window_release(NuahNativeWindow* window) {
 extern "C" int nuah_native_window_width(const NuahNativeWindow* window) {
   std::scoped_lock lock(registry_mutex);
   auto* resolved = resolve_window_locked(const_cast<NuahNativeWindow*>(window));
-  return resolved ? resolved->width.load(std::memory_order_relaxed) : 0;
+  return resolved ? resolved->width : 0;
 }
 
 extern "C" int nuah_native_window_height(const NuahNativeWindow* window) {
   std::scoped_lock lock(registry_mutex);
   auto* resolved = resolve_window_locked(const_cast<NuahNativeWindow*>(window));
-  return resolved ? resolved->height.load(std::memory_order_relaxed) : 0;
+  return resolved ? resolved->height : 0;
 }
 
 extern "C" void* nuah_native_window_host(const NuahNativeWindow* window) {
@@ -212,9 +252,16 @@ extern "C" void nuah_native_window_update_geometry(
     std::scoped_lock lock(registry_mutex);
     window = resolve_window_locked(window);
     if (!window) return;
-    window->width.store(width, std::memory_order_relaxed);
-    window->height.store(height, std::memory_order_relaxed);
-    if (window->egl_window) {
+    const int old_width = window->width;
+    const int old_height = window->height;
+    const bool changed = old_width != width || old_height != height;
+    window->width = width;
+    window->height = height;
+    /* The host pump runs at 100 Hz.  Do not call wl_egl_window_resize (or
+     * acquire/release the façade) for the common unchanged-size case; apart
+     * from needless compositor traffic, repeated identical resizes can make
+     * Roblox rebuild its Android surface during a lobby transition. */
+    if (changed && window->egl_window) {
       /* Keep the façade alive while the external Wayland call runs. */
       window->references.fetch_add(1, std::memory_order_relaxed);
       retained = window;
@@ -222,15 +269,8 @@ extern "C" void nuah_native_window_update_geometry(
     }
   }
   if (egl_window) {
-    using Resize = void (*)(void*, int, int, int, int);
-    static Resize resize = [] {
-      auto& wayland = wayland_egl_api();
-      return wayland.library
-                 ? reinterpret_cast<Resize>(
-                       ::dlsym(wayland.library, "wl_egl_window_resize"))
-                 : nullptr;
-    }();
-    if (resize) resize(egl_window, width, height, 0, 0);
+    auto& wayland = wayland_egl_api();
+    if (wayland.resize) wayland.resize(egl_window, width, height, 0, 0);
   }
   if (retained) {
     nuah_native_window_release(retained);

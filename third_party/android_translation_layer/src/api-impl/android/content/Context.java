@@ -51,6 +51,7 @@ import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.UserManager;
 import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.telephony.TelephonyManager;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
@@ -88,9 +89,11 @@ public abstract class Context {
 	public static final String MEDIA_ROUTER_SERVICE = "media_router";
 	public static final String POWER_SERVICE = "power";
 	public static final String VIBRATOR_SERVICE = "vibrator";
+	public static final String VIBRATOR_MANAGER_SERVICE = "vibrator_manager";
 	public static final String WINDOW_SERVICE = "window";
 
 	public static Vibrator vibrator;
+	public static VibratorManager vibrator_manager;
 
 	public static PackageManager package_manager;
 	public static Configuration sys_config;
@@ -124,6 +127,11 @@ public abstract class Context {
 		provider.put("KeyStore.AndroidKeyStore", "android.security.keystore.AndroidKeyStore");
 		provider.put("KeyGenerator.AES", "android.security.keystore.KeyGenerator$AES");
 		provider.put("KeyGenerator.HmacSHA512", "android.security.keystore.KeyGenerator$HmacSHA512");
+		/* Roblox's quote path asks the AndroidKeyStore provider for an EC
+		 * keypair.  Register the small host-backed implementation so the
+		 * optional attestation probe fails closed without throwing on every
+		 * frame after a room starts. */
+		provider.put("KeyPairGenerator.EC", "android.security.keystore.KeyPairGenerator$EC");
 		Security.addProvider(provider);
 
 		for (PackageParser.Activity receiver : primary_application.pkg.receivers) {
@@ -290,7 +298,16 @@ public abstract class Context {
 
 	public File getCacheDir() {
 		if (cache_dir == null) {
-			cache_dir = new File("/tmp/atl_cache/" + getPackageName());
+			/* Keep the Android cache inside the app-private profile.  The old
+			 * fixed /tmp/atl_cache path put Roblox's HTTP/WOB and KTX2 files on
+			 * the desktop tmpfs; once that filled, write(2) returned EDQUOT and
+			 * Roblox surfaced it as HttpError::OutOfMemory.  An override is
+			 * useful for diagnostics, but the normal path follows Context's
+			 * Android contract and shares the persistent data volume. */
+			String configured_cache = System.getenv("NUAH_ATL_CACHE_DIR");
+			cache_dir = configured_cache != null && !configured_cache.isEmpty()
+					? new File(configured_cache)
+					: new File(getDataDirFile(), "cache");
 		}
 		if (!cache_dir.exists()) {
 			if (!cache_dir.mkdirs()) {

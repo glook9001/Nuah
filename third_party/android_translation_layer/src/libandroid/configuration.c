@@ -235,6 +235,23 @@ int32_t AConfiguration_getSdkVersion(AConfiguration *config)
 	return 36;
 }
 
+/* Android's current NDK exposes the logical display size in density
+ * independent pixels.  Roblox queries these symbols while relocating
+ * libroblox.so; leaving them unresolved prevents the native library from
+ * loading at all.  ATL has no mutable device configuration yet, so report
+ * the same 1280x720 host surface used by the GTK window. */
+int32_t AConfiguration_getScreenWidthDp(AConfiguration *config)
+{
+	(void)config;
+	return 1280;
+}
+
+int32_t AConfiguration_getScreenHeightDp(AConfiguration *config)
+{
+	(void)config;
+	return 720;
+}
+
 /**
  * Set the current SDK version in the configuration.
  */

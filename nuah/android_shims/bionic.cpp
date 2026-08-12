@@ -9,9 +9,11 @@
 #include <cstdarg>
 #include <fcntl.h>
 #include <getopt.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <semaphore.h>
 #include <signal.h>
 #include <sys/mman.h>
@@ -74,6 +76,8 @@ int nuah_host_rwlock_destroy(pthread_rwlock_t*);
 int nuah_host_rwlock_rdlock(pthread_rwlock_t*);
 int nuah_host_rwlock_wrlock(pthread_rwlock_t*);
 int nuah_host_rwlock_unlock(pthread_rwlock_t*);
+int nuah_host_getaddrinfo(const char*, const char*, const struct addrinfo*,
+                          struct addrinfo**);
 asm(".symver nuah_host_pthread_once,__pthread_once@GLIBC_2.2.5");
 asm(".symver nuah_host_pthread_key_create,__pthread_key_create@GLIBC_2.2.5");
 asm(".symver nuah_host_pthread_key_delete,pthread_key_delete@GLIBC_2.2.5");
@@ -98,21 +102,75 @@ asm(".symver nuah_host_rwlock_destroy,__pthread_rwlock_destroy@GLIBC_2.2.5");
 asm(".symver nuah_host_rwlock_rdlock,__pthread_rwlock_rdlock@GLIBC_2.2.5");
 asm(".symver nuah_host_rwlock_wrlock,__pthread_rwlock_wrlock@GLIBC_2.2.5");
 asm(".symver nuah_host_rwlock_unlock,__pthread_rwlock_unlock@GLIBC_2.2.5");
+asm(".symver nuah_host_getaddrinfo,getaddrinfo@GLIBC_2.2.5");
 }
 
 namespace {
 NuahDiagnosticsCallbacks diagnostics_callbacks{};
 
-struct MutexEntry { void* android = nullptr; pthread_mutex_t native{}; };
+/* Android's libcore/OkHttp path does not consistently honor
+ * java.net.preferIPv4Stack on a host with no usable IPv6 route: it still
+ * receives AAAA records and waits through each connect timeout before trying
+ * the working A record.  Keep the workaround at the Bionic ABI edge.  Only
+ * AF_UNSPEC lookups are narrowed; callers explicitly requesting AF_INET6
+ * retain normal behavior, and getaddrinfo/freeaddrinfo still use glibc's
+ * allocator pair. */
+extern "C" int getaddrinfo(const char* node, const char* service,
+                           const struct addrinfo* hints,
+                           struct addrinfo** result) {
+  const char* prefer_ipv4 = std::getenv("NUAH_PREFER_IPV4");
+  if (prefer_ipv4 && std::strcmp(prefer_ipv4, "0") == 0)
+    return nuah_host_getaddrinfo(node, service, hints, result);
+  if (hints && hints->ai_family != AF_UNSPEC)
+    return nuah_host_getaddrinfo(node, service, hints, result);
+
+  struct addrinfo ipv4_hints{};
+  if (hints) ipv4_hints = *hints;
+  ipv4_hints.ai_family = AF_INET;
+  return nuah_host_getaddrinfo(node, service, &ipv4_hints, result);
+}
+
+enum class EntryState : unsigned char {
+  empty,
+  initializing,
+  ready,
+  failed,
+};
+
+struct MutexEntry {
+  void* android = nullptr;
+  pthread_mutex_t native{};
+  std::atomic<EntryState> state{EntryState::empty};
+};
 struct MutexAttrEntry {
   void* android = nullptr;
   int type = PTHREAD_MUTEX_NORMAL;
 };
-struct CondEntry { void* android = nullptr; pthread_cond_t native{}; };
-struct OnceEntry { void* android = nullptr; pthread_once_t native = PTHREAD_ONCE_INIT; };
-struct AttrEntry { void* android = nullptr; pthread_attr_t native{}; };
-struct RwlockEntry { void* android = nullptr; pthread_rwlock_t native{}; };
-struct SemEntry { void* android = nullptr; sem_t native{}; };
+struct CondEntry {
+  void* android = nullptr;
+  pthread_cond_t native{};
+  std::atomic<EntryState> state{EntryState::empty};
+};
+struct OnceEntry {
+  void* android = nullptr;
+  pthread_once_t native = PTHREAD_ONCE_INIT;
+  std::atomic<EntryState> state{EntryState::empty};
+};
+struct AttrEntry {
+  void* android = nullptr;
+  pthread_attr_t native{};
+  std::atomic<EntryState> state{EntryState::empty};
+};
+struct RwlockEntry {
+  void* android = nullptr;
+  pthread_rwlock_t native{};
+  std::atomic<EntryState> state{EntryState::empty};
+};
+struct SemEntry {
+  void* android = nullptr;
+  sem_t native{};
+  std::atomic<EntryState> state{EntryState::empty};
+};
 std::atomic_flag table_lock = ATOMIC_FLAG_INIT;
 MutexEntry mutexes[2048];
 MutexAttrEntry mutex_attributes[256];
@@ -159,6 +217,110 @@ struct AndroidSigaction {
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
+
+constexpr unsigned kEntryWaitSpins = 4096;
+
+template <typename Entry>
+bool wait_for_entry(Entry& entry, void* object) {
+  for (unsigned attempt = 0; attempt < kEntryWaitSpins; ++attempt) {
+    const auto state = entry.state.load(std::memory_order_acquire);
+    if (state == EntryState::ready) return true;
+    if (state == EntryState::failed || state == EntryState::empty) return false;
+    if ((attempt & 31U) == 0) (void)::sched_yield();
+  }
+  if (sync_trace_slot()) {
+    std::fprintf(stderr,
+                 "nuah bionic: synchronization entry initialization timed out "
+                 "android=%p\n",
+                 object);
+  }
+  return false;
+}
+
+template <typename Entry, std::size_t Count>
+Entry* find_ready(Entry (&entries)[Count], void* object) {
+  lock_table();
+  for (auto& entry : entries) {
+    if (entry.android == object) {
+      if (entry.state.load(std::memory_order_relaxed) == EntryState::failed) {
+        entry.android = nullptr;
+        entry.state.store(EntryState::empty, std::memory_order_relaxed);
+        break;
+      }
+      unlock_table();
+      return wait_for_entry(entry, object) ? &entry : nullptr;
+    }
+  }
+  unlock_table();
+  return nullptr;
+}
+
+template <typename Entry, std::size_t Count>
+Entry* find_or_reserve(Entry (&entries)[Count], void* object,
+                       bool& initialize) {
+  initialize = false;
+  lock_table();
+  for (auto& entry : entries) {
+    if (entry.android == object) {
+      if (entry.state.load(std::memory_order_relaxed) == EntryState::failed) {
+        entry.android = nullptr;
+        entry.state.store(EntryState::empty, std::memory_order_relaxed);
+        break;
+      }
+      unlock_table();
+      return wait_for_entry(entry, object) ? &entry : nullptr;
+    }
+  }
+  for (auto& entry : entries) {
+    if (entry.android == nullptr &&
+        entry.state.load(std::memory_order_relaxed) == EntryState::empty) {
+      entry.android = object;
+      entry.state.store(EntryState::initializing, std::memory_order_release);
+      initialize = true;
+      unlock_table();
+      return &entry;
+    }
+  }
+  unlock_table();
+  return nullptr;
+}
+
+template <typename Entry>
+void publish_entry(Entry& entry, bool success) {
+  entry.state.store(success ? EntryState::ready : EntryState::failed,
+                    std::memory_order_release);
+}
+
+template <typename Entry>
+void clear_entry(Entry& entry, void* object) {
+  lock_table();
+  if (entry.android == object) {
+    entry.android = nullptr;
+    entry.state.store(EntryState::empty, std::memory_order_release);
+  }
+  unlock_table();
+}
+
+template <typename Entry, std::size_t Count>
+Entry* begin_destroy(Entry (&entries)[Count], void* object) {
+  lock_table();
+  for (auto& entry : entries) {
+    if (entry.android == object) {
+      if (entry.state.load(std::memory_order_relaxed) != EntryState::ready) {
+        unlock_table();
+        return nullptr;
+      }
+      /* Keep the stable slot reserved while the external destroy call runs.
+       * New users will wait and observe an empty slot after successful
+       * destruction instead of touching a half-destroyed host object. */
+      entry.state.store(EntryState::initializing, std::memory_order_release);
+      unlock_table();
+      return &entry;
+    }
+  }
+  unlock_table();
+  return nullptr;
+}
 
 
 std::FILE* host_stream(std::FILE* stream) {
@@ -237,101 +399,73 @@ MutexAttrEntry* mutex_attr_for(void* object) {
 MutexEntry* mutex_for(void* object, const pthread_mutexattr_t* attributes = nullptr) {
   const int requested_type = attributes ? mutex_attr_type(attributes)
                                         : PTHREAD_MUTEX_NORMAL;
-  lock_table();
-  for (auto& entry : mutexes) if (entry.android == object) { unlock_table(); return &entry; }
-  for (auto& entry : mutexes) if (!entry.android) {
-    entry.android = object;
-    /* Android's static mutex initializer stores its type in bits 14..15,
-     * while glibc's object layout is unrelated.  Preserve that type before
-     * creating the out-of-line host object; Roblox uses recursive static
-     * mutexes in its TLS singleton and a normal host mutex deadlocks there. */
-    std::uint32_t initializer = 0;
-    if (object) std::memcpy(&initializer, object, sizeof(initializer));
-    int type = requested_type;
-    if (!attributes) {
-      switch ((initializer >> 14U) & 0x3U) {
-        case 1: type = PTHREAD_MUTEX_RECURSIVE; break;
-        case 2: type = PTHREAD_MUTEX_ERRORCHECK; break;
-        default: break;
-      }
+  bool initialize = false;
+  auto* entry = find_or_reserve(mutexes, object, initialize);
+  if (!entry || !initialize) return entry;
+
+  /* Android's static mutex initializer stores its type in bits 14..15,
+   * while glibc's object layout is unrelated.  Preserve that type before
+   * creating the out-of-line host object; Roblox uses recursive static
+   * mutexes in its TLS singleton and a normal host mutex deadlocks there. */
+  std::uint32_t initializer = 0;
+  if (object) std::memcpy(&initializer, object, sizeof(initializer));
+  int type = requested_type;
+  if (!attributes) {
+    switch ((initializer >> 14U) & 0x3U) {
+      case 1: type = PTHREAD_MUTEX_RECURSIVE; break;
+      case 2: type = PTHREAD_MUTEX_ERRORCHECK; break;
+      default: break;
     }
-    pthread_mutexattr_t attributes{};
-    if (nuah_host_mutexattr_init(&attributes) == 0) {
-      (void)nuah_host_mutexattr_settype(&attributes, type);
-      (void)nuah_host_mutex_init(&entry.native, &attributes);
-      (void)nuah_host_mutexattr_destroy(&attributes);
-    } else {
-      (void)nuah_host_mutex_init(&entry.native, nullptr);
-    }
-    unlock_table(); return &entry;
   }
-  unlock_table(); return nullptr;
+  pthread_mutexattr_t host_attributes{};
+  bool success = false;
+  if (nuah_host_mutexattr_init(&host_attributes) == 0) {
+    (void)nuah_host_mutexattr_settype(&host_attributes, type);
+    success = nuah_host_mutex_init(&entry->native, &host_attributes) == 0;
+    (void)nuah_host_mutexattr_destroy(&host_attributes);
+  } else {
+    success = nuah_host_mutex_init(&entry->native, nullptr) == 0;
+  }
+  publish_entry(*entry, success);
+  return success ? entry : nullptr;
 }
 CondEntry* cond_for(void* object) {
-  lock_table();
-  for (auto& entry : conditions) if (entry.android == object) { unlock_table(); return &entry; }
-  for (auto& entry : conditions) if (!entry.android) {
-    entry.android = object;
-    nuah_host_cond_init(&entry.native, nullptr);
-    unlock_table(); return &entry;
-  }
-  unlock_table(); return nullptr;
+  bool initialize = false;
+  auto* entry = find_or_reserve(conditions, object, initialize);
+  if (!entry || !initialize) return entry;
+  const bool success = nuah_host_cond_init(&entry->native, nullptr) == 0;
+  publish_entry(*entry, success);
+  return success ? entry : nullptr;
 }
 OnceEntry* once_for(void* object) {
-  lock_table();
-  for (auto& entry : onces) if (entry.android == object) { unlock_table(); return &entry; }
-  for (auto& entry : onces) if (!entry.android) {
-    entry.android = object;
-    entry.native = PTHREAD_ONCE_INIT;
-    unlock_table(); return &entry;
-  }
-  unlock_table(); return nullptr;
+  bool initialize = false;
+  auto* entry = find_or_reserve(onces, object, initialize);
+  if (!entry || !initialize) return entry;
+  entry->native = PTHREAD_ONCE_INIT;
+  publish_entry(*entry, true);
+  return entry;
 }
 AttrEntry* attr_for(void* object) {
   if (!object) return nullptr;
-  lock_table();
-  for (auto& entry : attributes) {
-    if (entry.android == object) {
-      unlock_table();
-      return &entry;
-    }
-  }
-  for (auto& entry : attributes) {
-    if (!entry.android) {
-      entry.android = object;
-      host<int (*)(pthread_attr_t*)>("pthread_attr_init")(&entry.native);
-      unlock_table();
-      return &entry;
-    }
-  }
-  unlock_table();
-  return nullptr;
+  bool initialize = false;
+  auto* entry = find_or_reserve(attributes, object, initialize);
+  if (!entry || !initialize) return entry;
+  auto initialize_host = host<int (*)(pthread_attr_t*)>("pthread_attr_init");
+  const bool success = initialize_host && initialize_host(&entry->native) == 0;
+  publish_entry(*entry, success);
+  return success ? entry : nullptr;
 }
 RwlockEntry* rwlock_for(void* object) {
   if (!object) return nullptr;
-  lock_table();
-  for (auto& entry : rwlocks) {
-    if (entry.android == object) {
-      unlock_table();
-      return &entry;
-    }
-  }
-  for (auto& entry : rwlocks) {
-    if (!entry.android) {
-      entry.android = object;
-      nuah_host_rwlock_init(&entry.native, nullptr);
-      unlock_table();
-      return &entry;
-    }
-  }
-  unlock_table();
-  return nullptr;
+  bool initialize = false;
+  auto* entry = find_or_reserve(rwlocks, object, initialize);
+  if (!entry || !initialize) return entry;
+  const bool success = nuah_host_rwlock_init(&entry->native, nullptr) == 0;
+  publish_entry(*entry, success);
+  return success ? entry : nullptr;
 }
 SemEntry* sem_for(void* object) {
-  for (auto& entry : semaphores) {
-    if (entry.android == object) return &entry;
-  }
-  return nullptr;
+  return find_ready(semaphores, object);
 }
 }
 
@@ -960,19 +1094,13 @@ int pthread_attr_init(pthread_attr_t* object) {
   return attr_for(object) ? 0 : ENOMEM;
 }
 int pthread_attr_destroy(pthread_attr_t* object) {
-  lock_table();
-  for (auto& entry : attributes) {
-    if (entry.android == object) {
-      const int result =
-          host<int (*)(pthread_attr_t*)>("pthread_attr_destroy")(
-              &entry.native);
-      entry.android = nullptr;
-      unlock_table();
-      return result;
-    }
-  }
-  unlock_table();
-  return EINVAL;
+  auto* entry = begin_destroy(attributes, object);
+  if (!entry) return EINVAL;
+  auto destroy_host = host<int (*)(pthread_attr_t*)>("pthread_attr_destroy");
+  const int result = destroy_host ? destroy_host(&entry->native) : EINVAL;
+  if (result == 0) clear_entry(*entry, object);
+  else publish_entry(*entry, true);
+  return result;
 }
 int pthread_attr_getstack(const pthread_attr_t* object, void** address,
                           size_t* size) {
@@ -1129,17 +1257,12 @@ int pthread_rwlock_init(pthread_rwlock_t* object,
   return rwlock_for(object) ? 0 : ENOMEM;
 }
 int pthread_rwlock_destroy(pthread_rwlock_t* object) {
-  lock_table();
-  for (auto& entry : rwlocks) {
-    if (entry.android == object) {
-      const int result = nuah_host_rwlock_destroy(&entry.native);
-      entry.android = nullptr;
-      unlock_table();
-      return result;
-    }
-  }
-  unlock_table();
-  return EINVAL;
+  auto* entry = begin_destroy(rwlocks, object);
+  if (!entry) return EINVAL;
+  const int result = nuah_host_rwlock_destroy(&entry->native);
+  if (result == 0) clear_entry(*entry, object);
+  else publish_entry(*entry, true);
+  return result;
 }
 int pthread_rwlock_rdlock(pthread_rwlock_t* object) {
   auto* entry = rwlock_for(object);
@@ -1157,23 +1280,20 @@ int pthread_rwlock_unlock(pthread_rwlock_t* object) {
                : EINVAL;
 }
 int sem_init(sem_t* object, int shared, unsigned int value) {
-  lock_table();
-  auto* entry = sem_for(object);
+  bool initialize = false;
+  auto* entry = find_or_reserve(semaphores, object, initialize);
   if (!entry) {
-    for (auto& candidate : semaphores) {
-      if (!candidate.android) {
-        candidate.android = object;
-        entry = &candidate;
-        break;
-      }
-    }
+    errno = ENOMEM;
+    return -1;
   }
-  const int result =
-      entry ? host<int (*)(sem_t*, int, unsigned int)>("sem_init")(
-                  &entry->native, shared, value)
-            : -1;
-  unlock_table();
-  if (!entry) errno = ENOMEM;
+  if (!initialize) return 0;
+  auto initialize_host =
+      host<int (*)(sem_t*, int, unsigned int)>("sem_init");
+  const int result = initialize_host
+                         ? initialize_host(&entry->native, shared, value)
+                         : -1;
+  publish_entry(*entry, result == 0);
+  if (result != 0) clear_entry(*entry, object);
   return result;
 }
 int sem_wait(sem_t* object) {
@@ -1187,13 +1307,15 @@ int sem_post(sem_t* object) {
   return host<int (*)(sem_t*)>("sem_post")(&entry->native);
 }
 int sem_destroy(sem_t* object) {
-  lock_table();
-  auto* entry = sem_for(object);
-  const int result =
-      entry ? host<int (*)(sem_t*)>("sem_destroy")(&entry->native) : -1;
-  if (entry && result == 0) entry->android = nullptr;
-  unlock_table();
-  if (!entry) errno = EINVAL;
+  auto* entry = begin_destroy(semaphores, object);
+  if (!entry) {
+    errno = EINVAL;
+    return -1;
+  }
+  auto destroy_host = host<int (*)(sem_t*)>("sem_destroy");
+  const int result = destroy_host ? destroy_host(&entry->native) : -1;
+  if (result == 0) clear_entry(*entry, object);
+  else publish_entry(*entry, true);
   return result;
 }
 }  // extern "C"

@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include <glib.h>
+
 #include <array>
 #include <algorithm>
 #include <cerrno>
@@ -17,6 +19,7 @@
 #include <cstring>
 #include <fstream>
 #include <optional>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -67,6 +70,13 @@ void configure_hybris_environment(const char* library) {
 std::vector<void*> host_provider_handles;
 void* bionic_provider_handle = nullptr;
 void* android_provider_handle = nullptr;
+/* Optional hot-path synchronization provider. Nuah's finite bionic helper
+ * keeps API-36 mutex objects in an out-of-line table, which is robust but
+ * makes every lock/unlock take the table spin lock. The pinned
+ * bionic-translation pthread wrapper stores the host pointer in the Android
+ * object itself (with a low-bit tag), so it is a reversible A/B for Roblox's
+ * FunctionMarshal-heavy rooms. */
+void* pthread_bridge_handle = nullptr;
 void* host_libc_handle = nullptr;
 using HybrisBuiltinHook = void* (*)(const char*, const char*);
 HybrisBuiltinHook hybris_builtin_hook = nullptr;
@@ -258,6 +268,270 @@ bool patch_loaded_module_property_import_impl(const LoadedModule& module) {
 #endif
 }
 
+struct TexturePatchSite {
+  std::size_t file_offset = 0;
+  std::uint64_t virtual_address = 0;
+  int original_protection = PROT_READ | PROT_EXEC;
+  bool already_patched = false;
+};
+
+std::optional<TexturePatchSite> find_texture_patch_site(
+    const std::vector<std::byte>& bytes) {
+#if !defined(__x86_64__)
+  (void)bytes;
+  return std::nullopt;
+#else
+  if (bytes.size() < sizeof(Elf64_Ehdr)) return std::nullopt;
+  Elf64_Ehdr header{};
+  std::memcpy(&header, bytes.data(), sizeof(header));
+  if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 ||
+      header.e_ident[EI_CLASS] != ELFCLASS64 ||
+      header.e_ident[EI_DATA] != ELFDATA2LSB ||
+      header.e_machine != EM_X86_64 ||
+      header.e_phentsize != sizeof(Elf64_Phdr)) {
+    return std::nullopt;
+  }
+  const auto in_bounds = [&](std::uint64_t offset, std::uint64_t size) {
+    return offset <= bytes.size() && size <= bytes.size() - offset;
+  };
+  if (!in_bounds(header.e_phoff,
+                 static_cast<std::uint64_t>(header.e_phnum) *
+                     sizeof(Elf64_Phdr))) {
+    return std::nullopt;
+  }
+
+  std::vector<Elf64_Phdr> loads;
+  loads.reserve(header.e_phnum);
+  for (Elf64_Half index = 0; index < header.e_phnum; ++index) {
+    Elf64_Phdr program{};
+    std::memcpy(&program,
+                bytes.data() + header.e_phoff +
+                    static_cast<std::size_t>(index) * sizeof(Elf64_Phdr),
+                sizeof(program));
+    if (program.p_type == PT_LOAD &&
+        in_bounds(program.p_offset, program.p_filesz)) {
+      loads.push_back(program);
+    }
+  }
+  if (loads.empty()) return std::nullopt;
+
+  const auto file_to_va = [&](std::size_t offset)
+      -> std::optional<std::uint64_t> {
+    for (const auto& program : loads) {
+      if (offset >= program.p_offset &&
+          static_cast<std::uint64_t>(offset) - program.p_offset <
+              program.p_filesz) {
+        return program.p_vaddr +
+               (static_cast<std::uint64_t>(offset) - program.p_offset);
+      }
+    }
+    return std::nullopt;
+  };
+
+  static constexpr char target_string[] =
+      "TexturePackGeneratorUseOriginal";
+  const std::size_t target_length = sizeof(target_string) - 1;
+  std::vector<std::uint64_t> target_addresses;
+  for (std::size_t offset = 0;
+       offset + target_length <= bytes.size(); ++offset) {
+    if (std::memcmp(bytes.data() + offset, target_string, target_length) != 0)
+      continue;
+    if (const auto address = file_to_va(offset))
+      target_addresses.push_back(*address);
+  }
+  if (target_addresses.empty()) return std::nullopt;
+
+  const auto has_target = [&](std::uint64_t address) {
+    return std::find(target_addresses.begin(), target_addresses.end(), address) !=
+           target_addresses.end();
+  };
+  static constexpr unsigned char prefix[] = {0x31, 0xc0, 0x88, 0x05};
+  static constexpr unsigned char patched_prefix[] = {0xb0, 0x01, 0x88, 0x05};
+  static constexpr unsigned char lea_prefix[] = {0x48, 0x8d, 0x0d};
+  static constexpr unsigned char marker_prefix[] = {0x48, 0xc7, 0x05};
+  std::vector<TexturePatchSite> matches;
+  for (const auto& program : loads) {
+    if ((program.p_flags & PF_X) == 0) continue;
+    const std::size_t begin = static_cast<std::size_t>(program.p_offset);
+    const std::size_t end = begin + static_cast<std::size_t>(program.p_filesz);
+    // The candidate uses bytes through marker+10 (candidate+32).
+    if (end < begin || end - begin < 33) continue;
+    for (std::size_t candidate = begin; candidate + 33 <= end; ++candidate) {
+      const bool original =
+          std::memcmp(bytes.data() + candidate, prefix, sizeof(prefix)) == 0;
+      const bool patched = std::memcmp(bytes.data() + candidate,
+                                       patched_prefix,
+                                       sizeof(patched_prefix)) == 0;
+      if (!original && !patched) continue;
+      const std::size_t lea = candidate + 8;
+      if (std::memcmp(bytes.data() + lea, lea_prefix, sizeof(lea_prefix)) != 0)
+        continue;
+      std::int32_t displacement = 0;
+      std::memcpy(&displacement, bytes.data() + lea + 3,
+                  sizeof(displacement));
+      const auto lea_address = file_to_va(lea);
+      if (!lea_address)
+        continue;
+      const auto target_address = static_cast<std::int64_t>(*lea_address) +
+                                  7 + static_cast<std::int64_t>(displacement);
+      if (target_address < 0 ||
+          !has_target(static_cast<std::uint64_t>(target_address)))
+        continue;
+      const std::size_t marker = candidate + 22;
+      if (std::memcmp(bytes.data() + marker, marker_prefix,
+                      sizeof(marker_prefix)) != 0 ||
+          std::memcmp(bytes.data() + marker + 7, "\x1f\x00\x00\x00", 4) != 0)
+        continue;
+      const auto instruction_address = file_to_va(candidate);
+      if (!instruction_address) continue;
+      int protection = 0;
+      if (program.p_flags & PF_R) protection |= PROT_READ;
+      if (program.p_flags & PF_W) protection |= PROT_WRITE;
+      if (program.p_flags & PF_X) protection |= PROT_EXEC;
+      matches.push_back(TexturePatchSite{
+          candidate, *instruction_address, protection, patched});
+    }
+  }
+  if (matches.size() != 1) return std::nullopt;
+  return matches.front();
+#endif
+}
+
+std::optional<std::uintptr_t> module_load_bias_for_anchor(
+    const LoadedModule& module, const std::vector<std::byte>& bytes,
+    const char* anchor_name) {
+#if !defined(__x86_64__)
+  (void)module;
+  (void)bytes;
+  (void)anchor_name;
+  return std::nullopt;
+#else
+  void* anchor = module.symbol(anchor_name);
+  if (!anchor || bytes.size() < sizeof(Elf64_Ehdr)) return std::nullopt;
+  Elf64_Ehdr header{};
+  std::memcpy(&header, bytes.data(), sizeof(header));
+  if (header.e_shentsize != sizeof(Elf64_Shdr)) return std::nullopt;
+  const auto in_bounds = [&](std::uint64_t offset, std::uint64_t size) {
+    return offset <= bytes.size() && size <= bytes.size() - offset;
+  };
+  if (!in_bounds(header.e_shoff,
+                 static_cast<std::uint64_t>(header.e_shnum) *
+                     sizeof(Elf64_Shdr))) {
+    return std::nullopt;
+  }
+  std::vector<Elf64_Shdr> sections(header.e_shnum);
+  std::memcpy(sections.data(), bytes.data() + header.e_shoff,
+              sections.size() * sizeof(Elf64_Shdr));
+  const Elf64_Shdr* dynsym = nullptr;
+  for (const auto& section : sections) {
+    if (section.sh_type == SHT_DYNSYM &&
+        section.sh_entsize == sizeof(Elf64_Sym) &&
+        in_bounds(section.sh_offset, section.sh_size) &&
+        section.sh_link < sections.size() &&
+        sections[section.sh_link].sh_type == SHT_STRTAB &&
+        in_bounds(sections[section.sh_link].sh_offset,
+                  sections[section.sh_link].sh_size)) {
+      dynsym = &section;
+      break;
+    }
+  }
+  if (!dynsym) return std::nullopt;
+  const auto& strings_section = sections[dynsym->sh_link];
+  const auto* symbols = reinterpret_cast<const Elf64_Sym*>(
+      bytes.data() + dynsym->sh_offset);
+  const auto* strings = reinterpret_cast<const char*>(
+      bytes.data() + strings_section.sh_offset);
+  const std::size_t symbol_count = dynsym->sh_size / sizeof(Elf64_Sym);
+  std::uint64_t symbol_value = 0;
+  for (std::size_t index = 0; index < symbol_count; ++index) {
+    const auto& symbol = symbols[index];
+    if (symbol.st_name >= strings_section.sh_size ||
+        symbol.st_shndx == SHN_UNDEF)
+      continue;
+    if (std::strcmp(strings + symbol.st_name, anchor_name) == 0) {
+      symbol_value = symbol.st_value;
+      break;
+    }
+  }
+  if (symbol_value == 0) return std::nullopt;
+  const auto address = reinterpret_cast<std::uintptr_t>(anchor);
+  if (address < symbol_value) return std::nullopt;
+  return address - symbol_value;
+#endif
+}
+
+bool patch_loaded_module_texture_flag_impl(const LoadedModule& module) {
+#if !defined(__x86_64__)
+  (void)module;
+  return false;
+#else
+  if (module.path().empty()) return false;
+  const auto bytes = read_file(module.path());
+  const auto site = find_texture_patch_site(bytes);
+  if (!site) {
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+      std::fprintf(stderr,
+                   "nuah loader: libroblox texture patch signature not found or ambiguous\n");
+    return false;
+  }
+
+  std::optional<std::uintptr_t> load_bias;
+  static constexpr const char* anchors[] = {
+      "Java_com_google_androidgamesdk_GameActivity_initializeNativeCode",
+      "JNI_OnLoad"};
+  for (const char* anchor : anchors) {
+    load_bias = module_load_bias_for_anchor(module, bytes, anchor);
+    if (load_bias) break;
+  }
+  if (!load_bias) return false;
+  const auto target = *load_bias + site->virtual_address;
+  const long page_size_value = ::sysconf(_SC_PAGESIZE);
+  if (page_size_value <= 0) return false;
+  const auto page_size = static_cast<std::uintptr_t>(page_size_value);
+  const auto page = target & ~(page_size - 1);
+  unsigned char resident = 0;
+  if (::mincore(reinterpret_cast<void*>(page), page_size, &resident) != 0)
+    return false;
+
+  auto* instruction = reinterpret_cast<unsigned char*>(target);
+  if (site->already_patched) {
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+      std::fprintf(stderr,
+                   "nuah loader: libroblox texture default already enabled in memory at %p\n",
+                   static_cast<void*>(instruction));
+    return true;
+  }
+  if (instruction[0] != 0x31 || instruction[1] != 0xc0) return false;
+  const int original_protection = site->original_protection
+                                      ? site->original_protection
+                                      : (PROT_READ | PROT_EXEC);
+  if (::mprotect(reinterpret_cast<void*>(page), page_size,
+                 original_protection | PROT_WRITE) != 0) {
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+      std::fprintf(stderr, "nuah loader: texture page mprotect(RWX) failed: %s\n",
+                   std::strerror(errno));
+    return false;
+  }
+  const unsigned char replacement[] = {0xb0, 0x01};
+  std::memcpy(instruction, replacement, sizeof(replacement));
+  __builtin___clear_cache(reinterpret_cast<char*>(instruction),
+                          reinterpret_cast<char*>(instruction + sizeof(replacement)));
+  const bool restored =
+      ::mprotect(reinterpret_cast<void*>(page), page_size, original_protection) == 0;
+  if (!restored) {
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+      std::fprintf(stderr, "nuah loader: texture page permission restore failed: %s\n",
+                   std::strerror(errno));
+    return false;
+  }
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::fprintf(stderr,
+                 "nuah loader: patched libroblox texture default in memory at %p (file+0x%zx)\n",
+                 static_cast<void*>(instruction), site->file_offset);
+  return true;
+#endif
+}
+
 // The production boundary is libhybris: it owns the Android linker-facing
 // ABI and translates libc/pthread/TLS calls to this host.  Nuah's old bionic
 // provider is retained only as an explicitly requested diagnostic fallback;
@@ -405,6 +679,10 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
     const char* value = ::getenv("NUAH_ANDROID_SYNC");
     return value && *value && std::strcmp(value, "0") != 0;
   }();
+  const bool bridge_rwlock = android_sync && [] {
+    const char* value = ::getenv("NUAH_PTHREAD_RWLOCK");
+    return !value || !*value || std::strcmp(value, "0") != 0;
+  }();
   const bool trace_provider = [] {
     const char* value = ::getenv("NUAH_TRACE_PROVIDER");
     return value && *value && std::strcmp(value, "0") != 0;
@@ -435,6 +713,17 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (native_window_symbol && android_provider_handle) {
     if (void* resolved = ::dlsym(android_provider_handle, symbol)) {
       return traced_provider("nuah-libandroid-window", resolved);
+    }
+  }
+  /* libroblox also imports the NDK asset ABI directly.  The Nuah provider is
+   * intentionally RTLD_LOCAL (its ANativeWindow layout must not interpose on
+   * ATL's GTK implementation), so libhybris cannot discover these symbols
+   * through RTLD_DEFAULT.  Resolve the complete AAsset/AAssetManager family
+   * through the same provider-owned handle. */
+  const bool asset_symbol = std::strncmp(symbol, "AAsset", 6) == 0;
+  if (asset_symbol && android_provider_handle) {
+    if (void* resolved = ::dlsym(android_provider_handle, symbol)) {
+      return traced_provider("nuah-libandroid-assets", resolved);
     }
   }
   /* Native Roblox links libEGL.so directly.  Nuah's Android-facing provider
@@ -468,7 +757,16 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
        std::strcmp(symbol, "pthread_cond_signal") == 0 ||
        std::strcmp(symbol, "pthread_cond_broadcast") == 0 ||
        std::strcmp(symbol, "pthread_cond_wait") == 0 ||
-       std::strcmp(symbol, "pthread_cond_timedwait") == 0);
+       std::strcmp(symbol, "pthread_cond_timedwait") == 0 ||
+       std::strcmp(symbol, "pthread_condattr_init") == 0 ||
+       std::strcmp(symbol, "pthread_condattr_destroy") == 0 ||
+       std::strcmp(symbol, "pthread_condattr_setclock") == 0 ||
+       (bridge_rwlock &&
+        (std::strcmp(symbol, "pthread_rwlock_init") == 0 ||
+         std::strcmp(symbol, "pthread_rwlock_destroy") == 0 ||
+         std::strcmp(symbol, "pthread_rwlock_rdlock") == 0 ||
+         std::strcmp(symbol, "pthread_rwlock_unlock") == 0 ||
+         std::strcmp(symbol, "pthread_rwlock_wrlock") == 0)));
   const bool requires_bionic_pthread =
       requires_bionic_sync ||
       (compat_pthread_provider &&
@@ -481,6 +779,30 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
        std::strcmp(symbol, "pthread_create") == 0 ||
        std::strcmp(symbol, "pthread_getattr_np") == 0 ||
        (std::strcmp(symbol, "pthread_once") == 0 && android_sync)));
+  if (requires_bionic_sync && pthread_bridge_handle) {
+    /* The standalone bridge exports the Android ABI under bionic_ names so it
+     * can coexist with glibc. Mutex/condition calls are the default handoff;
+     * rwlocks are opt-in because their Android object layout must be proven
+     * against the exact client before changing the production path. Attributes,
+     * thread creation, and TLS remain on the existing provider. */
+    const bool bridge_symbol =
+        std::strncmp(symbol, "pthread_mutex", 13) == 0 ||
+        std::strncmp(symbol, "pthread_cond", 12) == 0 ||
+        std::strncmp(symbol, "pthread_condattr", 15) == 0 ||
+        (bridge_rwlock && std::strncmp(symbol, "pthread_rwlock", 14) == 0);
+    if (bridge_symbol) {
+      const std::string bridged_name = std::string("bionic_") + symbol;
+      if (void* resolved = ::dlsym(pthread_bridge_handle,
+                                   bridged_name.c_str())) {
+        return traced_provider("pthread-bio", resolved);
+      }
+      if (trace_provider) {
+        std::fprintf(stderr,
+                     "nuah provider: pthread bridge missing %s for %s\n",
+                     bridged_name.c_str(), symbol);
+      }
+    }
+  }
   const bool requires_bionic_provider =
       std::strcmp(symbol, "abort") == 0 ||
       std::strcmp(symbol, "fflush") == 0 ||
@@ -614,7 +936,16 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
 }
 
 void load_host_provider(const std::filesystem::path& path) {
-  void* handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+  /* Nuah's libandroid.so and ATL's libandroid.so.0 intentionally expose the
+   * same NDK symbol names but different ANativeWindow layouts (SDL façade vs
+   * GTK SurfaceView).  Keep Nuah's provider local: libhybris still resolves
+   * app imports through its explicit handle, while ATL's own JNI library can
+   * bind its GTK ANativeWindow symbols to libandroid.so.0 without accidental
+   * ELF interposition. */
+  const int flags = path.filename() == "libandroid.so"
+                        ? (RTLD_NOW | RTLD_LOCAL)
+                        : (RTLD_NOW | RTLD_GLOBAL);
+  void* handle = ::dlopen(path.c_str(), flags);
   if (handle) {
     if (path.filename() == "libbionic.so") bionic_provider_handle = handle;
     if (path.filename() == "libandroid.so") android_provider_handle = handle;
@@ -722,6 +1053,40 @@ void configure_host_provider_hooks(void* hybris) {
       setter(&callbacks);
     }
   }
+  /* Prefer the pointer-tagged bridge when the local binary exists. It removes
+   * the table spin lock from the hot mutex/condition path. Set
+   * NUAH_PTHREAD_SYNC=table for the old provider or use bridge explicitly on
+   * an installation that supplies the binary separately. A missing optional
+   * binary always keeps the known-good table adapter. */
+  const char* pthread_sync_mode = ::getenv("NUAH_PTHREAD_SYNC");
+  const bool prefer_pthread_bridge =
+      !pthread_sync_mode || std::strcmp(pthread_sync_mode, "bridge") == 0;
+  if (prefer_pthread_bridge) {
+    std::vector<std::filesystem::path> candidates;
+    if (const char* configured = ::getenv("NUAH_PTHREAD_BRIDGE_LIBRARY");
+        configured && *configured) {
+      candidates.emplace_back(configured);
+    }
+    candidates.emplace_back(runtime_directory() / "bionic-translation" /
+                             "libpthread_bio.so.0");
+    for (const auto& candidate : candidates) {
+      if (!std::filesystem::is_regular_file(candidate)) continue;
+      pthread_bridge_handle =
+          ::dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL);
+      if (pthread_bridge_handle) {
+        if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+            trace && *trace) {
+          std::fprintf(stderr, "nuah sync: pthread bridge=%s\n",
+                       candidate.c_str());
+        }
+        break;
+      }
+    }
+    if (!pthread_bridge_handle && ::getenv("NUAH_BOOTSTRAP_TRACE")) {
+      std::fprintf(stderr,
+                   "nuah sync: requested pthread bridge unavailable; using table adapter\n");
+    }
+  }
   host_libc_handle = ::dlopen("libc.so.6", RTLD_NOW | RTLD_NOLOAD | RTLD_LOCAL);
   if (!host_libc_handle) {
     const char* error = ::dlerror();
@@ -782,6 +1147,130 @@ void validate_elf(const std::vector<std::byte>& data) {
   if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 ||
       header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != EM_X86_64 || header.e_type != ET_DYN) {
     throw std::runtime_error("APK member is not an x86-64 PIE/shared ELF");
+  }
+}
+
+std::string sha256_hex(const std::vector<std::byte>& data) {
+  GChecksum* checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  if (!checksum) throw std::runtime_error("cannot create SHA-256 checksum");
+  g_checksum_update(
+      checksum, reinterpret_cast<const guchar*>(data.data()), data.size());
+  const char* value = g_checksum_get_string(checksum);
+  const std::string result = value ? value : "";
+  g_checksum_free(checksum);
+  if (result.empty()) throw std::runtime_error("cannot calculate SHA-256 checksum");
+  return result;
+}
+
+std::optional<std::string> patch_manifest_field(const std::string& manifest,
+                                                const char* field) {
+  const std::regex pattern(
+      "\\\"" + std::string(field) +
+      "\\\"\\s*:\\s*(?:\\\"([^\\\"]*)\\\"|([0-9]+))");
+  std::smatch match;
+  if (!std::regex_search(manifest, match, pattern) || match.size() != 3)
+    return std::nullopt;
+  return match[1].matched ? match[1].str() : match[2].str();
+}
+
+std::optional<std::string> elf_build_id(const std::vector<std::byte>& data) {
+  if (data.size() < sizeof(Elf64_Ehdr)) return std::nullopt;
+  Elf64_Ehdr header{};
+  std::memcpy(&header, data.data(), sizeof(header));
+  if (header.e_ident[EI_CLASS] != ELFCLASS64 ||
+      header.e_ident[EI_DATA] != ELFDATA2LSB ||
+      header.e_phentsize != sizeof(Elf64_Phdr))
+    return std::nullopt;
+  const auto in_bounds = [&](std::uint64_t offset, std::uint64_t size) {
+    return offset <= data.size() && size <= data.size() - offset;
+  };
+  if (!in_bounds(header.e_phoff,
+                 static_cast<std::uint64_t>(header.e_phnum) *
+                     sizeof(Elf64_Phdr)))
+    return std::nullopt;
+  for (Elf64_Half index = 0; index < header.e_phnum; ++index) {
+    Elf64_Phdr program{};
+    std::memcpy(&program, data.data() + header.e_phoff +
+                                   static_cast<std::size_t>(index) *
+                                       sizeof(Elf64_Phdr),
+                sizeof(program));
+    if (program.p_type != PT_NOTE ||
+        !in_bounds(program.p_offset, program.p_filesz))
+      continue;
+    std::size_t cursor = static_cast<std::size_t>(program.p_offset);
+    const std::size_t end = cursor + static_cast<std::size_t>(program.p_filesz);
+    while (cursor + 12 <= end) {
+      std::uint32_t namesz = 0;
+      std::uint32_t descsz = 0;
+      std::uint32_t type = 0;
+      std::memcpy(&namesz, data.data() + cursor, sizeof(namesz));
+      std::memcpy(&descsz, data.data() + cursor + 4, sizeof(descsz));
+      std::memcpy(&type, data.data() + cursor + 8, sizeof(type));
+      cursor += 12;
+      const std::size_t name_bytes = (static_cast<std::size_t>(namesz) + 3) & ~3U;
+      const std::size_t desc_bytes = (static_cast<std::size_t>(descsz) + 3) & ~3U;
+      if (name_bytes > end - cursor || desc_bytes > end - cursor - name_bytes)
+        break;
+      const auto* name = reinterpret_cast<const char*>(data.data() + cursor);
+      const std::size_t desc_offset = cursor + name_bytes;
+      if (type == NT_GNU_BUILD_ID && namesz >= 3 &&
+          std::memcmp(name, "GNU", 3) == 0) {
+        std::string result;
+        result.reserve(descsz * 2);
+        static constexpr char digits[] = "0123456789abcdef";
+        for (std::size_t byte = 0; byte < descsz; ++byte) {
+          const auto value = static_cast<unsigned char>(
+              data[desc_offset + byte]);
+          result.push_back(digits[value >> 4]);
+          result.push_back(digits[value & 0xf]);
+        }
+        return result;
+      }
+      cursor = desc_offset + desc_bytes;
+    }
+  }
+  return std::nullopt;
+}
+
+void validate_libroblox_patch_overlay(const std::filesystem::path& path,
+                                      const std::vector<std::byte>& original,
+                                      const std::vector<std::byte>& patched) {
+  const auto manifest_path = path.string() + ".json";
+  const auto manifest_bytes = read_file(manifest_path);
+  const std::string manifest(reinterpret_cast<const char*>(manifest_bytes.data()),
+                             manifest_bytes.size());
+  const auto field = [&](const char* name) {
+    const auto value = patch_manifest_field(manifest, name);
+    if (!value) {
+      throw std::runtime_error("libroblox patch manifest lacks " +
+                               std::string(name));
+    }
+    return *value;
+  };
+  if (field("format") != "1" ||
+      field("patch") != "TexturePackGeneratorUseOriginalDefault" ||
+      field("target") != "libroblox.so") {
+    throw std::runtime_error("unsupported libroblox patch manifest");
+  }
+  if (field("original_sha256") != sha256_hex(original) ||
+      field("patched_sha256") != sha256_hex(patched) ||
+      field("original_size") != std::to_string(original.size()) ||
+      field("patched_size") != std::to_string(patched.size())) {
+    throw std::runtime_error("libroblox patch manifest does not match its images");
+  }
+  if (field("original_bytes") != "31c0" ||
+      field("replacement_bytes") != "b001") {
+    throw std::runtime_error("unexpected libroblox patch bytes");
+  }
+  const auto original_id = elf_build_id(original);
+  const auto patched_id = elf_build_id(patched);
+  if (!original_id || !patched_id || *original_id != *patched_id ||
+      field("build_id") != *original_id) {
+    throw std::runtime_error("libroblox patch build ID mismatch");
+  }
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+    std::fprintf(stderr, "nuah loader: validated libroblox sidecar %s build=%s\n",
+                 path.c_str(), patched_id->c_str());
   }
 }
 
@@ -1065,10 +1554,19 @@ void configure_android_library_path(
   const std::string app_library = (app_directory / "lib").string();
   // Match ATL's main executable: the explicit lib directory handles
   // System.loadLibrary("name"), while the app-root wildcard covers Android
-  // libraries extracted by app code into its private data tree. Do not append
-  // an inherited private libc path: ATL/libhybris must keep one linker/TLS
-  // provider, while the app-local API adjustment is handled after relocation.
-  std::string path = app_library + ":" + app_directory.string() + "**";
+  // libraries extracted by app code into its private data tree.  The linker
+  // parses this list after it has already been initialized, so include the
+  // provider list that native_runtime published in BIONIC_LD_LIBRARY_PATH;
+  // merely setting that environment variable is too late for this parser.
+  // This keeps one linker/TLS provider while making Nuah's libandroid and
+  // companion DSOs visible to the later System.loadLibrary call.
+  std::string path = app_library;
+  if (const char* configured = ::getenv("BIONIC_LD_LIBRARY_PATH");
+      configured && *configured) {
+    path += ":";
+    path += configured;
+  }
+  path += ":" + app_directory.string() + "**";
   using ParseLibraryPath = void (*)(const char*, char*);
   ParseLibraryPath parse = nullptr;
   void* linker_handle = nullptr;
@@ -1133,8 +1631,18 @@ void configure_android_library_path(
 }
 
 LoadedModule::~LoadedModule() {
-  if (handle_ && close_) close_(handle_);
-  if (loader_library_) ::dlclose(loader_library_);
+  /* Android keeps application native libraries resident for the lifetime of
+   * the process.  Roblox registers a large destructor graph (including its
+   * stdio/error-reporting state); unloading it through hybris during the
+   * isolated bootstrap teardown runs those destructors after the host FILE
+   * domain has changed and can crash in fflush().  The native child exits
+   * immediately after reporting its status, so leaking this one app handle
+   * is both safer and faithful to Android's process model. */
+  const auto filename = path_.filename().string();
+  const bool app_library_lifetime = filename == "libroblox.so" ||
+                                    filename.starts_with("libroblox.");
+  if (!app_library_lifetime && handle_ && close_) close_(handle_);
+  if (!app_library_lifetime && loader_library_) ::dlclose(loader_library_);
   if (remove_path_ && !path_.empty()) {
     std::error_code error;
     std::filesystem::remove(path_, error);
@@ -1148,6 +1656,45 @@ LoadedModule::LoadedModule(LoadedModule&& other) noexcept : path_(std::move(othe
 LoadedModule& LoadedModule::operator=(LoadedModule&& other) noexcept {
   if (this != &other) { this->~LoadedModule(); path_ = std::move(other.path_); handle_ = other.handle_; loader_library_ = other.loader_library_; close_ = other.close_; symbol_ = other.symbol_; versioned_symbol_ = other.versioned_symbol_; size_ = other.size_; remove_path_ = other.remove_path_; other.path_.clear(); other.handle_ = nullptr; other.loader_library_ = nullptr; other.close_ = nullptr; other.symbol_ = nullptr; other.versioned_symbol_ = nullptr; other.size_ = 0; other.remove_path_ = true; }
   return *this;
+}
+
+/* The native bootstrap runs in an isolated child and deliberately uses
+ * _exit() after handing its status back to the parent.  That means a
+ * LoadedModule destructor cannot reap the staging ELF.  Keep the directory
+ * bounded on the next launch, but only touch files created by this loader;
+ * callers may still place unrelated files beside them.  RuntimeDataLock
+ * serializes launches for the profile, so an old module here is not live. */
+void reap_stale_native_modules(const std::filesystem::path& directory) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(directory, error) || error) return;
+  std::size_t removed = 0;
+  std::uintmax_t removed_bytes = 0;
+  for (std::filesystem::directory_iterator entries(
+           directory, std::filesystem::directory_options::skip_permission_denied,
+           error);
+       entries != std::filesystem::directory_iterator(); entries.increment(error)) {
+    if (error) {
+      error.clear();
+      continue;
+    }
+    const auto name = entries->path().filename().string();
+    if (!name.starts_with("nuah-module-")) continue;
+    std::error_code file_error;
+    if (!std::filesystem::is_regular_file(entries->path(), file_error) ||
+        file_error)
+      continue;
+    const auto bytes = std::filesystem::file_size(entries->path(), file_error);
+    if (file_error) continue;
+    if (std::filesystem::remove(entries->path(), file_error) && !file_error) {
+      ++removed;
+      removed_bytes += bytes;
+    }
+  }
+  if (removed && ::getenv("NUAH_BOOTSTRAP_TRACE")) {
+    std::fprintf(stderr, "nuah loader: reaped %zu stale native modules (%llu MiB)\n",
+                 removed,
+                 static_cast<unsigned long long>(removed_bytes / (1024 * 1024)));
+  }
 }
 
 void* LoadedModule::symbol(const char* name) const {
@@ -1167,36 +1714,93 @@ void* LoadedModule::symbol(const char* name) const {
 LoadedModule load_apk_library(const std::filesystem::path& apk, const std::string& member) {
   const auto apk_member = read_stored_apk_member(apk, member);
   validate_elf(apk_member.bytes);
-  const auto& image_bytes = apk_member.bytes;
-  char path_template[] = "/tmp/nuah-module-XXXXXX";
-  int fd = ::mkstemp(path_template);
-  if (fd < 0) throw std::runtime_error("temporary ELF file creation failed");
-  const std::filesystem::path temporary_path(path_template);
-  std::filesystem::path path = temporary_path;
+  const char* patch_setting = ::getenv("NUAH_LIBROBLOX_PATCH");
+  const char* memory_setting = ::getenv("NUAH_LIBROBLOX_MEMORY_PATCH");
+  const auto is_enabled = [](const char* value) {
+    return value && *value && std::strcmp(value, "0") != 0;
+  };
+  const bool memory_patch_requested =
+      (patch_setting &&
+       (std::strcmp(patch_setting, "memory") == 0 ||
+        std::strcmp(patch_setting, "in-memory") == 0)) ||
+      is_enabled(memory_setting);
+  std::vector<std::byte> overlay_bytes;
+  const std::filesystem::path overlay_path = [&] {
+    const char* configured = patch_setting;
+    if (!configured || !*configured) return std::filesystem::path{};
+    if (std::strcmp(configured, "memory") == 0 ||
+        std::strcmp(configured, "in-memory") == 0)
+      return std::filesystem::path{};
+    const std::filesystem::path candidate(configured);
+    overlay_bytes = read_file(candidate);
+    validate_elf(overlay_bytes);
+    validate_libroblox_patch_overlay(candidate, apk_member.bytes, overlay_bytes);
+    return candidate;
+  }();
+  const auto& image_bytes = overlay_path.empty() ? apk_member.bytes : overlay_bytes;
+  /* The native image is about 116 MiB.  Reuse the app-private extraction
+   * prepared by native_runtime when it is present; the old path copied the
+   * same bytes into a fresh staging file on every launch, then isolated
+   * _exit() left that file behind.  A temporary ELF remains the fallback for
+   * callers that do not provide an app data directory. */
+  std::filesystem::path staging_root = "/tmp";
+  if (const char* app_data = ::getenv("ANDROID_APP_DATA_DIR");
+      app_data && *app_data) {
+    staging_root = std::filesystem::path(app_data) / ".native-tmp";
+  }
+  std::error_code staging_error;
+  std::filesystem::create_directories(staging_root, staging_error);
+  if (staging_error)
+    throw std::runtime_error("cannot create native staging directory: " +
+                             staging_error.message());
+  reap_stale_native_modules(staging_root);
+  std::filesystem::path path;
+  std::filesystem::path temporary_path;
   bool remove_path = true;
-  try {
-    write_all(fd, image_bytes);
-    if (::fchmod(fd, 0500) != 0) throw std::runtime_error("temporary ELF permission setup failed");
-    if (::close(fd) != 0) throw std::runtime_error("temporary ELF close failed");
-    fd = -1;
-    // prepare_atl_native_libraries() already extracted app DSOs into this
-    // exact Android path. Reuse it so ATL's later System.loadLibrary("roblox")
-    // resolves the same bionic linker handle instead of loading a second copy
-    // and recursively entering JNI_OnLoad. Keep the temporary file as the
-    // fallback for callers that do not have an app-private extraction root.
-    if (const char* app_data = ::getenv("ANDROID_APP_DATA_DIR");
-        app_data && *app_data) {
-      const std::size_t separator = member.find_last_of('/');
-      const std::string basename = separator == std::string::npos
-                                       ? member
-                                       : member.substr(separator + 1);
-      const auto app_path = std::filesystem::path(app_data) / "lib" / basename;
-      std::error_code app_stat;
-      if (std::filesystem::is_regular_file(app_path, app_stat) &&
-          std::filesystem::file_size(app_path, app_stat) == image_bytes.size()) {
-        path = app_path;
-        remove_path = false;
+  if (!overlay_path.empty()) {
+    path = overlay_path;
+    remove_path = false;
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+        trace && *trace) {
+      std::fprintf(stderr, "nuah loader: using libroblox sidecar %s\n",
+                   path.c_str());
+    }
+  } else if (const char* app_data = ::getenv("ANDROID_APP_DATA_DIR");
+      app_data && *app_data) {
+    const std::size_t separator = member.find_last_of('/');
+    const std::string basename = separator == std::string::npos
+                                     ? member
+                                     : member.substr(separator + 1);
+    const auto app_path = std::filesystem::path(app_data) / "lib" / basename;
+    std::error_code app_stat;
+    if (std::filesystem::is_regular_file(app_path, app_stat) &&
+        std::filesystem::file_size(app_path, app_stat) == image_bytes.size()) {
+      path = app_path;
+      remove_path = false;
+      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+          trace && *trace) {
+        std::fprintf(stderr, "nuah loader: reusing extracted native image %s\n",
+                     path.c_str());
       }
+    }
+  }
+  int fd = -1;
+  try {
+    if (path.empty()) {
+      const std::string pattern =
+          (staging_root / "nuah-module-XXXXXX").string();
+      std::vector<char> path_template(pattern.begin(), pattern.end());
+      path_template.push_back('\0');
+      fd = ::mkstemp(path_template.data());
+      if (fd < 0) throw std::runtime_error("temporary ELF file creation failed");
+      temporary_path = std::filesystem::path(path_template.data());
+      path = temporary_path;
+      write_all(fd, image_bytes);
+      if (::fchmod(fd, 0500) != 0)
+        throw std::runtime_error("temporary ELF permission setup failed");
+      if (::close(fd) != 0)
+        throw std::runtime_error("temporary ELF close failed");
+      fd = -1;
     }
     void* loader_library = nullptr;
     const char* configured_library = ::getenv("NUAH_HYBRIS_LIBRARY");
@@ -1275,6 +1879,22 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     bool bionic_handle = false;
     void* handle = nullptr;
     if (bionic_dlopen && bionic_dlclose && bionic_dlsym) {
+      // The Nuah libandroid provider is intentionally local while libhybris
+      // wires the app image.  Promote that already-loaded glibc object only
+      // at this boundary so bionic_translation's try_glibc fallback can
+      // satisfy DT_NEEDED("libandroid.so") by soname.  Do not pass the host
+      // ELF to bionic_dlopen itself; its Android relocation parser rejects
+      // glibc IFUNC/TLS relocations.
+      const auto host_android = runtime_directory() / "android" / "libandroid.so";
+      if (std::filesystem::is_regular_file(host_android)) {
+        void* promoted = ::dlopen(host_android.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+            trace && *trace) {
+          std::fprintf(stderr,
+                       "nuah loader: promoted host libandroid handle=%p path=%s\n",
+                       promoted, host_android.c_str());
+        }
+      }
       handle = bionic_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
       bionic_handle = handle != nullptr;
       if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
@@ -1309,6 +1929,14 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       throw std::runtime_error(message);
     }
     LoadedModule result; result.path_ = path; result.handle_ = handle; result.loader_library_ = loader_library; result.close_ = bionic_handle ? bionic_dlclose : android_dlclose; result.symbol_ = bionic_handle ? bionic_dlsym : android_dlsym; result.versioned_symbol_ = bionic_handle ? nullptr : android_dlvsym; result.size_ = image_bytes.size(); result.remove_path_ = remove_path;
+    // This is intentionally after dlopen has relocated the image and before
+    // control returns to native_runtime/ART.  No APK bytes or sidecar are
+    // changed: only the mapped instruction page is made writable for the
+    // two-byte A/B, then returned to its original RX permissions.
+    if (memory_patch_requested && !patch_loaded_module_texture_flag_impl(result)) {
+      throw std::runtime_error(
+          "requested in-memory libroblox texture patch could not be applied");
+    }
     if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
       const auto lookup = bionic_handle ? bionic_dlsym : android_dlsym;
       if (lookup) {
@@ -1340,5 +1968,9 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
 namespace nuah {
 bool patch_loaded_module_property_import(const LoadedModule& module) {
   return patch_loaded_module_property_import_impl(module);
+}
+
+bool patch_loaded_module_texture_flag(const LoadedModule& module) {
+  return patch_loaded_module_texture_flag_impl(module);
 }
 }  // namespace nuah

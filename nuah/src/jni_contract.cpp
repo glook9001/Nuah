@@ -51,8 +51,12 @@ extern "C" void nuah_jni_report_missing(const char* class_name,
                                            const char* member,
                                            const char* signature) {
   const auto name = key(class_name, member, signature);
-  std::scoped_lock lock(mutex);
-  if (missing.emplace(name, true).second) {
+  bool first_report = false;
+  {
+    std::scoped_lock lock(mutex);
+    first_report = missing.emplace(name, true).second;
+  }
+  if (first_report) {
     std::fprintf(stderr, "Nuah JNI missing: %s/%s %s\n",
                  class_name ? class_name : "<null>",
                  member ? member : "<null>", signature ? signature : "<null>");

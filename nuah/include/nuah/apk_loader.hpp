@@ -55,6 +55,11 @@ void configure_android_library_path(const std::filesystem::path& app_directory);
 // bionic linker and before app lifecycle callbacks begin.
 bool patch_loaded_module_property_import(const LoadedModule& module);
 
+// Apply the guarded TexturePackGenerator default directly to the mapped
+// libroblox image.  This is deliberately opt-in at launch time and runs
+// before ART can invoke JNI_OnLoad.
+bool patch_loaded_module_texture_flag(const LoadedModule& module);
+
 LoadedModule load_apk_library(const std::filesystem::path& apk,
                               const std::string& member);
 

@@ -22,13 +22,9 @@ typedef int __android_log_vprint_type(int prio, const char *tag, const char *fmt
 static int fallback_verbose_log(int prio, const char *tag, const char *fmt, va_list ap)
 {
 	int ret;
-
-	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-	pthread_mutex_lock(&mutex);
-	static char buf[1024];
+	char buf[1024];
 	ret = vsnprintf(buf, sizeof(buf), fmt, ap);
 	fprintf(stderr, "%lu: %s\n", pthread_self(), buf);
-	pthread_mutex_unlock(&mutex);
 
 	return ret;
 }

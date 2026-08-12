@@ -2,6 +2,7 @@
 
 #include <gtk/gtk.h>
 #include <libportal/portal.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef XDP_TYPE_INPUT_CAPTURE_SESSION // libportal >= 0.8
 	#include <libportal/settings.h>
@@ -31,6 +32,27 @@ static void monitor_changed_cb(GdkSurface *surface, GdkMonitor *monitor, jobject
 	JNIEnv *env = get_jni_env();
 	GdkRectangle geometry;
 	gdk_monitor_get_geometry(monitor, &geometry);
+	/* A desktop monitor is not the Android activity surface.  Native Nuah
+	 * launches can deliberately use a smaller window; feeding the monitor's
+	 * 1920x1006 geometry back through Configuration makes Roblox rebuild its
+	 * swapchain at full desktop resolution after joining a room.  Keep ATL's
+	 * normal monitor behavior unless the host explicitly supplies the surface
+	 * dimensions for this process. */
+	const char *lock = getenv("NUAH_LOCK_SURFACE_SIZE");
+	const char *width_value = getenv("NUAH_SURFACE_WIDTH");
+	const char *height_value = getenv("NUAH_SURFACE_HEIGHT");
+	if (lock && strcmp(lock, "0") != 0 && width_value && height_value) {
+		char *width_end = NULL;
+		char *height_end = NULL;
+		long width = strtol(width_value, &width_end, 10);
+		long height = strtol(height_value, &height_end, 10);
+		if (width > 0 && height > 0 && width_end != width_value &&
+		    *width_end == '\0' && height_end != height_value &&
+		    *height_end == '\0') {
+			geometry.width = (int)width;
+			geometry.height = (int)height;
+		}
+	}
 	if (!configuration)
 		configuration = _GET_STATIC_OBJ_FIELD(handle_cache.context.class, "sys_config", "Landroid/content/res/Configuration;");
 

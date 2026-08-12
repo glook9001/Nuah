@@ -270,15 +270,16 @@ static void apkenv_notify_gdb_of_load(soinfo *info)
 	pthread_mutex_lock(&apkenv__r_debug_lock);
 
 	_r_debug_ptr->r_state = RT_ADD;
-	rtld_db_dlactivity();
 
 	apkenv_insert_soinfo_into_debug_map(info);
 
 	_r_debug_ptr->r_state = RT_CONSISTENT;
-	rtld_db_dlactivity();
 
 	apkenv_notify_gdb_of_libraries();
 	pthread_mutex_unlock(&apkenv__r_debug_lock);
+	/* The debugger hook is external runtime code.  Never call it while the
+	 * linker lock is held: a debugger/loader callback may re-enter dlopen. */
+	rtld_db_dlactivity();
 }
 
 static void apkenv_notify_gdb_of_unload(soinfo *info)
@@ -291,15 +292,15 @@ static void apkenv_notify_gdb_of_unload(soinfo *info)
 	pthread_mutex_lock(&apkenv__r_debug_lock);
 
 	_r_debug_ptr->r_state = RT_DELETE;
-	rtld_db_dlactivity();
 
 	apkenv_remove_soinfo_from_debug_map(info);
 
 	_r_debug_ptr->r_state = RT_CONSISTENT;
-	rtld_db_dlactivity();
 
 	apkenv_notify_gdb_of_libraries();
 	pthread_mutex_unlock(&apkenv__r_debug_lock);
+	/* See the load path above: callbacks run after releasing the loader lock. */
+	rtld_db_dlactivity();
 }
 
 void apkenv_notify_gdb_of_libraries(void)
@@ -309,14 +310,12 @@ void apkenv_notify_gdb_of_libraries(void)
 		tmap = tmap->l_next;
 
 	_r_debug_ptr->r_state = RT_ADD;
-	rtld_db_dlactivity();
 
 	/* append android libs before notifying gdb */
 	tmap->l_next = apkenv_r_debug_head;
 	apkenv_r_debug_head->l_prev = tmap;
 
 	_r_debug_ptr->r_state = RT_CONSISTENT;
-	rtld_db_dlactivity();
 
 	/* restore so that ld-linux doesn't freak out */
 	tmap->l_next = NULL;

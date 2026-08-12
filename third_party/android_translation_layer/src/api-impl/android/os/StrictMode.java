@@ -100,6 +100,9 @@ public final class StrictMode {
 	public static final class VmPolicy {
 		public static final VmPolicy LAX;
 		public static final class Builder {
+			public Builder() {}
+			public Builder(VmPolicy policy) {}
+
 			public Builder detectActivityLeaks() {
 				return this;
 			}
@@ -125,6 +128,9 @@ public final class StrictMode {
 				return this;
 			}
 			public Builder penaltyDropBox() {
+				return this;
+			}
+			public Builder permitUnsafeIntentLaunch() {
 				return this;
 			}
 			public VmPolicy build() {

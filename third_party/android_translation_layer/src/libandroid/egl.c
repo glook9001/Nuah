@@ -313,10 +313,13 @@ EGLSurface bionic_eglCreateWindowSurface(EGLDisplay display, EGLConfig config, s
 
 	printf("EGL::: ret: %p\n", surface);
 
-	g_hash_table_insert(egl_surface_hashtable, surface, native_window);
-
-	if (!surface)
-		ANativeWindow_release(native_window);
+	/* The caller (EGLImpl JNI) owns the reference returned by
+	 * ANativeWindow_fromSurface and releases it after this call.  The acquire
+	 * above is the surface-table's reference and is released by
+	 * bionic_eglDestroySurface.  Do not release the caller's reference on
+	 * create failure or the JNI wrapper will release the same object twice. */
+	if (surface)
+		g_hash_table_insert(egl_surface_hashtable, surface, native_window);
 
 	return surface;
 }

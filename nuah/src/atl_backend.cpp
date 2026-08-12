@@ -10,16 +10,59 @@
 #include <cstdlib>
 #include <cerrno>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace nuah {
 namespace {
 constexpr const char* kRobloxApplicationId = "com.roblox.client";
+
+/* ART's host image is keyed by the Android boot-classpath order, not merely
+ * by the set of jars.  The Android 16 host ART shipped with Nuah embeds this
+ * order (the same order exposed by libart's default path).  A hand-written
+ * BOOTCLASSPATH in an older launch script used core-libart/okhttp before the
+ * framework jars; ART then rejected boot.art and fell back to imageless dex
+ * execution on every launch.  Keep the ordering at the runtime boundary so
+ * callers may still provide the paths without having to know ART's layout. */
+std::string canonical_android16_bootclasspath(
+    const std::vector<std::filesystem::path>& entries) {
+  static constexpr const char* kBasenames[] = {
+      "core-oj-hostdex.jar",       "apachehttp-hostdex.jar",
+      "apache-xml-hostdex.jar",    "bouncycastle-hostdex.jar",
+      "core-junit-hostdex.jar",    "core-libart-hostdex.jar",
+      "hamcrest-hostdex.jar",      "junit-runner-hostdex.jar",
+      "okhttp-hostdex.jar",        "wolfssljni-hostdex.jar",
+  };
+  std::vector<std::filesystem::path> ordered;
+  ordered.reserve(entries.size());
+  std::vector<bool> used(entries.size(), false);
+  for (const char* basename : kBasenames) {
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+      if (!used[index] && entries[index].filename() == basename) {
+        ordered.push_back(entries[index]);
+        used[index] = true;
+      }
+    }
+  }
+  /* Preserve vendor/extension jars after the platform jars.  Stable order is
+   * intentional: unknown entries may be supplied by a future ATL bundle. */
+  for (std::size_t index = 0; index < entries.size(); ++index) {
+    if (!used[index]) ordered.push_back(entries[index]);
+  }
+
+  std::string result;
+  for (const auto& entry : ordered) {
+    if (!result.empty()) result.push_back(':');
+    result += entry.string();
+  }
+  return result;
+}
 
 bool call_atl_action(const char* action, GVariant* parameter,
                      std::string& error) {
@@ -216,7 +259,7 @@ void install_android16_runtime_environment(const std::string& data) {
 
   const char* bootclasspath =
       std::getenv("NUAH_ATL_ANDROID16_BOOTCLASSPATH");
-  std::string resolved_bootclasspath;
+  std::vector<std::filesystem::path> boot_entries;
   const std::filesystem::path runtime_home =
       home && *home ? std::filesystem::path(home) : std::filesystem::path();
   for (std::size_t start = 0; start <= std::strlen(bootclasspath);) {
@@ -228,17 +271,25 @@ void install_android16_runtime_environment(const std::string& data) {
       if (path.is_relative() && !runtime_home.empty()) {
         path = runtime_home / path;
       }
-      if (!resolved_bootclasspath.empty()) resolved_bootclasspath += ':';
-      resolved_bootclasspath += path.string();
+      boot_entries.push_back(std::move(path));
     }
     if (separator == std::string::npos) break;
     start += separator + 1;
   }
+  const std::string resolved_bootclasspath =
+      canonical_android16_bootclasspath(boot_entries);
   if (resolved_bootclasspath.empty() ||
+      ::setenv("NUAH_ATL_ANDROID16_BOOTCLASSPATH",
+               resolved_bootclasspath.c_str(), 1) != 0 ||
       ::setenv("BOOTCLASSPATH", resolved_bootclasspath.c_str(), 1) != 0 ||
       ::setenv("ANDROID_RUNTIME", "art", 1) != 0 ||
       ::setenv("ANDROID_DATA", data.c_str(), 1) != 0) {
     throw std::runtime_error("cannot configure Android 16 ART environment");
+  }
+  if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
+      trace && *trace) {
+    std::cerr << "nuah art: canonical bootclasspath="
+              << resolved_bootclasspath << '\n';
   }
   if (home && *home) {
     if (::setenv("ANDROID_ROOT", home, 1) != 0 ||
@@ -505,7 +556,9 @@ std::filesystem::path prepare_atl_native_libraries(
         ::setenv("MESA_SHADER_CACHE_DIR", shader_cache_directory.c_str(), 1);
       }
       if (!std::getenv("MESA_SHADER_CACHE_MAX_SIZE")) {
-        ::setenv("MESA_SHADER_CACHE_MAX_SIZE", "128M", 1);
+        const char* requested = std::getenv("NUAH_SHADER_CACHE_MAX_SIZE");
+        ::setenv("MESA_SHADER_CACHE_MAX_SIZE",
+                 requested && *requested ? requested : "1G", 1);
       }
       if (!std::getenv("MESA_SHADER_CACHE_DISABLE")) {
         ::setenv("MESA_SHADER_CACHE_DISABLE", "false", 1);
@@ -527,20 +580,32 @@ std::filesystem::path prepare_atl_native_libraries(
   if (::setenv("ATL_UGLY_ENABLE_WEBVIEW", "1", 1) != 0) {
     throw std::runtime_error("cannot enable ATL WebKit backend");
   }
-  // Present Roblox directly into the Wayland/X11 child surface. ATL's
-  // fallback GdkGLTexture copy path creates a second GTK GL context and loses
-  // it under Roblox's sustained render loop, producing an audio-only window.
-  if (::setenv("ATL_DIRECT_EGL", "1", 1) != 0) {
+  // Present Roblox directly into the Wayland/X11 child surface by default.
+  // Keep an explicit escape hatch for hosts where EGL/GTK calls arrive from
+  // Roblox worker threads; the ATL compositor path is slower but serializes
+  // those calls on its UI loop and is useful for launch diagnostics.
+  const char* direct_egl = std::getenv("NUAH_ATL_DIRECT_EGL");
+  if (direct_egl && std::string_view(direct_egl) == "0") {
+    ::unsetenv("ATL_DIRECT_EGL");
+  } else if (::setenv("ATL_DIRECT_EGL", "1", 1) != 0) {
     throw std::runtime_error("cannot enable ATL direct EGL presentation");
   }
-  /* Mesa otherwise honors Roblox's Android preference for immediate WSI
-   * presentation (mode 0).  Mailbox is the supported low-latency desktop
-   * alternative on this Mesa stack: it avoids tearing while allowing the
-   * compositor to discard stale frames.  Keep an explicit override available
-   * for diagnostics and compatibility testing. */
-  if (!std::getenv("MESA_VK_WSI_PRESENT_MODE") &&
-      ::setenv("MESA_VK_WSI_PRESENT_MODE", "mailbox", 1) != 0) {
-    throw std::runtime_error("cannot enable low-latency Vulkan presentation");
+  /* Keep Mesa's host WSI policy aligned with the Android-facing Vulkan shim.
+   * Previously ATL forced mailbox here while the shim advertised FIFO.  That
+   * split policy makes the selected mode driver-dependent and can turn a
+   * missed refresh into uneven pacing.  Respect an explicit Mesa override;
+   * otherwise mirror Nuah's requested mode (FIFO is the default). */
+  if (!std::getenv("MESA_VK_WSI_PRESENT_MODE")) {
+    const char* requested = std::getenv("NUAH_VULKAN_PRESENT_MODE");
+    const char* host_mode = "fifo";
+    if (requested && std::strcmp(requested, "mailbox") == 0) {
+      host_mode = "mailbox";
+    } else if (requested && std::strcmp(requested, "immediate") == 0) {
+      host_mode = "immediate";
+    }
+    if (::setenv("MESA_VK_WSI_PRESENT_MODE", host_mode, 1) != 0) {
+      throw std::runtime_error("cannot configure Vulkan presentation mode");
+    }
   }
   install_atl_library_path();
   install_android16_runtime_environment(data);

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <filesystem>
+#include <pthread.h>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,12 @@ using NativeDlopen = void* (*)(const char*, int);
 struct NuahJvm {
   JavaVM* vm = nullptr;
   JNIEnv* env = nullptr;
+  /* JNI_CreateJavaVM attaches the calling pthread as ART's "main" thread.
+   * Nuah runs that call on the isolated bootstrap worker, so it must detach
+   * before the worker returns.  Otherwise ART reports the thread exit and
+   * repeatedly enters ScopedThreadStateChange checks during teardown. */
+  pthread_t vm_owner{};
+  bool vm_owner_attached = false;
   void* art = nullptr;
   void* api_native = nullptr;
   // ATL's provider must be looked up through the same linker that ART uses.
@@ -174,6 +181,21 @@ jclass find_class(JNIEnv* env, const char* name) {
 std::string artifact_root() {
   if (const char* value = std::getenv("NUAH_ATL_HOME"); value && *value)
     return value;
+  /* A local Meson build contains the current API façade (including classes
+   * such as CloseGuard) while /usr/local may still hold an older install.
+   * Prefer that sibling only when the executable itself lives in a build
+   * tree; packaged installs continue to use the installed provider. */
+  if (const char* disable = std::getenv("NUAH_PREFER_LOCAL_ATL");
+      !disable || std::strcmp(disable, "0") != 0) {
+    std::error_code error;
+    const auto executable =
+        std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error && executable.parent_path().filename() == "build") {
+      const auto local = executable.parent_path() / "atl-full";
+      if (std::filesystem::is_regular_file(local / "api-impl.jar"))
+        return local.string();
+    }
+  }
   return "/usr/local/lib64/java/dex/android_translation_layer";
 }
 
@@ -209,6 +231,70 @@ std::string join(const std::vector<std::string>& values) {
     result += value;
   }
   return result;
+}
+
+/* The host ART image is tied to the exact boot-classpath order used when it
+ * was compiled.  Native-run used to leave the inherited (and often stale)
+ * BOOTCLASSPATH in place, so ART rejected boot.art and retried every app dex
+ * file in imageless mode.  Keep this small normalization local to the real
+ * VM path; atl-run performs the same normalization before exec. */
+std::string android16_bootclasspath() {
+  static constexpr const char* kOrder[] = {
+      "core-oj-hostdex.jar",       "apachehttp-hostdex.jar",
+      "apache-xml-hostdex.jar",    "bouncycastle-hostdex.jar",
+      "core-junit-hostdex.jar",    "core-libart-hostdex.jar",
+      "hamcrest-hostdex.jar",      "junit-runner-hostdex.jar",
+      "okhttp-hostdex.jar",        "wolfssljni-hostdex.jar",
+  };
+
+  std::vector<std::filesystem::path> entries;
+  const char* configured = std::getenv("NUAH_ATL_ANDROID16_BOOTCLASSPATH");
+  if (configured && *configured) {
+    std::string value(configured);
+    std::size_t begin = 0;
+    while (begin <= value.size()) {
+      const std::size_t end = value.find(':', begin);
+      std::filesystem::path path = value.substr(
+          begin, end == std::string::npos ? std::string::npos : end - begin);
+      if (!path.empty()) {
+        if (path.is_relative()) {
+          if (const char* home = std::getenv("NUAH_ATL_ANDROID16_HOME");
+              home && *home)
+            path = std::filesystem::path(home) / path;
+        }
+        entries.push_back(std::move(path));
+      }
+      if (end == std::string::npos) break;
+      begin = end + 1;
+    }
+  }
+  if (entries.empty()) {
+    const std::filesystem::path root =
+        "/usr/local/lib64/java/dex/art";
+    for (const char* basename : kOrder) entries.emplace_back(root / basename);
+  }
+
+  std::vector<std::filesystem::path> ordered;
+  std::vector<bool> used(entries.size(), false);
+  ordered.reserve(entries.size());
+  for (const char* basename : kOrder) {
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+      if (!used[index] && entries[index].filename() == basename) {
+        ordered.push_back(entries[index]);
+        used[index] = true;
+      }
+    }
+  }
+  for (std::size_t index = 0; index < entries.size(); ++index)
+    if (!used[index]) ordered.push_back(entries[index]);
+
+  std::vector<std::string> existing;
+  existing.reserve(ordered.size());
+  for (const auto& path : ordered) {
+    if (!std::filesystem::is_regular_file(path)) return {};
+    existing.push_back(path.string());
+  }
+  return join(existing);
 }
 
 void delete_global(JNIEnv* env, jobject& object) {
@@ -506,6 +592,14 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   const std::string root = artifact_root();
   const std::string api_jar = root + "/api-impl.jar";
   std::string framework = root + "/framework-res.apk";
+  /* Keep framework-res on its verified install path when a build-tree ATL
+   * overlay is used.  The Android zip reader may reject a copied/symlinked
+   * archive while the identical installed APK maps correctly. */
+  if (const char* configured = std::getenv("NUAH_ATL_FRAMEWORK_RES");
+      configured && *configured &&
+      std::filesystem::is_regular_file(configured)) {
+    framework = configured;
+  }
   if (!std::filesystem::is_regular_file(framework)) {
     const auto build_framework = std::filesystem::path(root) /
                                  "res/framework-res/framework-res.apk";
@@ -546,13 +640,64 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
       app_data && *app_data) {
     const std::filesystem::path app_lib =
         std::filesystem::path(app_data) / "lib";
-    app_library_path = app_lib.string() + ":" + natives;
+    const char* atl_home = std::getenv("NUAH_ATL_HOME");
+    const char* atl_native = std::getenv("NUAH_ATL_NATIVE_DIR");
+    const char* atl_android_home = std::getenv("NUAH_ATL_ANDROID16_HOME");
+    const bool explicit_atl_provider =
+        (atl_home && *atl_home) || (atl_native && *atl_native) ||
+        (atl_android_home && *atl_android_home);
+    /* Keep the selected provider's matching libandroid.so.0 ahead of an old
+     * copy in the app profile; Roblox's extracted libraries still resolve
+     * from app_lib after the framework provider. */
+    app_library_path = explicit_atl_provider
+        ? natives + ":" + app_lib.string()
+        : app_lib.string() + ":" + natives;
   }
   const std::string library_path = app_library_path;
   std::string class_option = "-Djava.class.path=" + jvm->class_path;
   std::string app_class_option = "-Datl.app.class.path=" + app_path;
   std::string library_option = "-Djava.library.path=" + library_path;
   std::string app_library_option = "-Datl.app.library.path=" + library_path;
+  /* The Android provider jars run inside host ART, so their default
+   * /system/etc/security/cacerts does not exist.  Without a real root store
+   * WolfSSL rejects the Roblox CDN certificate and its pre-warm task retries
+   * while the scene is loading.  Reuse the distro-maintained Java store; a
+   * caller may point at another JKS for diagnostics. */
+  std::string trust_store_option;
+  std::string trust_store_type_option;
+  if (const char* configured = std::getenv("NUAH_JAVA_TRUST_STORE");
+      configured && *configured &&
+      std::filesystem::is_regular_file(configured)) {
+    trust_store_option = std::string("-Djavax.net.ssl.trustStore=") +
+                         configured;
+    trust_store_type_option = "-Djavax.net.ssl.trustStoreType=JKS";
+  } else if (!std::getenv("NUAH_DISABLE_JAVA_TRUST_STORE")) {
+    static constexpr const char* kTrustStores[] = {
+        "/etc/pki/java/cacerts",          // Fedora/RHEL
+        "/etc/ssl/certs/java/cacerts",    // Debian/Ubuntu
+        "/etc/ssl/certs/java/cacerts.jks" // Alpine derivatives
+    };
+    for (const char* candidate : kTrustStores) {
+      if (!std::filesystem::is_regular_file(candidate)) continue;
+      trust_store_option = std::string("-Djavax.net.ssl.trustStore=") +
+                           candidate;
+      trust_store_type_option = "-Djavax.net.ssl.trustStoreType=JKS";
+      break;
+    }
+  }
+  /* Roblox's Android HTTP stack opens several short-lived connections during
+   * room startup.  On a desktop host with an incomplete IPv6 route, the
+   * resolver/socket fallback can spend the full connect timeout on AAAA
+   * addresses before trying IPv4.  That pause stops AssetProvider callbacks
+   * and looks like a renderer stall even though Vulkan is idle.  Android's
+   * networking properties are VM options, so set them before ART creates any
+   * URL handlers.  Keep an opt-out for hosts with a working IPv6 path. */
+  std::string prefer_ipv4_option =
+      "-Djava.net.preferIPv4Stack=true";
+  const bool prefer_ipv4 = [] {
+    const char* value = std::getenv("NUAH_PREFER_IPV4");
+    return !value || std::strcmp(value, "0") != 0;
+  }();
   const std::string sdk_option = "-DBuild.VERSION.SDK_INT=36";
   std::string boot_append;
   const std::string dex_root = "/usr/local/lib64/java/dex/art";
@@ -566,13 +711,64 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   std::string boot_option;
   if (!boot_append.empty()) boot_option = "-Xbootclasspath/a:" + boot_append;
 
+  const std::string bootclasspath = android16_bootclasspath();
+  const std::filesystem::path boot_image =
+      "/usr/local/lib64/java/dex/art/oat/boot.art";
+  const bool use_boot_image = [] {
+    const char* value = std::getenv("NUAH_ART_USE_BOOT_IMAGE");
+    return !value || std::strcmp(value, "0") != 0;
+  }();
+  const bool have_boot_image =
+      use_boot_image && !bootclasspath.empty() &&
+      std::filesystem::is_regular_file(boot_image) &&
+      std::filesystem::is_regular_file(boot_image.parent_path() / "boot.oat") &&
+      std::filesystem::is_regular_file(boot_image.parent_path() / "boot.vdex");
+  std::string bootclasspath_option;
+  std::string image_option;
+  if (have_boot_image) {
+    bootclasspath_option = "-Xbootclasspath:" + bootclasspath;
+    image_option = "-Ximage:" + boot_image.string();
+    (void)::setenv("BOOTCLASSPATH", bootclasspath.c_str(), 1);
+    if (trace_enabled()) {
+      std::fprintf(stderr, "nuah ART: using boot image %s\n",
+                   boot_image.c_str());
+    }
+  } else if (trace_enabled()) {
+    std::fprintf(stderr,
+                 "nuah ART: boot image unavailable; keeping imageless mode\n");
+  }
+
   std::vector<JavaVMOption> options;
   for (std::string* option : {&library_option, &class_option, &app_class_option,
                               &app_library_option})
     options.push_back({option->data(), nullptr});
-  options.push_back({"-Xcheck:jni", nullptr});
+  if (!trust_store_option.empty()) {
+    options.push_back({trust_store_option.data(), nullptr});
+    options.push_back({trust_store_type_option.data(), nullptr});
+  }
+  if (prefer_ipv4) {
+    options.push_back({prefer_ipv4_option.data(), nullptr});
+  }
+  /* ART's JNI checker is valuable while validating a new façade, but it
+   * wraps every transition with argument/critical-section checks.  That is
+   * measurable on Roblox's FunctionMarshal-heavy render path and can turn a
+   * missed refresh into a visible hitch.  Keep it available for diagnostics,
+   * but do not pay that cost during a normal playable launch. */
+  const char* jni_check = std::getenv("NUAH_JNI_CHECK");
+  if (jni_check && *jni_check && std::strcmp(jni_check, "0") != 0)
+    options.push_back({"-Xcheck:jni", nullptr});
   options.push_back({const_cast<char*>(sdk_option.c_str()), nullptr});
-  options.push_back({"-Xnoimage-dex2oat", nullptr});
+  if (!bootclasspath_option.empty())
+    options.push_back({bootclasspath_option.data(), nullptr});
+  if (!image_option.empty()) {
+    options.push_back({image_option.data(), nullptr});
+  } else {
+    options.push_back({"-Xnoimage-dex2oat", nullptr});
+  }
+  /* Keep the stable interpreter path for the current ART/Roblox pairing.
+   * `-Xusejit:true` currently causes the Android image to unload through a
+   * stale stdio callback during activity startup; it remains an explicit
+   * diagnostic experiment rather than the playable default. */
   options.push_back({"-Xusejit:false", nullptr});
   if (!boot_option.empty()) options.push_back({boot_option.data(), nullptr});
   JavaVMInitArgs args{};
@@ -586,6 +782,8 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
     delete jvm;
     return nullptr;
   }
+  jvm->vm_owner = ::pthread_self();
+  jvm->vm_owner_attached = true;
 
   // ART/ATL resolves System.loadLibrary through the process bionic linker.
   // Open the same app-private file through that linker first; opening the
@@ -594,11 +792,24 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   // hosts that do not expose bionic_dlopen.
   std::filesystem::path api_native_file =
       std::filesystem::path(natives) / "libtranslation_layer_main.so";
-  if (const char* app_data = std::getenv("ANDROID_APP_DATA_DIR");
-      app_data && *app_data) {
-    const auto app_provider = std::filesystem::path(app_data) / "lib" /
-                              "libtranslation_layer_main.so";
-    if (std::filesystem::is_regular_file(app_provider)) api_native_file = app_provider;
+  /* An explicit ATL home/native directory is an authority choice, not just
+   * a classpath hint. Do not let an older provider cached in the app profile
+   * override it; that copy can have a different libandroidfw ABI and fail
+   * bionic relocation (ApplyStyle) before the activity is created. */
+  const char* atl_home = std::getenv("NUAH_ATL_HOME");
+  const char* atl_native = std::getenv("NUAH_ATL_NATIVE_DIR");
+  const char* atl_android_home = std::getenv("NUAH_ATL_ANDROID16_HOME");
+  const bool explicit_atl_provider =
+      (atl_home && *atl_home) || (atl_native && *atl_native) ||
+      (atl_android_home && *atl_android_home);
+  if (!explicit_atl_provider) {
+    if (const char* app_data = std::getenv("ANDROID_APP_DATA_DIR");
+        app_data && *app_data) {
+      const auto app_provider = std::filesystem::path(app_data) / "lib" /
+                                "libtranslation_layer_main.so";
+      if (std::filesystem::is_regular_file(app_provider))
+        api_native_file = app_provider;
+    }
   }
   const std::string api_native_path = api_native_file.string();
   const auto bionic_dlopen = reinterpret_cast<NativeDlopen>(
@@ -1034,6 +1245,50 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
          "Java_android_graphics_Matrix_native_1equals"},
         {"android/graphics/Matrix", "finalizer", "(J)V",
          "Java_android_graphics_Matrix_finalizer"},
+        // ATL provides the generated Paint implementation. Register the
+        // complete small surface before framework startup constructs Paint;
+        // otherwise ART aborts at Paint.native_create().
+        {"android/graphics/Paint", "native_create", "()J",
+         "Java_android_graphics_Paint_native_1create"},
+        {"android/graphics/Paint", "native_clone", "(J)J",
+         "Java_android_graphics_Paint_native_1clone"},
+        {"android/graphics/Paint", "native_recycle", "(J)V",
+         "Java_android_graphics_Paint_native_1recycle"},
+        {"android/graphics/Paint", "native_set_color", "(JI)V",
+         "Java_android_graphics_Paint_native_1set_1color"},
+        {"android/graphics/Paint", "native_get_color", "(J)I",
+         "Java_android_graphics_Paint_native_1get_1color"},
+        {"android/graphics/Paint", "native_set_alpha", "(JI)V",
+         "Java_android_graphics_Paint_native_1set_1alpha"},
+        {"android/graphics/Paint", "native_get_alpha", "(J)I",
+         "Java_android_graphics_Paint_native_1get_1alpha"},
+        {"android/graphics/Paint", "native_set_style", "(JI)V",
+         "Java_android_graphics_Paint_native_1set_1style"},
+        {"android/graphics/Paint", "native_get_style", "(J)I",
+         "Java_android_graphics_Paint_native_1get_1style"},
+        {"android/graphics/Paint", "native_set_stroke_width", "(JF)V",
+         "Java_android_graphics_Paint_native_1set_1stroke_1width"},
+        {"android/graphics/Paint", "native_get_stroke_width", "(J)F",
+         "Java_android_graphics_Paint_native_1get_1stroke_1width"},
+        {"android/graphics/Paint", "native_set_stroke_cap", "(JI)V",
+         "Java_android_graphics_Paint_native_1set_1stroke_1cap"},
+        {"android/graphics/Paint", "native_get_stroke_cap", "(J)I",
+         "Java_android_graphics_Paint_native_1get_1stroke_1cap"},
+        {"android/graphics/Paint", "native_set_stroke_join", "(JI)V",
+         "Java_android_graphics_Paint_native_1set_1stroke_1join"},
+        {"android/graphics/Paint", "native_get_stroke_join", "(J)I",
+         "Java_android_graphics_Paint_native_1get_1stroke_1join"},
+        {"android/graphics/Paint", "native_set_text_size", "(JF)V",
+         "Java_android_graphics_Paint_native_1set_1text_1size"},
+        {"android/graphics/Paint", "native_get_text_size", "(J)F",
+         "Java_android_graphics_Paint_native_1get_1text_1size"},
+        {"android/graphics/Paint", "native_set_color_filter", "(JII)V",
+         "Java_android_graphics_Paint_native_1set_1color_1filter"},
+        {"android/graphics/Paint", "native_get_text_bounds",
+         "(JLjava/lang/String;Landroid/graphics/Rect;)V",
+         "Java_android_graphics_Paint_native_1get_1text_1bounds"},
+        {"android/graphics/Paint", "native_set_text_align", "(JI)V",
+         "Java_android_graphics_Paint_native_1set_1text_1align"},
         // ATL constructs the Activity's Window/FrameLayout during
         // attachBaseContext. Its View native constructor is the only widget
         // entry needed before Roblox's GameActivity callback registration.
@@ -1208,6 +1463,14 @@ extern "C" void nuah_jvm_destroy(NuahJvm* jvm) {
   delete_global_class(jvm->env, jvm->native_gl_interface);
   // ART cannot safely be destroyed while Roblox worker threads are alive.  It
   // is intentionally kept resident until process exit, just like ATL's VM.
+  /* Detach only the thread that called JNI_CreateJavaVM.  The VM remains
+   * resident; this merely closes ART's TLS/thread-state record before the
+   * isolated pthread exits. */
+  if (jvm->vm && jvm->vm_owner_attached &&
+      ::pthread_equal(jvm->vm_owner, ::pthread_self())) {
+    (void)jvm->vm->DetachCurrentThread();
+    jvm->vm_owner_attached = false;
+  }
   delete jvm;
 }
 
@@ -1716,6 +1979,71 @@ extern "C" int nuah_jvm_dispatch_surface_changed(
   return 1;
 }
 
+extern "C" int nuah_jvm_dispatch_surface_view_lifecycle(
+    NuahJvm* jvm, int width, int height) {
+  if (!jvm || !jvm->activity || width <= 0 || height <= 0) return 0;
+  jclass game_activity =
+      find_class(jvm->env, "com/google/androidgamesdk/GameActivity");
+  if (!game_activity) return 0;
+  const jfieldID view_field = jvm->env->GetFieldID(
+      game_activity, "H", "Lcom/google/androidgamesdk/GameActivity$d;");
+  jobject view = view_field
+                     ? jvm->env->GetObjectField(jvm->activity, view_field)
+                     : nullptr;
+  clear_exception(jvm->env, "GameActivity SurfaceView field");
+  if (!view) return 0;
+  jclass surface_view = find_class(jvm->env, "android/view/SurfaceView");
+  const jmethodID dispatch = surface_view
+                                 ? jvm->env->GetMethodID(
+                                       surface_view, "dispatchSurfaceLifecycle",
+                                       "(II)V")
+                                 : nullptr;
+  const char* direct = std::getenv("NUAH_SURFACE_VIEW_CALLBACK_DIRECT");
+  if (direct && *direct && std::strcmp(direct, "0") != 0 && surface_view) {
+    /* The installed ATL Java façade can enqueue View.post(), but its UI
+     * queue is not guaranteed to drain while the native launch call is
+     * synchronously joining a room.  For this diagnostic path invoke the
+     * same private SurfaceView methods immediately, after Roblox has
+     * registered its SurfaceHolder callback.  This is intentionally opt-in;
+     * normal launches retain Android's queued ordering. */
+    const jmethodID created = jvm->env->GetMethodID(
+        surface_view, "surfaceCreated", "()V");
+    const jmethodID changed = jvm->env->GetMethodID(
+        surface_view, "surfaceChanged", "(III)V");
+    if (created && changed) {
+      jvm->env->CallVoidMethod(view, created);
+      jvm->env->CallVoidMethod(view, changed, 1, width, height);
+      if (jvm->env->ExceptionCheck()) {
+        clear_exception(jvm->env, "SurfaceView direct lifecycle call");
+        return 0;
+      }
+      if (trace_enabled()) {
+        std::fprintf(stderr,
+                     "nuah ART: dispatched SurfaceView lifecycle directly "
+                     "%dx%d\n",
+                     width, height);
+      }
+      return 1;
+    }
+    clear_exception(jvm->env, "SurfaceView direct lifecycle lookup");
+  }
+  if (!dispatch) {
+    clear_exception(jvm->env, "SurfaceView.dispatchSurfaceLifecycle");
+    return 0;
+  }
+  jvm->env->CallVoidMethod(view, dispatch, width, height);
+  if (jvm->env->ExceptionCheck()) {
+    clear_exception(jvm->env, "SurfaceView.dispatchSurfaceLifecycle call");
+    return 0;
+  }
+  if (trace_enabled()) {
+    std::fprintf(stderr,
+                 "nuah ART: queued SurfaceView lifecycle %dx%d\n", width,
+                 height);
+  }
+  return 1;
+}
+
 extern "C" int nuah_jvm_dispatch_surface_destroyed(NuahJvm* jvm, void* surface) {
   (void)surface;
   if (!jvm) return 0;
@@ -1844,19 +2172,13 @@ extern "C" int nuah_jvm_dispatch_pointer(
    * untouched.  Call the APK's own NativeInputInterface methods first and
    * retain the MotionEvent route only as a compatibility fallback. */
   if (ensure_native_input_methods(jvm)) {
-    /* Sober asks Roblox for its mouse-lock state before handling every
-     * generic mouse event.  Besides deciding whether Android requests pointer
-     * capture, this enters the current native input context after a Roblox
-     * data-model/surface reset.  Keep the query even when Nuah deliberately
-     * leaves SDL in absolute mode; otherwise a post-respawn click can reach a
-     * stale input context until an external focus cycle (Alt-Tab) refreshes it.
-     */
-    if (jvm->native_get_mouse_locked_center) {
-      (void)jvm->env->CallStaticBooleanMethod(
-          jvm->native_input_interface, jvm->native_get_mouse_locked_center);
-      if (jvm->env->ExceptionCheck())
-        clear_exception(jvm->env, "NativeInputInterface mouse-lock heartbeat");
-    }
+    /* input_bridge.cpp already queries Roblox's mouse-lock callback before
+     * each motion/wheel event and synchronizes SDL relative mode from that
+     * result.  Calling the same Java method again here duplicated the hot JNI
+     * boundary (and the engine's FunctionMarshal work) for every pointer
+     * sample.  Button events do not need a fresh lock query: capture is
+     * changed only by the synchronizer, while this function only forwards the
+     * edge to Roblox. */
     bool dispatched = false;
     if (pointer_type == NUAH_POINTER_MOTION &&
         jvm->native_pass_mouse_move) {

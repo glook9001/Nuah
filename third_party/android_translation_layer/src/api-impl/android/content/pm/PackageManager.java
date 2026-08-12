@@ -60,6 +60,28 @@ public class PackageManager {
 	private final static String TAG = "PackageManager";
 
 	/**
+	 * API 33+ replacement for the legacy integer package-info flags.  The
+	 * native package manager in ATL still consumes the low 64 bits directly;
+	 * keeping this wrapper value-only preserves the modern method signatures
+	 * without growing a second package-manager implementation.
+	 */
+	public static final class PackageInfoFlags {
+		private final long value;
+
+		private PackageInfoFlags(long value) {
+			this.value = value;
+		}
+
+		public static PackageInfoFlags of(long value) {
+			return new PackageInfoFlags(value);
+		}
+
+		public long getValue() {
+			return value;
+		}
+	}
+
+	/**
 	 * This exception is thrown when a given package, application, or component
 	 * name cannot be found.
 	 */
@@ -1409,6 +1431,17 @@ public class PackageManager {
 			                                         flags, 0, 0, new HashSet<>(), new PackageUserState());
 		}
 		throw new NameNotFoundException(packageName);
+	}
+
+	/**
+	 * API 33+ overload used by modern SDKs.  Keep the implementation on the
+	 * existing integer-flags path so the compatibility layer has one package
+	 * lookup implementation and, importantly, clears no JNI exception merely
+	 * because a caller selected the typed flags API.
+	 */
+	public PackageInfo getPackageInfo(String packageName, PackageInfoFlags flags)
+			throws NameNotFoundException {
+		return getPackageInfo(packageName, flags == null ? 0 : (int) flags.getValue());
 	}
 
 	/**

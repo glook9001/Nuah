@@ -61,6 +61,11 @@ int nuah_jvm_dispatch_window_focus(NuahJvm* jvm, int has_focus);
 int nuah_jvm_dispatch_surface_created(NuahJvm* jvm, void* surface);
 int nuah_jvm_dispatch_surface_changed(NuahJvm* jvm, void* surface,
                                       int format, int width, int height);
+/* Replay the Java SurfaceView holder callback when an older ATL native
+ * provider does not emit it itself.  The method posts the callback onto the
+ * provider's Android/GTK UI queue, matching Android's SurfaceHolder order. */
+int nuah_jvm_dispatch_surface_view_lifecycle(NuahJvm* jvm, int width,
+                                             int height);
 int nuah_jvm_dispatch_surface_destroyed(NuahJvm* jvm, void* surface);
 // action is Nuah's host convention: 1=key down, 0=key up. The implementation
 // converts it to Android KeyEvent.ACTION_DOWN/ACTION_UP before invoking the
