@@ -45,6 +45,9 @@ ROBLOX_COOKIE="$(sed -n 's/.*\.ROBLOSECURITY=\([^;[:space:]]*\).*/\1/p' \
   "$SOBER_DATA/cookies" | head -1)"
 export NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$ROBLOX_COOKIE"
 export NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$ROBLOX_COOKIE"
+# Required for the current RIVALS server handshake: use Roblox's real
+# transport instead of the RbxTransport DummyClient.
+export NUAH_CLIENT_SETTINGS_JSON='{"applicationSettings":{"DFFlagDebugDisableRbxTransportDummyClient":true}}'
 export NUAH_ATL_NATIVE_DIR="$HOME/.local/share/nuah/base.apk_/lib"
 export NUAH_HYBRIS_LIBRARY="$HOME/.local/share/nuah/hybris/lib/libhybris-common.so"
 export HYBRIS_LINKER_DIR="$HOME/.local/share/nuah/hybris/lib/libhybris/linker"
@@ -53,15 +56,13 @@ export LD_PRELOAD=/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:/usr/local/
 export NUAH_GRAPHICS_BACKEND=vulkan
 export NUAH_PERFORMANCE_MODE=turbo
 export NUAH_VULKAN_PRESENT_MODE=fifo
-export NUAH_VULKAN_SUBMIT_THREAD=1
-export MESA_VK_ENABLE_SUBMIT_THREAD=1
+export NUAH_VULKAN_SUBMIT_THREAD=0
+export MESA_VK_ENABLE_SUBMIT_THREAD=0
 export NUAH_INPUT_COALESCE=1
 export NUAH_NONBLOCK_WAYLAND_EVENTS=0
 export NUAH_MOUSE_CAPTURE=1
 export NUAH_FAST_RENDER=1
 export NUAH_ASSET_BACKGROUND=1
-# Keep Roblox's normal transport. Setting this to 1 causes RIVALS error 257.
-export NUAH_DISABLE_RBX_TRANSPORT_DUMMY=0
 export NUAH_TASK_THREADS=4
 export NUAH_TARGET_FPS=60
 export NUAH_SHADER_CACHE_DIR="$HOME/.local/share/nuah/base.apk_/mesa-shader-cache"
@@ -85,9 +86,12 @@ The launch flags above are the tested play profile. `NUAH_GRAPHICS_BACKEND`,
 input, and caching. `NUAH_ATL_NATIVE_DIR`, `NUAH_HYBRIS_LIBRARY`,
 `HYBRIS_LINKER_DIR`, `LD_LIBRARY_PATH`, and `LD_PRELOAD` select the Android
 runtime boundary. `NUAH_ROBLOX_COOKIES` and `NUAH_ROBLOX_COOKIE_HEADER` pass
-the Sober session to Roblox. `NUAH_DISABLE_RBX_TRANSPORT_DUMMY=0` is
-intentional: the dummy-transport disable override is not compatible with the
-current RIVALS server handshake.
+the Sober session to Roblox. `NUAH_CLIENT_SETTINGS_JSON` is intentional: it
+disables `RbxTransport DummyClient`, which is required for the current RIVALS
+join path. Do not use the retired `NUAH_DISABLE_RBX_TRANSPORT_DUMMY` variable;
+it is not the same mechanism and must stay unset. Keep this JSON minimal:
+explicit client-settings JSON takes precedence over Nuah's generated Roblox
+settings, so adding unrelated keys can change the server handshake.
 
 An optional host-owned loading frame can cover Roblox's cold scene transition;
 enable it explicitly with `NUAH_LOADING_FRAME=1`. It is held for 10 seconds
@@ -223,11 +227,12 @@ the corresponding `=1` values force the desktop policy on non-turbo modes.
 These settings cannot remove stalls caused by Roblox's remote asset requests or
 the host's refresh rate.
 
-On four-thread/low-end hosts the tested RIVALS profile leaves Roblox's
-auxiliary RbxTransport DummyClient enabled. Setting
-`NUAH_DISABLE_RBX_TRANSPORT_DUMMY=1` can trigger the server's error-257
-authentication rejection; use `0` for normal play. `NUAH_FRM_QUALITY=1..21` is an opt-in
-engine-owned quality/LOD A/B control for scenes that remain CPU/GPU bound.
+For RIVALS, the launch command above deliberately sets only
+`DFFlagDebugDisableRbxTransportDummyClient=true`; it selects the real Roblox
+transport and avoids the DummyClient path associated with error 257. Do not add
+the retired `NUAH_DISABLE_RBX_TRANSPORT_DUMMY` variable or old protocol/minor-
+version overrides. `NUAH_FRM_QUALITY=1..21` is an opt-in engine-owned
+quality/LOD A/B control for scenes that remain CPU/GPU bound.
 
 The turbo local profile targets the host's 60-Hz compositor by default and
 automatically leaves one logical CPU free for ART, Wayland, and the Vulkan
@@ -274,11 +279,10 @@ Mesa's shader cache is persistent per Nuah profile and defaults to a 1 GiB
 limit so a populated room can reuse compiled pipelines across launches.
 Override it with `NUAH_SHADER_CACHE_MAX_SIZE` (or disable it with
 `NUAH_SHADER_CACHE=0`) when disk space matters.
-On hosts with four or fewer logical CPUs, Nuah also enables Mesa ANV's
-dedicated submit thread by default. This keeps i915 command submission off
-Roblox's FunctionMarshal callback and reduces long `vkAcquireNextImageKHR`
-stalls. Set `NUAH_VULKAN_SUBMIT_THREAD=0` to disable it, `1` to force it, or
-`auto` to use the host default.
+The documented RIVALS launch disables Mesa ANV's dedicated submit thread for
+the current diagnostic profile. This is not a general FPS recommendation: use
+`NUAH_VULKAN_SUBMIT_THREAD=1`, `0`, or `auto` only for an A/B test on the same
+room and camera route.
 
 On the measured four-thread/Intel iGPU profile, Nuah clears the packaged
 `FFlagSimRuntimeContentTranscodeBlockingCall` flag by default. This only asks
@@ -317,6 +321,33 @@ perf stat -p "$(pgrep -n -f './build/nuah native-run')" \
 Compare the same room and camera movement for each mode.  A high Roblox
 userspace sample share with a stable present interval points at game workload;
 large present intervals or bridge latency point at the WSI/input boundary.
+
+## Engine hotspot tracing and governor
+
+`NUAH_ENGINE_TRACE=1` is the opt-in, whole-session renderer diagnostic. It
+emits compact one-second summaries for Vulkan texture uploads, descriptor
+allocation/binding, image-view creation, barriers, submits, waits, and
+acquires. It also measures Android ABI mutex/condition waits. Synchronization
+records include `caller_offset=0x...`, a module-relative libroblox return-PC
+offset that can be inspected against the exact Sober APK image:
+
+```sh
+export NUAH_ENGINE_TRACE=1
+nuah/tools/collect-engine-profile.sh  # discovers the running native child
+nuah/tools/map-libroblox-offset.sh \
+  "$HOME/.local/share/nuah/base.apk_/lib/libroblox.so" 0x247a4c4 --return-pc
+```
+
+Use the extracted `libroblox.so` path when the APK is not mounted as a
+directory. `--return-pc` subtracts one before disassembly because sampled
+return addresses may land immediately after an indirect `call`. Do not label a
+caller as a spinlock from a sample alone: a high `mutex_lock` contention count
+or condition-wait time is the evidence needed before considering a local patch.
+
+`NUAH_ENGINE_GOVERNOR=balanced` and `throughput` apply only when Nuah generates
+the Roblox client settings itself. They are not active in the documented RIVALS
+launch because its explicit minimal client-settings JSON is required for the
+transport handshake. `off` is the default.
 
 Native ART uses the host's maintained Java trust store when one is available
 (`/etc/pki/java/cacerts` on Fedora/RHEL, or the Debian/Alpine equivalents), so
