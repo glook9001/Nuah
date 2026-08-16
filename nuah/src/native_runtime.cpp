@@ -311,12 +311,32 @@ void configure_mesa_shader_cache(const std::filesystem::path& profile) {
     std::cerr << "nuah graphics: Mesa shader cache=" << directory << '\n';
 }
 
-/* ANV can submit command buffers on a dedicated driver thread.  On the
- * measured four-thread Intel host this prevents FunctionMarshal from sitting
- * inside i915 ioctl/BO allocation while the game is trying to produce the
- * next frame.  Mesa ignores the variable on other Vulkan implementations.
- * Keep an explicit 0/1 override for compatibility and only enable it by
- * default on small hosts; never overwrite a caller-provided Mesa setting. */
+/* The governor deliberately has only two bounded profiles.  It is not an
+ * engine patch: explicit NUAH_TASK_THREADS, NUAH_ASSET_PROVIDER_THREADS,
+ * NUAH_RENDER_TEXTURE_BUDGET_MS, and NUAH_VULKAN_SUBMIT_THREAD values always
+ * win.  "balanced" leaves more CPU time for FunctionMarshal; "throughput"
+ * preserves the tuned streaming profile.  Both retain Mesa's stable submit
+ * thread; disabling it is an independent diagnostic, not a governor action. */
+const char* engine_governor_profile() {
+  const char* value = ::getenv("NUAH_ENGINE_GOVERNOR");
+  if (!value || !*value || std::strcmp(value, "0") == 0 ||
+      std::strcmp(value, "off") == 0)
+    return nullptr;
+  if (std::strcmp(value, "balanced") == 0 ||
+      std::strcmp(value, "throughput") == 0)
+    return value;
+  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+    std::cerr << "nuah governor: unknown profile '" << value
+              << "' (use balanced, throughput, or off)\n";
+  return nullptr;
+}
+
+/* ANV can submit command buffers on a dedicated driver thread. On the
+ * measured four-thread Intel host, keeping submission on FunctionMarshal
+ * uses less CPU at the same 60-Hz FIFO cadence (8.34 vs 9.42 CPU-seconds in
+ * matched 15-second runs). Mesa ignores this variable on other Vulkan
+ * implementations. Keep an explicit 0/1 override and never overwrite a
+ * caller-provided Mesa setting. */
 void configure_mesa_submit_thread() {
   const char* requested = ::getenv("NUAH_VULKAN_SUBMIT_THREAD");
   const char* existing = ::getenv("MESA_VK_ENABLE_SUBMIT_THREAD");
@@ -334,9 +354,18 @@ void configure_mesa_submit_thread() {
     }
     value = requested;
   } else {
+    if (engine_governor_profile()) value = "0";
+    if (value) {
+      if (::setenv("MESA_VK_ENABLE_SUBMIT_THREAD", value, 1) != 0) return;
+      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
+        std::cerr << "nuah graphics: Mesa submit thread="
+                  << (std::strcmp(value, "1") == 0 ? "enabled" : "disabled")
+                  << '\n';
+      return;
+    }
     const unsigned int logical_cpus = std::thread::hardware_concurrency();
     if (logical_cpus == 0 || logical_cpus > 4) return;
-    value = "1";
+    value = "0";
   }
   if (::setenv("MESA_VK_ENABLE_SUBMIT_THREAD", value, 1) != 0) return;
   if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
@@ -2008,6 +2037,16 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   // the native entry points directly without it leaves the app's Java-side
   // session object null and aborts in nativeAppBridgeSetInitParams.
   report_bootstrap_stage("ACTIVITY_ON_CREATE");
+  /* Frida cannot safely spawn this ART/libhybris process, but a stopped
+   * late-attach immediately before MainGameActivity.onCreate lets a
+   * read-only probe observe Roblox's JNI flag registration. This is a
+   * diagnostics-only opt-in and never changes the library image. */
+  if (const char* pause = ::getenv("NUAH_PAUSE_BEFORE_ACTIVITY_CREATE");
+      pause && *pause) {
+    std::cerr << "nuah bootstrap: paused before MainGameActivity.onCreate (pid="
+              << ::getpid() << ")\n";
+    (void)::raise(SIGSTOP);
+  }
   if (!nuah_jvm_dispatch_activity_create(jvm)) {
     throw std::runtime_error("MainGameActivity.onCreate failed");
   }
@@ -2217,8 +2256,13 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         !quality_mode &&
         (turbo_mode || requested_low_mode ||
          (logical_cpus > 0 && logical_cpus <= 4));
+    const char* governor = engine_governor_profile();
+    const bool governor_balanced =
+        governor && std::strcmp(governor, "balanced") == 0;
     unsigned long scheduler_threads =
-        low_end_profile
+        governor_balanced
+            ? 2UL
+            : low_end_profile
             ? (logical_cpus <= 1
                    ? 1UL
                    : std::min<unsigned long>(
@@ -2232,8 +2276,18 @@ int run_nuah_jni(const NativeLaunchOptions& options,
     if (const char* raw = ::getenv("NUAH_TASK_THREADS"); raw && *raw) {
       char* end = nullptr;
       const unsigned long parsed = std::strtoul(raw, &end, 10);
-      if (end != raw && *end == '\0' && parsed >= 1 && parsed <= 64)
-        scheduler_threads = parsed;
+      if (end != raw && *end == '\0' && parsed >= 1 && parsed <= 64) {
+        /* Two forced workers have repeatedly correlated with long render
+         * hitches on the low-end Intel host.  Treat that legacy profile as
+         * automatic instead of allowing an inherited shell variable to
+         * re-enable it.  Other explicit A/B values remain available. */
+        if (parsed == 2) {
+          std::cerr << "nuah graphics: ignoring NUAH_TASK_THREADS=2; "
+                       "using automatic worker selection\n";
+        } else {
+          scheduler_threads = parsed;
+        }
+      }
     }
     /* Match the host's 60-Hz compositor by default.  The target is still
      * capped by actual scene work and FIFO presentation; a higher target only
@@ -2256,7 +2310,8 @@ int run_nuah_jni(const NativeLaunchOptions& options,
      * draining the texture queue while AssetProvider callbacks compete for
      * the same cores.  Bound that work by default on the measured low-end
      * profile; explicit values still override it. */
-    unsigned long render_texture_budget_ms = low_end_profile ? 4UL : 0UL;
+    unsigned long render_texture_budget_ms =
+        governor_balanced ? 2UL : (low_end_profile ? 4UL : 0UL);
     if (const char* raw = ::getenv("NUAH_RENDER_TEXTURE_BUDGET_MS");
         raw && *raw) {
       char* end = nullptr;
@@ -2362,14 +2417,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         frm_quality_explicit = true;
       }
     }
-    const char* disable_dummy_transport_env =
-        ::getenv("NUAH_DISABLE_RBX_TRANSPORT_DUMMY");
-    const bool disable_dummy_transport_explicit =
-        disable_dummy_transport_env && *disable_dummy_transport_env;
-    const bool disable_dummy_transport =
-        disable_dummy_transport_env
-            ? (std::strcmp(disable_dummy_transport_env, "0") != 0)
-            : low_end_profile;
     /* A 429 from a non-critical profile endpoint currently enters Roblox's
      * generic three-second retry queue. The request is background work, but
      * its completion can still hold a shared engine job and stop presents.
@@ -2505,22 +2552,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         set_client_setting(
             settings_storage, "DFIntDebugFRMQualityLevelOverride",
             "\"" + std::to_string(frm_quality) + "\"");
-      if (disable_dummy_transport) {
-        set_client_setting(settings_storage,
-                           "DebugDisableRbxTransportDummyClient", "true");
-        set_client_setting(settings_storage,
-                           "DFFlagDebugDisableRbxTransportDummyClient",
-                           "true");
-        set_client_setting(settings_storage,
-                           "FFlagDebugDisableRbxTransportDummyClient",
-                           "true");
-        set_client_setting(settings_storage,
-                           "FStringRbxTransportDummyClientEnabledMinorVersions",
-                           "\"\"");
-        set_client_setting(settings_storage,
-                           "FStringNetStackDummyClientEnabledMinorVersions",
-                           "\"\"");
-      }
       if (no_background_http_retry)
         set_client_setting(
             settings_storage, "DFStringHttpRetryOverridesDsv2",
@@ -2597,10 +2628,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
           std::cerr << "nuah graphics: FRM quality=" << frm_quality << ' '
                     << (frm_quality_explicit ? "(A/B)" : "(turbo default)")
                     << "\n";
-        if (disable_dummy_transport)
-          std::cerr << "nuah network: RbxTransport dummy client disabled ("
-                    << (disable_dummy_transport_explicit ? "A/B" : "low-end")
-                    << ")\n";
         if (no_background_http_retry)
           std::cerr << "nuah network: profile HTTP 429 retries disabled ("
                     << (no_background_http_retry_env && *no_background_http_retry_env
@@ -2678,22 +2705,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         set_client_setting(
             default_settings_storage, "DFIntDebugFRMQualityLevelOverride",
             "\"" + std::to_string(frm_quality) + "\"");
-      if (disable_dummy_transport) {
-        set_client_setting(default_settings_storage,
-                           "DebugDisableRbxTransportDummyClient", "true");
-        set_client_setting(default_settings_storage,
-                           "DFFlagDebugDisableRbxTransportDummyClient",
-                           "true");
-        set_client_setting(default_settings_storage,
-                           "FFlagDebugDisableRbxTransportDummyClient",
-                           "true");
-        set_client_setting(
-            default_settings_storage,
-            "FStringRbxTransportDummyClientEnabledMinorVersions", "\"\"");
-        set_client_setting(default_settings_storage,
-                           "FStringNetStackDummyClientEnabledMinorVersions",
-                           "\"\"");
-      }
       if (no_background_http_retry)
         set_client_setting(
             default_settings_storage, "DFStringHttpRetryOverridesDsv2",
@@ -2764,10 +2775,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
           std::cerr << "nuah graphics: FRM quality=" << frm_quality << ' '
                     << (frm_quality_explicit ? "(A/B)" : "(turbo default)")
                     << "\n";
-        if (disable_dummy_transport)
-          std::cerr << "nuah network: RbxTransport dummy client disabled ("
-                    << (disable_dummy_transport_explicit ? "A/B" : "low-end")
-                    << ")\n";
         if (no_background_http_retry)
           std::cerr << "nuah network: profile HTTP 429 retries disabled ("
                     << (no_background_http_retry_env && *no_background_http_retry_env

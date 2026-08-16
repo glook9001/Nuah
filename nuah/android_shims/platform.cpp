@@ -3,12 +3,16 @@
 
 #include <cerrno>
 #include <algorithm>
+#include <atomic>
 #include <array>
+#include <chrono>
 #include <climits>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
+#include <execinfo.h>
 #include <mutex>
 #include <poll.h>
 #include <vector>
@@ -33,6 +37,120 @@ void unsupported_media(const char* symbol) {
 void unsupported_audio(const char* symbol) {
   nuah_android_api_unsupported("libOpenSLES.so", symbol);
   errno = ENOSYS;
+}
+
+bool zstd_trace_enabled() {
+  static const bool enabled = [] {
+    const char* trace = std::getenv("NUAH_ZSTD_TRACE");
+    return trace && *trace && std::strcmp(trace, "0") != 0;
+  }();
+  return enabled;
+}
+
+bool zstd_trace_stack_enabled() {
+  static const bool enabled = [] {
+    const char* trace = std::getenv("NUAH_ZSTD_TRACE_STACK");
+    return trace && *trace && std::strcmp(trace, "0") != 0;
+  }();
+  return enabled;
+}
+
+unsigned long long zstd_trace_slow_threshold_ns() {
+  static const unsigned long long threshold = [] {
+    const char* raw = std::getenv("NUAH_ZSTD_TRACE_SLOW_US");
+    if (!raw || !*raw) return 2000ULL;
+    char* end = nullptr;
+    const auto parsed = std::strtoull(raw, &end, 10);
+    return end != raw && *end == '\0' && parsed > 0 ? parsed : 2000ULL;
+  }();
+  return threshold * 1000ULL;
+}
+
+using SteadyClock = std::chrono::steady_clock;
+
+std::atomic<unsigned long long> zstd_decompress_calls{0};
+std::atomic<unsigned long long> zstd_decompress_ns{0};
+std::atomic<unsigned long long> zstd_decompress_max_ns{0};
+std::atomic<unsigned long long> zstd_compressed_bytes{0};
+std::atomic<unsigned long long> zstd_uncompressed_bytes{0};
+std::atomic<long long> zstd_next_report_ns{0};
+
+/* Zstd's trace interface is ABI-stable through `version`. Roblox statically
+ * links a trace-enabled Zstd and resolves these weak imports from Nuah's
+ * Android provider, so preserve the layout instead of using ellipsis hooks. */
+struct ZstdTrace {
+  unsigned version;
+  int streaming;
+  unsigned dictionary_id;
+  int dictionary_is_cold;
+  std::size_t dictionary_size;
+  std::size_t uncompressed_size;
+  std::size_t compressed_size;
+  const void* params;
+  const void* cctx;
+  const void* dctx;
+};
+
+void zstd_maybe_report() {
+  const auto now = SteadyClock::now();
+  const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          now.time_since_epoch())
+                          .count();
+  auto expected = zstd_next_report_ns.load(std::memory_order_relaxed);
+  if (expected == 0) {
+    zstd_next_report_ns.compare_exchange_strong(expected, now_ns + 1000000000LL,
+                                                 std::memory_order_relaxed);
+    return;
+  }
+  if (now_ns < expected ||
+      !zstd_next_report_ns.compare_exchange_strong(
+          expected, now_ns + 1000000000LL, std::memory_order_relaxed)) {
+    return;
+  }
+  const auto calls = zstd_decompress_calls.exchange(0, std::memory_order_relaxed);
+  const auto total = zstd_decompress_ns.exchange(0, std::memory_order_relaxed);
+  const auto maximum = zstd_decompress_max_ns.exchange(0, std::memory_order_relaxed);
+  const auto compressed =
+      zstd_compressed_bytes.exchange(0, std::memory_order_relaxed);
+  const auto uncompressed =
+      zstd_uncompressed_bytes.exchange(0, std::memory_order_relaxed);
+  if (calls != 0) {
+    std::fprintf(stderr,
+                 "nuah zstd: decompress_calls=%llu total_us=%llu avg_us=%llu "
+                 "max_us=%llu compressed_bytes=%llu uncompressed_bytes=%llu\n",
+                 calls, total / 1000ULL, (total / calls) / 1000ULL,
+                 maximum / 1000ULL, compressed, uncompressed);
+  }
+}
+
+void zstd_log_slow_stack(unsigned long long elapsed_ns) {
+  if (!zstd_trace_stack_enabled() || elapsed_ns < zstd_trace_slow_threshold_ns())
+    return;
+  void* frames[16]{};
+  const int count = ::backtrace(frames, static_cast<int>(std::size(frames)));
+  std::fprintf(stderr, "nuah zstd: slow_decode_us=%llu callers=",
+               elapsed_ns / 1000ULL);
+  bool first = true;
+  for (int index = 1; index < count; ++index) {
+    Dl_info info{};
+    if (::dladdr(frames[index], &info) == 0 || !info.dli_fname ||
+        !std::strstr(info.dli_fname, "libroblox.so") || !info.dli_fbase)
+      continue;
+    const auto offset = reinterpret_cast<std::uintptr_t>(frames[index]) -
+                        reinterpret_cast<std::uintptr_t>(info.dli_fbase);
+    std::fprintf(stderr, "%s0x%llx", first ? "" : ",",
+                 static_cast<unsigned long long>(offset));
+    first = false;
+  }
+  if (first) {
+    std::fprintf(stderr, "raw=");
+    for (int index = 1; index < count; ++index) {
+      std::fprintf(stderr, "%s0x%llx", index == 1 ? "" : ",",
+                   static_cast<unsigned long long>(
+                       reinterpret_cast<std::uintptr_t>(frames[index])));
+    }
+  }
+  std::fprintf(stderr, "\n");
 }
 }
 
@@ -169,8 +287,41 @@ int slCreateEngine(void**, unsigned, const void*, unsigned, const void*, const b
 }
 void ZSTD_trace_compress_begin(...) {}
 void ZSTD_trace_compress_end(...) {}
-void ZSTD_trace_decompress_begin(...) {}
-void ZSTD_trace_decompress_end(...) {}
+unsigned long long ZSTD_trace_decompress_begin(const void*) {
+  if (!zstd_trace_enabled()) return 0;
+  const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          SteadyClock::now().time_since_epoch())
+                          .count();
+  return now_ns > 0 ? static_cast<unsigned long long>(now_ns) : 1ULL;
+}
+void ZSTD_trace_decompress_end(unsigned long long begin_ns,
+                               const ZstdTrace* trace) {
+  if (!zstd_trace_enabled() || begin_ns == 0) {
+    return;
+  }
+  const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          SteadyClock::now().time_since_epoch())
+                          .count();
+  const auto elapsed = now_ns > 0 && static_cast<unsigned long long>(now_ns) >= begin_ns
+                           ? static_cast<unsigned long long>(now_ns) - begin_ns
+                           : 0ULL;
+  zstd_decompress_calls.fetch_add(1, std::memory_order_relaxed);
+  zstd_decompress_ns.fetch_add(elapsed, std::memory_order_relaxed);
+  if (trace) {
+    zstd_compressed_bytes.fetch_add(trace->compressed_size,
+                                    std::memory_order_relaxed);
+    zstd_uncompressed_bytes.fetch_add(trace->uncompressed_size,
+                                      std::memory_order_relaxed);
+  }
+  zstd_log_slow_stack(elapsed);
+  auto previous = zstd_decompress_max_ns.load(std::memory_order_relaxed);
+  while (previous < elapsed &&
+         !zstd_decompress_max_ns.compare_exchange_weak(
+             previous, elapsed,
+             std::memory_order_relaxed)) {
+  }
+  zstd_maybe_report();
+}
 void __gcov_dump() {}
 void __gcov_flush() {}
 // Roblox registers this purchase callback through its Java bridge. Nuah's

@@ -541,6 +541,15 @@ extern "C" int nuah_input_pump(void) {
     const char* value = std::getenv("NUAH_INPUT_COALESCE");
     return !value || std::strcmp(value, "0") != 0;
   }();
+  /* Diagnostic A/B only: retain SDL motion processing and Roblox mouse-lock
+   * synchronization, but do not forward camera deltas into the APK.  This
+   * isolates Roblox's motion-driven camera/render work from Nuah's input
+   * bridge.  Buttons and wheel events remain live so the test can be stopped
+   * without leaving a pressed-button state behind. */
+  static const bool drop_mouse_motion = [] {
+    const char* value = std::getenv("NUAH_DROP_MOUSE_MOTION");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
   NuahInputEvent pending_motion{};
   bool has_pending_motion = false;
   bool motion_lock_synced = false;
@@ -698,6 +707,7 @@ extern "C" int nuah_input_pump(void) {
          * forwarding this (0,0) bootstrap event can reach Roblox before its
          * input state exists and corrupt its render startup. */
         if (translated.dx == 0.0 && translated.dy == 0.0) break;
+        if (drop_mouse_motion) break;
         if (!coalesce_motion) {
           emit(translated);
           ++count;

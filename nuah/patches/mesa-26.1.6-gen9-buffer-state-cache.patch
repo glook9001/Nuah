@@ -1,0 +1,58 @@
+--- a/src/intel/isl/isl_surface_state.c
++++ b/src/intel/isl/isl_surface_state.c
+@@ -23,6 +23,7 @@
+ 
+ #include <stdint.h>
+ #include <inttypes.h>
++#include <string.h>
+ 
+ #define __gen_address_type uint64_t
+ #define __gen_user_data void
+@@ -1013,6 +1014,35 @@
+ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
+                               const struct isl_buffer_fill_state_info *restrict info)
+ {
++#if GFX_VER >= 9
++   /* Dynamic UBO/SSBO descriptors commonly regenerate the same Gen9 buffer
++    * surface state for every draw.  Packing this 16-dword structure is pure
++    * for a device and an identical info tuple, so keep one per-thread result
++    * and avoid repeating the format/bitfield work.  The cache is deliberately
++    * tiny: it changes no allocation, descriptor, or synchronization behavior.
++    */
++   struct buffer_state_cache {
++      bool valid;
++      uint64_t key[7];
++      uint32_t state[GENX(RENDER_SURFACE_STATE_length)];
++   };
++   static __thread struct buffer_state_cache cache;
++   uint32_t swizzle = 0;
++   memcpy(&swizzle, &info->swizzle, sizeof(swizzle));
++   const uint64_t key[7] = {
++      (uintptr_t)dev,
++      info->address,
++      info->size_B,
++      ((uint64_t)info->mocs << 32) | info->format,
++      ((uint64_t)info->stride_B << 32) | swizzle,
++      info->is_scratch,
++      info->usage,
++   };
++   if (cache.valid && memcmp(cache.key, key, sizeof(key)) == 0) {
++      memcpy(state, cache.state, sizeof(cache.state));
++      return;
++   }
++#endif
+    uint64_t buffer_size = info->size_B;
+ 
+    /* Uniform and Storage buffers need to have surface size not less that the
+@@ -1188,6 +1218,11 @@
+ #endif
+ 
+    GENX(RENDER_SURFACE_STATE_pack)(NULL, state, &s);
++#if GFX_VER >= 9
++   memcpy(cache.key, key, sizeof(key));
++   memcpy(cache.state, state, sizeof(cache.state));
++   cache.valid = true;
++#endif
+ }
+ 
+ void

@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cerrno>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -16,6 +18,8 @@
 #include <sched.h>
 #include <semaphore.h>
 #include <signal.h>
+#include <string>
+#include <string_view>
 #include <sys/mman.h>
 #include <sys/auxv.h>
 #include <sys/socket.h>
@@ -108,6 +112,58 @@ asm(".symver nuah_host_getaddrinfo,getaddrinfo@GLIBC_2.2.5");
 namespace {
 NuahDiagnosticsCallbacks diagnostics_callbacks{};
 
+/* Android's pthread_key_t values live in a namespace owned by the Android
+ * image.  Passing them straight to glibc is normally harmless until another
+ * provider has already consumed the same small key number: Roblox then reads
+ * an unrelated host TLS object as its allocator arena.  Keep the historical
+ * direct path by default, but offer an opt-in private key range for images
+ * whose constructors depend on Android key identity. */
+constexpr pthread_key_t kAndroidKeyBase = static_cast<pthread_key_t>(0x10000);
+constexpr std::size_t kAndroidKeySlots = 256;
+struct AndroidKeySlot {
+  std::atomic<pthread_key_t> host_key{0};
+  std::atomic<bool> used{false};
+};
+std::array<AndroidKeySlot, kAndroidKeySlots> android_key_slots{};
+/* Some stripped Android images persist a small key number in static state
+ * instead of retaining the result of pthread_key_create().  On glibc those
+ * low numbers may already belong to Nuah/SDL/GLib, so lazily give each such
+ * Android key its own host TLS slot when the namespace is enabled. */
+std::array<AndroidKeySlot, kAndroidKeySlots> android_raw_key_slots{};
+
+bool android_key_namespace_enabled() {
+  const char* value = std::getenv("NUAH_PTHREAD_NAMESPACE");
+  return value && *value && std::strcmp(value, "0") != 0;
+}
+
+pthread_key_t host_key_for_android(pthread_key_t key) {
+  if (!android_key_namespace_enabled()) return key;
+  if (key < kAndroidKeyBase) {
+    if (key >= kAndroidKeySlots) return key;
+    auto& slot = android_raw_key_slots[static_cast<std::size_t>(key)];
+    if (!slot.used.load(std::memory_order_acquire)) {
+      pthread_key_t host_key = 0;
+      if (nuah_host_pthread_key_create(&host_key, nullptr) != 0) return key;
+      bool expected = false;
+      if (!slot.used.compare_exchange_strong(expected, true,
+                                              std::memory_order_acq_rel)) {
+        (void)nuah_host_pthread_key_delete(host_key);
+      } else {
+        slot.host_key.store(host_key, std::memory_order_release);
+      }
+    }
+    if (slot.used.load(std::memory_order_acquire))
+      return slot.host_key.load(std::memory_order_acquire);
+    return key;
+  }
+  if (key - kAndroidKeyBase >= kAndroidKeySlots) return key;
+  const auto index = static_cast<std::size_t>(key - kAndroidKeyBase);
+  if (!android_key_slots[index].used.load(std::memory_order_acquire)) return key;
+  return android_key_slots[index].host_key.load(std::memory_order_acquire);
+}
+
+template <typename T> T host(const char* name);
+
 /* Android's libcore/OkHttp path does not consistently honor
  * java.net.preferIPv4Stack on a host with no usable IPv6 route: it still
  * receives AAAA records and waits through each connect timeout before trying
@@ -173,6 +229,18 @@ struct SemEntry {
 };
 std::atomic_flag table_lock = ATOMIC_FLAG_INIT;
 MutexEntry mutexes[2048];
+/* Mutex lock/unlock is the hottest ABI edge in the Roblox renderer.  The
+ * ownership table below remains the source of truth for creation and failure
+ * handling, but looking up every ready mutex by taking one global spin lock
+ * and scanning 2048 entries made ordinary engine synchronization needlessly
+ * expensive.  This direct cache is best-effort: collisions simply fall back
+ * to the authoritative table and never alter mutex semantics. */
+struct MutexCacheEntry {
+  std::atomic<void*> android{nullptr};
+  std::atomic<MutexEntry*> entry{nullptr};
+};
+constexpr std::size_t kMutexCacheCount = 4096;
+MutexCacheEntry mutex_cache[kMutexCacheCount];
 MutexAttrEntry mutex_attributes[256];
 CondEntry conditions[1024];
 OnceEntry onces[1024];
@@ -189,6 +257,109 @@ bool sync_trace_slot() {
   const char* value = ::getenv("NUAH_TRACE_PTHREAD");
   if (!value || !*value || std::strcmp(value, "0") == 0) return false;
   return sync_trace_events.fetch_add(1, std::memory_order_relaxed) < 4096;
+}
+
+/* TLS diagnostics need their own budget: constructor mutex traffic can
+ * otherwise consume the general synchronization trace before the allocator's
+ * key is created or read. */
+std::atomic<unsigned> tls_trace_events{0};
+bool tls_trace_slot() {
+  const char* value = ::getenv("NUAH_TRACE_TLS");
+  if (!value || !*value || std::strcmp(value, "0") == 0) return false;
+  return tls_trace_events.fetch_add(1, std::memory_order_relaxed) < 1024;
+}
+
+/* Keep this separate from NUAH_TRACE_PTHREAD: the latter is a bounded ABI
+ * debugging dump, while NUAH_ENGINE_TRACE is safe to use for an entire game
+ * run.  We retain the caller's module-relative return address so Rizin can
+ * map a contention report back into the exact libroblox.so build. */
+bool engine_trace_enabled() {
+  static const bool value = [] {
+    const char* raw = ::getenv("NUAH_ENGINE_TRACE");
+    return raw && *raw && std::strcmp(raw, "0") != 0;
+  }();
+  return value;
+}
+
+uint64_t monotonic_ns() {
+  timespec value{};
+  (void)::clock_gettime(CLOCK_MONOTONIC, &value);
+  return static_cast<uint64_t>(value.tv_sec) * 1000000000ULL +
+         static_cast<uint64_t>(value.tv_nsec);
+}
+
+struct SyncAggregate {
+  const char* kind = nullptr;
+  uintptr_t offset = 0;
+  uint64_t calls = 0;
+  uint64_t contended = 0;
+  uint64_t total_ns = 0;
+  uint64_t max_ns = 0;
+};
+
+struct SyncTrace {
+  std::atomic_flag lock = ATOMIC_FLAG_INIT;
+  std::array<SyncAggregate, 32> entries{};
+  uint64_t next_report_ns = 0;
+};
+
+SyncTrace& sync_trace() {
+  static SyncTrace value;
+  return value;
+}
+
+void record_sync_wait(const char* kind, uint64_t started_ns,
+                      const void* return_address) {
+  if (!engine_trace_enabled()) return;
+  const uint64_t elapsed_ns = monotonic_ns() - started_ns;
+  Dl_info caller{};
+  uintptr_t offset = reinterpret_cast<uintptr_t>(return_address);
+  if (::dladdr(return_address, &caller) != 0 && caller.dli_fbase)
+    offset -= reinterpret_cast<uintptr_t>(caller.dli_fbase);
+
+  SyncTrace& trace = sync_trace();
+  if (trace.lock.test_and_set(std::memory_order_acquire)) return;
+  std::array<SyncAggregate, 32> report{};
+  bool ready = false;
+  for (auto& entry : trace.entries) {
+    if (entry.kind == kind && entry.offset == offset) {
+      ++entry.calls;
+      entry.contended += elapsed_ns >= 50000ULL;
+      entry.total_ns += elapsed_ns;
+      entry.max_ns = std::max(entry.max_ns, elapsed_ns);
+      break;
+    }
+    if (!entry.kind) {
+      entry.kind = kind;
+      entry.offset = offset;
+      entry.calls = 1;
+      entry.contended = elapsed_ns >= 50000ULL;
+      entry.total_ns = elapsed_ns;
+      entry.max_ns = elapsed_ns;
+      break;
+    }
+  }
+  const uint64_t now = monotonic_ns();
+  if (trace.next_report_ns == 0) trace.next_report_ns = now + 1000000000ULL;
+  if (now >= trace.next_report_ns) {
+    report = trace.entries;
+    trace.entries = {};
+    trace.next_report_ns = now + 1000000000ULL;
+    ready = true;
+  }
+  trace.lock.clear(std::memory_order_release);
+  if (!ready) return;
+  for (const auto& entry : report) {
+    if (!entry.kind || !entry.calls) continue;
+    std::fprintf(stderr,
+                 "nuah engine: sync=%s caller_offset=0x%llx calls=%llu contended=%llu avg_us=%llu max_us=%llu\n",
+                 entry.kind, static_cast<unsigned long long>(entry.offset),
+                 static_cast<unsigned long long>(entry.calls),
+                 static_cast<unsigned long long>(entry.contended),
+                 static_cast<unsigned long long>(entry.total_ns /
+                                                 entry.calls / 1000ULL),
+                 static_cast<unsigned long long>(entry.max_ns / 1000ULL));
+  }
 }
 
 // Android 16 x86-64 exposes an 88-byte jmp_buf; glibc uses a 200-byte buffer.
@@ -217,6 +388,32 @@ struct AndroidSigaction {
 void lock_table() { while (table_lock.test_and_set(std::memory_order_acquire)) {} }
 void unlock_table() { table_lock.clear(std::memory_order_release); }
 template <typename T> T host(const char* name) { return reinterpret_cast<T>(::dlsym(RTLD_NEXT, name)); }
+
+std::size_t mutex_cache_index(void* object) {
+  const uintptr_t address = reinterpret_cast<uintptr_t>(object);
+  return (address >> 3U) & (kMutexCacheCount - 1U);
+}
+
+MutexEntry* cached_mutex(void* object) {
+  if (!object) return nullptr;
+  MutexCacheEntry& cache = mutex_cache[mutex_cache_index(object)];
+  if (cache.android.load(std::memory_order_acquire) != object) return nullptr;
+  MutexEntry* entry = cache.entry.load(std::memory_order_acquire);
+  if (!entry || entry->state.load(std::memory_order_acquire) != EntryState::ready)
+    return nullptr;
+  return entry;
+}
+
+void cache_mutex(void* object, MutexEntry* entry) {
+  if (!object || !entry) return;
+  MutexCacheEntry& cache = mutex_cache[mutex_cache_index(object)];
+  void* expected = nullptr;
+  if (cache.android.compare_exchange_strong(expected, object,
+                                            std::memory_order_acq_rel) ||
+      expected == object) {
+    cache.entry.store(entry, std::memory_order_release);
+  }
+}
 
 constexpr unsigned kEntryWaitSpins = 4096;
 
@@ -397,11 +594,18 @@ MutexAttrEntry* mutex_attr_for(void* object) {
 }
 
 MutexEntry* mutex_for(void* object, const pthread_mutexattr_t* attributes = nullptr) {
+  if (!attributes) {
+    if (auto* entry = cached_mutex(object)) return entry;
+  }
   const int requested_type = attributes ? mutex_attr_type(attributes)
                                         : PTHREAD_MUTEX_NORMAL;
   bool initialize = false;
   auto* entry = find_or_reserve(mutexes, object, initialize);
-  if (!entry || !initialize) return entry;
+  if (!entry) return nullptr;
+  if (!initialize) {
+    cache_mutex(object, entry);
+    return entry;
+  }
 
   /* Android's static mutex initializer stores its type in bits 14..15,
    * while glibc's object layout is unrelated.  Preserve that type before
@@ -427,6 +631,7 @@ MutexEntry* mutex_for(void* object, const pthread_mutexattr_t* attributes = null
     success = nuah_host_mutex_init(&entry->native, nullptr) == 0;
   }
   publish_entry(*entry, success);
+  if (success) cache_mutex(object, entry);
   return success ? entry : nullptr;
 }
 CondEntry* cond_for(void* object) {
@@ -871,24 +1076,64 @@ int __register_atfork(void (*prepare)(void), void (*parent)(void),
       "__register_atfork")(prepare, parent, child, dso);
 }
 int pthread_key_create(pthread_key_t* key, void (*destructor)(void*)) {
+  if (android_key_namespace_enabled()) {
+    pthread_key_t host_key = 0;
+    const int result = nuah_host_pthread_key_create(&host_key, destructor);
+    if (result != 0) return result;
+    for (std::size_t index = 0; index < kAndroidKeySlots; ++index) {
+      bool expected = false;
+      if (!android_key_slots[index].used.compare_exchange_strong(
+              expected, true, std::memory_order_acq_rel))
+        continue;
+      android_key_slots[index].host_key.store(host_key,
+                                               std::memory_order_release);
+      *key = kAndroidKeyBase + static_cast<pthread_key_t>(index);
+      if (tls_trace_slot()) {
+        std::fprintf(stderr,
+                     "nuah bionic: pthread_key_create android=%u host=%u\n",
+                     static_cast<unsigned>(*key),
+                     static_cast<unsigned>(host_key));
+        std::fprintf(stderr, "nuah bionic: pthread_key_create caller=%p\n",
+                     __builtin_return_address(0));
+      }
+      return 0;
+    }
+    (void)nuah_host_pthread_key_delete(host_key);
+    return EAGAIN;
+  }
   const int result = nuah_host_pthread_key_create(key, destructor);
-  if (sync_trace_slot()) {
+  if (tls_trace_slot()) {
     std::fprintf(stderr,
                  "nuah bionic: pthread_key_create key=%p value=%u result=%d\n",
                  static_cast<void*>(key), result == 0 ? static_cast<unsigned>(*key) : 0u,
                  result);
+    std::fprintf(stderr, "nuah bionic: pthread_key_create caller=%p\n",
+                 __builtin_return_address(0));
   }
   return result;
 }
 int pthread_key_delete(pthread_key_t key) {
-  return nuah_host_pthread_key_delete(key);
+  const pthread_key_t host_key = host_key_for_android(key);
+  const int result = nuah_host_pthread_key_delete(host_key);
+  if (android_key_namespace_enabled() && key >= kAndroidKeyBase &&
+      key - kAndroidKeyBase < kAndroidKeySlots) {
+    const auto index = static_cast<std::size_t>(key - kAndroidKeyBase);
+    android_key_slots[index].used.store(false, std::memory_order_release);
+  }
+  return result;
 }
 void* pthread_getspecific(pthread_key_t key) {
-  void* value = nuah_host_pthread_getspecific(key);
-  if (sync_trace_slot()) {
+  const pthread_key_t host_key = host_key_for_android(key);
+  const char* guard = ::getenv("NUAH_PTHREAD_TLS_GUARD");
+  const bool guard_host_key = guard && *guard && std::strcmp(guard, "0") != 0 &&
+                              android_key_namespace_enabled() && host_key == 4;
+  void* value = guard_host_key ? nullptr : nuah_host_pthread_getspecific(host_key);
+  if (tls_trace_slot()) {
     std::fprintf(stderr,
                  "nuah bionic: pthread_getspecific key=%u value=%p\n",
                  static_cast<unsigned>(key), value);
+    std::fprintf(stderr, "nuah bionic: pthread_getspecific caller=%p\n",
+                 __builtin_return_address(0));
   }
   return value;
 }
@@ -897,12 +1142,20 @@ int nuah_pthread_setspecific_export(pthread_key_t key, const void* value)
 int nuah_pthread_setspecific_export(pthread_key_t key, const void* value) {
   using Function = int (*)(pthread_key_t, const void*);
   const Function function = &nuah_host_pthread_setspecific;
+  const pthread_key_t host_key = host_key_for_android(key);
+  const char* guard = ::getenv("NUAH_PTHREAD_TLS_GUARD");
+  const bool guard_host_key = guard && *guard && std::strcmp(guard, "0") != 0 &&
+                              android_key_namespace_enabled() && host_key == 4;
   const uintptr_t value_bits = reinterpret_cast<uintptr_t>(value);
-  const int result = function(key, reinterpret_cast<const void*>(value_bits));
-  if (sync_trace_slot()) {
+  const int result = guard_host_key
+                         ? 0
+                         : function(host_key, reinterpret_cast<const void*>(value_bits));
+  if (tls_trace_slot()) {
     std::fprintf(stderr,
                  "nuah bionic: pthread_setspecific key=%u value=%p result=%d\n",
                  static_cast<unsigned>(key), value, result);
+    std::fprintf(stderr, "nuah bionic: pthread_setspecific caller=%p\n",
+                 __builtin_return_address(0));
   }
   return result;
 }
@@ -1023,8 +1276,12 @@ int pthread_mutex_destroy(pthread_mutex_t* object) {
   return 0;
 }
 int pthread_mutex_lock(pthread_mutex_t* object) {
+  const bool engine_trace = engine_trace_enabled();
+  const uint64_t started_ns = engine_trace ? monotonic_ns() : 0;
+  const void* caller = engine_trace ? __builtin_return_address(0) : nullptr;
   auto* entry = mutex_for(object);
   const int result = entry ? nuah_host_mutex_lock(&entry->native) : ENOMEM;
+  if (engine_trace) record_sync_wait("mutex_lock", started_ns, caller);
   if (sync_trace_slot()) {
     std::fprintf(stderr,
                  "nuah bionic: pthread_mutex_lock android=%p native=%p result=%d\n",
@@ -1085,8 +1342,28 @@ int pthread_cond_init(pthread_cond_t* object, const pthread_condattr_t*) { retur
 int pthread_cond_destroy(pthread_cond_t*) { return 0; }
 int pthread_cond_signal(pthread_cond_t* object) { auto* entry = cond_for(object); return entry ? nuah_host_cond_signal(&entry->native) : ENOMEM; }
 int pthread_cond_broadcast(pthread_cond_t* object) { auto* entry = cond_for(object); return entry ? nuah_host_cond_broadcast(&entry->native) : ENOMEM; }
-int pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex) { auto* c = cond_for(condition); auto* m = mutex_for(mutex); return c && m ? nuah_host_cond_wait(&c->native, &m->native) : ENOMEM; }
-int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex, const timespec* timeout) { auto* c = cond_for(condition); auto* m = mutex_for(mutex); return c && m ? nuah_host_cond_timedwait(&c->native, &m->native, timeout) : ENOMEM; }
+int pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex) {
+  const bool engine_trace = engine_trace_enabled();
+  const uint64_t started_ns = engine_trace ? monotonic_ns() : 0;
+  const void* caller = engine_trace ? __builtin_return_address(0) : nullptr;
+  auto* c = cond_for(condition);
+  auto* m = mutex_for(mutex);
+  const int result = c && m ? nuah_host_cond_wait(&c->native, &m->native) : ENOMEM;
+  if (engine_trace) record_sync_wait("cond_wait", started_ns, caller);
+  return result;
+}
+int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
+                           const timespec* timeout) {
+  const bool engine_trace = engine_trace_enabled();
+  const uint64_t started_ns = engine_trace ? monotonic_ns() : 0;
+  const void* caller = engine_trace ? __builtin_return_address(0) : nullptr;
+  auto* c = cond_for(condition);
+  auto* m = mutex_for(mutex);
+  const int result = c && m ? nuah_host_cond_timedwait(&c->native, &m->native,
+                                                        timeout) : ENOMEM;
+  if (engine_trace) record_sync_wait("cond_timedwait", started_ns, caller);
+  return result;
+}
 int pthread_condattr_init(pthread_condattr_t*) { return 0; }
 int pthread_condattr_destroy(pthread_condattr_t*) { return 0; }
 int pthread_condattr_setclock(pthread_condattr_t*, clockid_t) { return 0; }

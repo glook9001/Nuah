@@ -63,7 +63,7 @@ export NUAH_NONBLOCK_WAYLAND_EVENTS=0
 export NUAH_MOUSE_CAPTURE=1
 export NUAH_FAST_RENDER=1
 export NUAH_ASSET_BACKGROUND=1
-export NUAH_TASK_THREADS=4
+export NUAH_TASK_THREADS=0
 export NUAH_TARGET_FPS=60
 export NUAH_SHADER_CACHE_DIR="$HOME/.local/share/nuah/base.apk_/mesa-shader-cache"
 
@@ -77,12 +77,38 @@ export NUAH_SHADER_CACHE_DIR="$HOME/.local/share/nuah/base.apk_/mesa-shader-cach
 Do not print or commit `ROBLOX_COOKIE`; it is an authentication credential.
 If the cookie is empty, sign in through Sober again before launching Nuah.
 
+### Verify the RIVALS join
+
+The launcher log should contain all of the following after startup:
+
+```text
+Transport selection: useRbxTransportEnabled=false, selectedTransport=RakNet
+RbxTransport DummyClient is disabled by DebugDisableRbxTransportDummyClient flag.
+onGameLoaded: placeId:17625359962
+```
+
+The first two lines confirm that the minimal client setting selected the real
+RakNet join transport rather than the DummyClient path. The last line confirms
+that RIVALS finished loading; it is the success criterion, not merely that a
+Roblox window appeared.
+
+If Roblox reports **error 257**, first start Sober, confirm that its current
+session is valid, and launch Nuah with the exact minimal
+`NUAH_CLIENT_SETTINGS_JSON` shown above. Do not add protocol or unrelated
+client-setting overrides, and do not set the retired
+`NUAH_DISABLE_RBX_TRANSPORT_DUMMY` variable.
+
+An `AssetDelivery403IncorrectAssetType` or `Asset type does not match requested
+type` entry can be a remote game-asset failure after `onGameLoaded`. It is not
+an authentication or transport failure and does not mean the RIVALS join failed.
+
 The launch flags above are the tested play profile. `NUAH_GRAPHICS_BACKEND`,
 `NUAH_PERFORMANCE_MODE`, `NUAH_VULKAN_PRESENT_MODE`,
 `NUAH_VULKAN_SUBMIT_THREAD`, `MESA_VK_ENABLE_SUBMIT_THREAD`,
 `NUAH_INPUT_COALESCE`, `NUAH_NONBLOCK_WAYLAND_EVENTS`, `NUAH_MOUSE_CAPTURE`,
 `NUAH_FAST_RENDER`, `NUAH_ASSET_BACKGROUND`, `NUAH_TASK_THREADS`,
-`NUAH_TARGET_FPS`, and `NUAH_SHADER_CACHE_DIR` control rendering, scheduling,
+`NUAH_RENDER_TEXTURE_BUDGET_MS`, `NUAH_TARGET_FPS`, and
+`NUAH_SHADER_CACHE_DIR` control rendering, scheduling,
 input, and caching. `NUAH_ATL_NATIVE_DIR`, `NUAH_HYBRIS_LIBRARY`,
 `HYBRIS_LINKER_DIR`, `LD_LIBRARY_PATH`, and `LD_PRELOAD` select the Android
 runtime boundary. `NUAH_ROBLOX_COOKIES` and `NUAH_ROBLOX_COOKIE_HEADER` pass
@@ -92,6 +118,199 @@ join path. Do not use the retired `NUAH_DISABLE_RBX_TRANSPORT_DUMMY` variable;
 it is not the same mechanism and must stay unset. Keep this JSON minimal:
 explicit client-settings JSON takes precedence over Nuah's generated Roblox
 settings, so adding unrelated keys can change the server handshake.
+
+For a controlled input-causality A/B, set `NUAH_DROP_MOUSE_MOTION=1` for one
+run. Nuah will continue processing pointer-lock state and button/wheel events,
+but will not forward mouse-motion deltas to Roblox. A material improvement in
+the same room would implicate Roblox's motion-driven camera/render path; no
+change would point back to the Vulkan/resource hitches instead. This is a
+diagnostic switch only and is intentionally unset for normal play.
+
+### Hitch measurement and descriptor experiment
+
+The normal play profile leaves `NUAH_ENGINE_TRACE` and
+`NUAH_FRAME_WORK_TRACE` unset. They take a mutex and periodically format
+diagnostic output on the render thread, so enabling them can manufacture a
+hitch. Use them only for a bounded capture. The supported root probe is:
+
+```sh
+pkexec timeout --signal=INT --kill-after=2s 15s \
+  bpftrace "$PWD/nuah/tools/bpftrace-hitch-work.bt" <nuah-child-pid>
+```
+
+To distinguish time spent inside the implicated ANV routines from time where
+the render thread is merely sampled in them, use the bounded duration
+histogram (with the system Intel Mesa driver):
+
+```sh
+pkexec timeout --signal=INT --kill-after=2s 20s \
+  bpftrace "$PWD/nuah/tools/bpftrace-engine-duration.bt" <nuah-child-pid>
+```
+
+On the tested steady route, descriptor allocation, BLORP, Gen9 runtime-state
+packing, draw recording, and `i915_queue_exec_locked` were normally in the
+microsecond-to-low-millisecond range. This means a 100 ms sampled stack is
+not by itself proof that the named function consumed 100 ms; page faults,
+queue waits, and residency work can suspend the thread while it is inside the
+call chain.
+
+`NUAH_DESCRIPTOR_BIND_DEDUP=1` is an opt-in safety experiment. It suppresses
+only an exact repeated descriptor bind within one command buffer and is
+invalidated at begin/reset/free/secondary-command boundaries. It does not
+cache or fabricate descriptor sets. The current RIVALS route produced zero
+eligible repeats, so it is not part of the play profile. Do not suppress
+`madvise`, descriptor writes, barriers, or Vulkan copies globally: those calls
+carry application lifetime and synchronization semantics.
+
+`NUAH_DESCRIPTOR_ALLOC_BATCH=4` is a separate descriptor allocator experiment.
+It preallocates a bounded batch of real same-layout sets from Roblox's own
+pool and returns cached handles on later allocations. Allocations with a
+`pNext` chain are bypassed, and pool reset/destroy/device teardown invalidate
+the cache. `NUAH_DESCRIPTOR_ALLOC_TRACE=1` reports requests, driver calls,
+cache hits, and retained batch sets. On the tested 1280x720 RIVALS lobby route,
+batch 4 produced roughly 46% cache hits and removed the old per-request
+allocator pressure without a pool-allocation error; it is still an opt-in
+profile because pool capacity and route behavior vary. The reproducible
+launcher accepts these variables directly. `NUAH_COMMAND_STATE_DEDUP=1`
+similarly tests exact repeated pipeline/index/vertex binds. The shim keeps one
+exact snapshot for each bind kind per command buffer, so interleaved
+pipeline/index/vertex traffic can still be recognized without assuming that
+one kind invalidates another. It is disabled by default and should remain
+opt-in unless its trace shows useful suppression on the selected route; the
+measured route suppressed roughly 3--6% of these redundant state calls, but
+that alone does not remove driver residency or page-fault hitches.
+
+The current libroblox allocator first tries `MADV_FREE` and, for the mapped
+allocator range used by this APK, receives `EINVAL` before retrying with
+`MADV_DONTNEED`. `NUAH_LIBROBLOX_MADVISE_PATCH=1` enables a build-signature-
+guarded in-memory patch that changes only the allocator's default advice from
+8 to 4, removing that guaranteed failed syscall while preserving the retry's
+effective `DONTNEED` behavior. It refuses to patch if the exact call/constant
+pattern is absent or ambiguous. This is independent of the cgroup reclaim
+profiles below and is disabled by default.
+
+The launcher also passes `NUAH_VULKAN_SUBMIT_THREAD` through unchanged. Use
+`1` only for a same-route A/B: it moves ANV queue submission off the Roblox
+render thread, but can add CPU contention on a four-thread machine. The
+documented profile remains `0` because the matched baseline used fewer CPU
+seconds with submission on the render thread; this does not make the 50–170 ms
+driver/residency stalls disappear.
+
+### Experimental Intel texture LOD clamp
+
+`NUAH_TEXTURE_MIN_LOD=1` is an opt-in Vulkan sampler policy for bandwidth
+experiments. It preserves the selected framebuffer resolution and APK assets,
+but makes mipmapped samplers start one mip lower; samplers with no mip chain
+are unchanged. It has reached RIVALS' `onGameLoaded` and the shim has verified
+that Roblox's real sampler calls are adjusted. It is not enabled by default,
+does not reduce upload/transcode work, and has no claimed FPS gain until it is
+measured on the same room and camera route. Use `NUAH_TEXTURE_MIN_LOD_TRACE=1`
+only to log the first eight adjusted samplers during a diagnostic launch.
+
+### Experimental Gen9 potato texture cache
+
+For Intel Gen9 iGPUs, `NUAH_TEXTURE_SIDECAR=1` with the reproducible launcher
+builds a separate **potato4** app-data profile and launches RIVALS from it:
+
+```sh
+NUAH_TEXTURE_SIDECAR=1 nuah/tools/run-rivals-worker-ab.sh 4 1280 720
+```
+
+The builder finds RBXH-wrapped ETC2 KTX2 BLOBs in Roblox's `RbxStorage` SQLite
+cache, removes the four largest mip levels when a complete remaining mip chain
+exists, and preserves the KTX2 format, DFD/KVD/SGD metadata, compression, and
+opaque RBXH envelope. It does not transcode ETC2 at runtime. On the tested
+cache it transformed 7,266 records from 17.7 MB to 6.33 MB of stored texture
+payload. The active game process uses a Btrfs copy-on-write clone under
+`~/.local/share/nuah/nuah-texture-sidecar/`; the known-good Nuah/Sober cache
+is not overwritten. The source database hash is part of the profile path, so
+a refreshed Roblox cache builds a new profile rather than reusing stale data.
+
+This intentionally trades sharpness for lower texture residency and upload
+work. It is an asset-residency experiment, not a proven average-FPS gain: use
+the same room/camera route and compare `nuah perf: vulkan` p95/p99 intervals.
+Unset `NUAH_TEXTURE_SIDECAR` to return immediately to the original cache.
+Do not combine it with `NUAH_TEXTURE_MIN_LOD`; the launcher sets that clamp to
+zero for this profile to avoid double-degrading the retained mips.
+
+For a memory-residency/CCS diagnostic, combine the sidecar with a per-process
+no-swap cgroup and the Intel Gen9 CCS switch:
+
+```sh
+NUAH_NO_SWAP=1 NUAH_INTEL_NO_CCS=1 NUAH_TEXTURE_SIDECAR=1 \
+NUAH_VULKAN_MIN_IMAGE_COUNT=4 \
+nuah/tools/run-rivals-worker-ab.sh 0 1280 720
+```
+
+`NUAH_NO_SWAP=1` sets `MemorySwapMax=0` only for Nuah and its Roblox child; it
+does not disable zram globally and can cause an OOM if the system is already
+full. `NUAH_INTEL_NO_CCS=1` appends the process-local `INTEL_DEBUG=noccs`
+diagnostic. It avoids Intel auxiliary-compression resolves at the cost of
+more memory bandwidth and more GEM residency pressure; the measured RIVALS
+comparison reached consecutive 59–60 FPS one-second windows with CCS enabled,
+while the `noccs` run repeatedly fell into 30–46 FPS intervals. Keep it as an
+A/B profile rather than a default.
+`NUAH_MEMORY_LOW_MB=1536` is a separate opt-in systemd cgroup profile: it
+protects up to that amount of active Nuah/Roblox memory from global reclaim at
+the cost of leaving less reclaimable memory for other applications. It does
+not suppress Roblox's `madvise` calls and should be compared on the same route.
+For the specific reclaim-driven hitch path, `NUAH_MEMORY_MIN_MB=2048` sets a
+stronger cgroup `memory.min` reservation. It preserves Roblox's
+`madvise(MADV_DONTNEED)` semantics while asking the kernel not to reclaim the
+scope's protected working set; this can OOM the scope if the reservation cannot
+be met, so it is never enabled by default. Compare it with `NUAH_NO_SWAP=1`
+and the same room/camera route, and inspect `memory.events` afterward.
+Four swapchain images are intentional here: the extra image reduces FIFO
+`vkAcquireNextImageKHR`/`drmSyncobjTransfer` stalls during streaming. Set the
+value to `3` only for a direct comparison.
+
+When `ispc` is installed at CMake configure time, Nuah also builds
+`build/ispc/libnuah_ispc_asset.so`. The sidecar builder loads it automatically
+and uses AVX2 (with SSE4 fallback) SPMD gangs to classify the complete SQLite
+cache before parsing eligible KTX2 records. This runs only while preparing a
+new hash-keyed profile, with no render-thread calls. To test an explicit
+library or force the scalar fallback:
+
+```sh
+python3 nuah/tools/build-lossy-ktx-sidecar.py SOURCE.db DERIVED.db \
+  --ispc-copy-lib build/ispc/libnuah_ispc_asset.so
+# Scalar comparison: --ispc-copy-lib /nonexistent
+```
+
+The normal Release C++ build already uses `-O3`, which enables GCC's tree
+vectorizer; ISPC is used where explicit SPMD batch work is clearer and more
+reliable than hoping a scalar loop auto-vectorizes.
+
+For a separate runtime A/B, ISPC can fingerprint mapped texture-upload bytes
+before Nuah's already-guarded duplicate-upload experiment. It uses the AVX2
+implementation above and only suppresses a copy when the same sampled image
+subresource has the same fingerprint; color/depth/storage/transient targets
+remain excluded. This is disabled by default because a fixed room/camera
+visual comparison is required before treating it as a play profile:
+
+```sh
+NUAH_TEXTURE_UPLOAD_TRACE=1 \
+NUAH_TEXTURE_UPLOAD_HASH_TRACE=1 \
+NUAH_ISPC_UPLOAD_FINGERPRINT=1 \
+NUAH_TEXTURE_UPLOAD_DEDUP=1 \
+nuah/tools/run-rivals-worker-ab.sh 4 1280 720
+```
+
+The log reports `hashed_regions`, `identical_regions`, and
+`suppressed_regions`. A successful RIVALS run suppressed 44 proven-identical
+regions (~2 MiB) in one interval, but that is evidence of avoided work—not
+yet a general FPS claim. Set `NUAH_TEXTURE_UPLOAD_DEDUP=0` to retain the
+ISPC measurement while forwarding every upload.
+
+`NUAH_VULKAN_COPY_TRACE=1` is also rate-limited to one line per second. The
+copy command can be called once per mip level; unbounded `fprintf` logging on
+that path can itself block the render thread and create a false hitch. Nuah
+observes both `vkCmdCopyImage` (the legacy entry point Mesa maps internally to
+`anv_CmdCopyImage2`) and `vkCmdCopyImage2`; these hooks are observational and
+do not remove image copies because they may carry layout and ordering
+semantics. The upload deduper remains opt-in: the measured A/B suppressed only
+about 1 MiB while still showing multi-hundred-millisecond stalls, so it is not
+part of the normal profile.
 
 An optional host-owned loading frame can cover Roblox's cold scene transition;
 enable it explicitly with `NUAH_LOADING_FRAME=1`. It is held for 10 seconds
@@ -212,11 +431,43 @@ NUAH_VULKAN_PRESENT_MODE=immediate # lowest queue latency, may tear/stutter
 NUAH_VULKAN_PRESENT_MODE=mailbox   # low latency when the driver advertises it
 ```
 
-Turbo Vulkan also negotiates the four-image FIFO swapchain used by Sober. The
-extra queued image keeps the compositor fed while Roblox streams a scene and
-does not change the Android surface ABI. Set `NUAH_VULKAN_MIN_IMAGE_COUNT=3`
-to compare the previous three-image queue, or set another value when the host
-driver advertises it.
+Nuah negotiates the four-image FIFO swapchain used by Sober in every render
+quality mode. The extra queued image keeps the compositor fed while Roblox
+streams a scene: on this Intel/Wayland host, the previous three-image queue
+repeatedly blocked `vkAcquireNextImageKHR` in `drmSyncobjTimelineWait` for
+20--25 ms. Set `NUAH_VULKAN_MIN_IMAGE_COUNT=3` only for a latency A/B; it
+reintroduces that residency/pacing wait and is not the hitch-resistant
+profile. The host driver's maximum is still honored, so the adjustment is
+skipped when four images are unavailable.
+
+### Hitch investigation plan
+
+Use the same room/camera route and discard the first 30 seconds of each run
+before comparing `p95`, `p99`, maximum present interval, and counts over
+33/50/100 ms. The read-only hitch classifier is:
+
+```sh
+pkexec timeout --signal=INT --kill-after=2s 30s \
+  bpftrace nuah/tools/bpftrace-hitch-work.bt <native-run-pid>
+```
+
+Current captures identify several separate costs rather than one broken
+function: `blorp_copy`/`anv_device_map_bo` during buffer and image copies,
+Gen9 CCS transitions, `gfx9_cmd_buffer_flush_descriptor_sets`, and
+`i915_gem_do_execbuffer` page/residency work. Query-pool resets are normally
+microsecond-scale and are not a justified suppression target. Kernel samples
+also show that zram can amplify residency stalls, but a per-process no-swap
+A/B still reproduced them, so disabling zram is not a complete fix.
+
+Keep these mitigations opt-in until a matched route proves a tail improvement:
+`NUAH_VULKAN_SUBMIT_THREAD=1`, `NUAH_DESCRIPTOR_ALLOC_BATCH=4`,
+`NUAH_TEXTURE_UPLOAD_DEDUP=1` with its hash/trace prerequisites, and
+`NUAH_NO_SWAP=1`. Upload hashing runs on the render thread and can itself
+create a hitch; it must not be enabled merely because it suppresses copies.
+The shipped profile therefore remains automatic workers (`0`), four FIFO
+images, no upload hashing, and no descriptor batching. The launcher passes
+`NUAH_VULKAN_SUBMIT_THREAD` through to Mesa instead of overwriting an explicit
+A/B request.
 
 `NUAH_JNI_CHECK=1` enables ART's `-Xcheck:jni` verifier for façade debugging;
 normal launches leave it off because it adds work to every JNI transition.
@@ -247,7 +498,11 @@ to keep the packaged quality, or choose `1..21` explicitly. `NUAH_TASK_THREADS=<
 both Roblox's automatic task limit and its in-game worker count, and
 `NUAH_TARGET_FPS=<n>` (30--240) is available for high-refresh hosts or
 profiling. A 70-FPS target is useful only on a display above 60 Hz; on this
-machine it adds scheduler pressure without increasing visible frames. An
+machine it adds scheduler pressure without increasing visible frames. Set
+`NUAH_TASK_THREADS=0` to leave the worker count automatic (Nuah's host-based
+default). `NUAH_TASK_THREADS=2` is deliberately ignored because it correlated
+with long render hitches on the target Intel host; use `0` for automatic
+selection or another value only for a measured A/B. An
 explicit `NUAH_CLIENT_SETTINGS_JSON` or `NUAH_CLIENT_SETTINGS_PATH` remains
 authoritative and may provide its own `DFIntTaskSchedulerTargetFps` value.
 
@@ -284,6 +539,32 @@ the current diagnostic profile. This is not a general FPS recommendation: use
 `NUAH_VULKAN_SUBMIT_THREAD=1`, `0`, or `auto` only for an A/B test on the same
 room and camera route.
 
+### Optional Mesa Gen9 surface-state experiment
+
+The measured Gen9 hitch path includes repeated
+`isl_gfx9_buffer_fill_state_s` packing from dynamic buffer descriptors. The
+repository carries an optional Mesa 26.1.6 patch at
+`nuah/patches/mesa-26.1.6-gen9-buffer-state-cache.patch`. It caches only an
+identical per-thread surface-state byte result; it does not alias descriptor
+handles, skip draws/barriers/copies, or change Vulkan ownership rules.
+
+Build Mesa in a separate prefix and select its ICD for one process only. For
+example, after applying the patch to a clean Mesa 26.1.6 tree and building the
+Intel Vulkan driver:
+
+```sh
+export VK_ICD_FILENAMES=/path/to/mesa-build/src/intel/vulkan/intel_devenv_icd.x86_64.json
+NUAH_NO_SWAP=1 NUAH_DESCRIPTOR_ALLOC_BATCH=4 \
+  nuah/tools/run-rivals-worker-ab.sh 0 1280 720
+```
+
+The JSON must point to the rebuilt `libvulkan_intel.so`; verify the running
+child with `grep libvulkan_intel.so /proc/$PID/maps`. The normal system Mesa
+driver is unchanged. Keep this opt-in until a same-route `bpftrace` capture
+shows fewer long gaps and visual correctness. A current 1920x1080 A/B loaded
+the rebuilt driver successfully but did not yet show a validated reduction in
+the duration histograms, so it is not part of the normal profile.
+
 On the measured four-thread/Intel iGPU profile, Nuah clears the packaged
 `FFlagSimRuntimeContentTranscodeBlockingCall` flag by default. This only asks
 Roblox to finish its existing KTX2/Basis work asynchronously; Nuah does not
@@ -314,9 +595,14 @@ logging or locking path to normal gameplay.  For system-level attribution,
 attach `perf` to the native child after the room is visible:
 
 ```sh
-perf stat -p "$(pgrep -n -f './build/nuah native-run')" \
-  -e cycles,instructions,context-switches,cache-misses -I 1000
+pkexec timeout --signal=INT --kill-after=2s 10s \
+  perf stat -p "$(pgrep -n -f './build/nuah native-run')" \
+  -e cycles,instructions,context-switches,cache-misses
 ```
+
+Root-only `bpftrace` and `perf` captures should use the same bounded
+`pkexec`/`timeout` pattern; it keeps the probe privilege scoped and prevents a
+forgotten attachment from perturbing a later launch.
 
 Compare the same room and camera movement for each mode.  A high Roblox
 userspace sample share with a stable present interval points at game workload;
