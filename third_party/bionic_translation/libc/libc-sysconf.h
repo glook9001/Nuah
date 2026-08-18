@@ -453,8 +453,7 @@ bionic_sysconf_to_glibc_sysconf(int name)
 	case 0x009d: return _SC_LEVEL4_CACHE_LINESIZE;
 #endif
 	default:
-		fprintf(stderr, "sysconf constant (%d) is not mapped\n", name);
-		abort();
+		return name;
 	}
-	return 0xFFFF;
+	return name;
 }

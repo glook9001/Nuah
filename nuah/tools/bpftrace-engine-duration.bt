@@ -1,0 +1,173 @@
+/*
+ * Bounded duration histograms for the Intel Gen9 ANV paths implicated by a
+ * hitch stack.  This measures time spent inside each user-space function;
+ * it deliberately does not claim that a sampled stack frame is the cause of
+ * a stall.  Run as root for uprobes, for example:
+ *
+ *   pkexec timeout --signal=INT --kill-after=2s 20s \
+ *     bpftrace nuah/tools/bpftrace-engine-duration.bt <nuah-child-pid>
+ *
+ * The paths are for the system Intel Mesa driver.  Use the matching
+ * libvulkan_intel.so path if an alternate driver is selected.
+ */
+
+uprobe:/usr/lib64/libvulkan_intel.so:anv_AllocateDescriptorSets
+/pid == $1/
+{
+  @alloc_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:anv_AllocateDescriptorSets
+/pid == $1 && @alloc_start[tid]/
+{
+  @alloc_us = hist((nsecs - @alloc_start[tid]) / 1000);
+  delete(@alloc_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:anv_ResetDescriptorPool
+/pid == $1/
+{
+  @reset_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:anv_ResetDescriptorPool
+/pid == $1 && @reset_start[tid]/
+{
+  @reset_us = hist((nsecs - @reset_start[tid]) / 1000);
+  delete(@reset_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:anv_device_map_bo
+/pid == $1/
+{
+  @map_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:anv_device_map_bo
+/pid == $1 && @map_start[tid]/
+{
+  @map_us = hist((nsecs - @map_start[tid]) / 1000);
+  delete(@map_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:anv_bo_pool_alloc
+/pid == $1/
+{
+  @pool_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:anv_bo_pool_alloc
+/pid == $1 && @pool_start[tid]/
+{
+  @pool_us = hist((nsecs - @pool_start[tid]) / 1000);
+  delete(@pool_start[tid]);
+}
+
+/* Query resets showed up in a long sampled render-thread gap.  Measure the
+ * actual CPU duration before treating that stack as a culprit: a sampled
+ * command-recording frame can be waiting on another lock or kernel event. */
+uprobe:/usr/lib64/libvulkan_intel.so:gfx9_CmdResetQueryPool
+/pid == $1/
+{
+  @query_reset_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:gfx9_CmdResetQueryPool
+/pid == $1 && @query_reset_start[tid]/
+{
+  @query_reset_us = hist((nsecs - @query_reset_start[tid]) / 1000);
+  delete(@query_reset_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:blorp_copy
+/pid == $1/
+{
+  @blorp_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:blorp_copy
+/pid == $1 && @blorp_start[tid]/
+{
+  @blorp_us = hist((nsecs - @blorp_start[tid]) / 1000);
+  delete(@blorp_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:gfx9_blorp_exec
+/pid == $1/
+{
+  @blorp_exec_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:gfx9_blorp_exec
+/pid == $1 && @blorp_exec_start[tid]/
+{
+  @blorp_exec_us = hist((nsecs - @blorp_exec_start[tid]) / 1000);
+  delete(@blorp_exec_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:cmd_buffer_flush_gfx_runtime_state
+/pid == $1/
+{
+  @runtime_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:cmd_buffer_flush_gfx_runtime_state
+/pid == $1 && @runtime_start[tid]/
+{
+  @runtime_us = hist((nsecs - @runtime_start[tid]) / 1000);
+  delete(@runtime_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:gfx9_CmdDrawIndexed
+/pid == $1/
+{
+  @draw_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:gfx9_CmdDrawIndexed
+/pid == $1 && @draw_start[tid]/
+{
+  @draw_us = hist((nsecs - @draw_start[tid]) / 1000);
+  delete(@draw_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:anv_queue_submit
+/pid == $1/
+{
+  @submit_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:anv_queue_submit
+/pid == $1 && @submit_start[tid]/
+{
+  @submit_us = hist((nsecs - @submit_start[tid]) / 1000);
+  delete(@submit_start[tid]);
+}
+
+uprobe:/usr/lib64/libvulkan_intel.so:i915_queue_exec_locked
+/pid == $1/
+{
+  @execbuf_start[tid] = nsecs;
+}
+
+uretprobe:/usr/lib64/libvulkan_intel.so:i915_queue_exec_locked
+/pid == $1 && @execbuf_start[tid]/
+{
+  @execbuf_us = hist((nsecs - @execbuf_start[tid]) / 1000);
+  delete(@execbuf_start[tid]);
+}
+
+END
+{
+  clear(@alloc_start);
+  clear(@reset_start);
+  clear(@map_start);
+  clear(@pool_start);
+  clear(@query_reset_start);
+  clear(@blorp_start);
+  clear(@blorp_exec_start);
+  clear(@runtime_start);
+  clear(@draw_start);
+  clear(@submit_start);
+  clear(@execbuf_start);
+}

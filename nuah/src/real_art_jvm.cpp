@@ -202,6 +202,15 @@ std::string artifact_root() {
 std::string art_path() {
   if (const char* value = std::getenv("NUAH_ART_LIBRARY"); value && *value)
     return value;
+  if (const char* dir = std::getenv("NUAH_ART_LIBRARY_DIR"); dir && *dir) {
+    const auto candidate = std::filesystem::path(dir) / "libart.so";
+    if (std::filesystem::is_regular_file(candidate)) return candidate.string();
+  }
+  if (const char* home = std::getenv("HOME")) {
+    const auto candidate =
+        std::filesystem::path(home) / ".local/share/nuah/art/libart.so";
+    if (std::filesystem::is_regular_file(candidate)) return candidate.string();
+  }
   return "/usr/local/lib64/art/libart.so";
 }
 
@@ -269,8 +278,13 @@ std::string android16_bootclasspath() {
     }
   }
   if (entries.empty()) {
-    const std::filesystem::path root =
-        "/usr/local/lib64/java/dex/art";
+    std::filesystem::path root = "/usr/local/lib64/java/dex/art";
+    if (const char* home = std::getenv("NUAH_ATL_ANDROID16_HOME"); home && *home) {
+      root = home;
+    } else if (const char* user_home = std::getenv("HOME")) {
+      const auto cand = std::filesystem::path(user_home) / ".local/share/nuah/java/dex/art";
+      if (std::filesystem::is_directory(cand)) root = cand;
+    }
     for (const char* basename : kOrder) entries.emplace_back(root / basename);
   }
 
@@ -575,12 +589,48 @@ void force_android_sdk_level(JNIEnv* env, jint sdk) {
 
 extern "C" NuahJvm* nuah_jvm_create(void) {
   auto* jvm = new NuahJvm;
-  jvm->art = dlopen(art_path().c_str(), RTLD_NOW | RTLD_GLOBAL);
+  jvm->art = dlopen("libart.so", RTLD_NOW | RTLD_GLOBAL);
+  if (!jvm->art) {
+    jvm->art = dlopen(art_path().c_str(), RTLD_NOW | RTLD_GLOBAL);
+  }
   if (!jvm->art) {
     std::fprintf(stderr, "nuah ART: cannot load %s: %s\n", art_path().c_str(),
                  dlerror());
     delete jvm;
     return nullptr;
+  }
+  const auto art_directory = std::filesystem::path(art_path()).parent_path();
+  for (const auto* lib : {
+           "libpng16.so.16",
+           "libjpeg.so.62",
+           "libsigchain.so",
+           "libandroidfw.so",
+           "libnativehelper.so",
+           "libjavacore.so",
+           "libopenjdk.so"
+       }) {
+    void* h = ::dlopen(lib, RTLD_NOW | RTLD_GLOBAL);
+    if (!h) {
+      const auto lib_path = art_directory / lib;
+      if (std::filesystem::is_regular_file(lib_path)) {
+        h = ::dlopen(lib_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+      }
+    }
+    if (!h) {
+      const auto lib_path = art_directory / "natives" / lib;
+      if (std::filesystem::is_regular_file(lib_path)) {
+        h = ::dlopen(lib_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+      }
+    }
+    if (!h) {
+      const auto lib_path = std::filesystem::path("/usr/local/lib64/java/dex/art/natives") / lib;
+      if (std::filesystem::is_regular_file(lib_path)) {
+        h = ::dlopen(lib_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+      }
+    }
+    if (!h && trace_enabled()) {
+      std::fprintf(stderr, "nuah ART: dlopen %s failed: %s\n", lib, dlerror());
+    }
   }
   auto create = reinterpret_cast<CreateJavaVm>(dlsym(jvm->art, "JNI_CreateJavaVM"));
   if (!create) {
@@ -653,7 +703,23 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
         ? natives + ":" + app_lib.string()
         : app_lib.string() + ":" + natives;
   }
-  const std::string library_path = app_library_path;
+  std::string dex_root = "/usr/local/lib64/java/dex/art";
+  if (const char* home = std::getenv("NUAH_ATL_ANDROID16_HOME"); home && *home) {
+    dex_root = home;
+  } else if (const char* user_home = std::getenv("HOME")) {
+    const auto cand = std::filesystem::path(user_home) / ".local/share/nuah/java/dex/art";
+    if (std::filesystem::is_directory(cand)) dex_root = cand.string();
+  }
+  std::string library_path = app_library_path;
+  const auto art_dir = std::filesystem::path(art_path()).parent_path().string();
+  if (!art_dir.empty()) {
+    library_path += ":" + art_dir;
+    library_path += ":" + (std::filesystem::path(art_dir) / "natives").string();
+  }
+  const auto dex_natives = (std::filesystem::path(dex_root) / "natives").string();
+  if (std::filesystem::is_directory(dex_natives)) {
+    library_path += ":" + dex_natives;
+  }
   std::string class_option = "-Djava.class.path=" + jvm->class_path;
   std::string app_class_option = "-Datl.app.class.path=" + app_path;
   std::string library_option = "-Djava.library.path=" + library_path;
@@ -700,7 +766,6 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   }();
   const std::string sdk_option = "-DBuild.VERSION.SDK_INT=36";
   std::string boot_append;
-  const std::string dex_root = "/usr/local/lib64/java/dex/art";
   for (const char* jar : {"wolfssljni-hostdex.jar", "bouncycastle-hostdex.jar"}) {
     const std::string path = dex_root + "/" + jar;
     if (std::filesystem::is_regular_file(path)) {
@@ -713,7 +778,7 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
 
   const std::string bootclasspath = android16_bootclasspath();
   const std::filesystem::path boot_image =
-      "/usr/local/lib64/java/dex/art/oat/boot.art";
+      std::filesystem::path(dex_root) / "oat" / "boot.art";
   const bool use_boot_image = [] {
     const char* value = std::getenv("NUAH_ART_USE_BOOT_IMAGE");
     return !value || std::strcmp(value, "0") != 0;
@@ -725,10 +790,12 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
       std::filesystem::is_regular_file(boot_image.parent_path() / "boot.vdex");
   std::string bootclasspath_option;
   std::string image_option;
-  if (have_boot_image) {
+  if (!bootclasspath.empty()) {
     bootclasspath_option = "-Xbootclasspath:" + bootclasspath;
-    image_option = "-Ximage:" + boot_image.string();
     (void)::setenv("BOOTCLASSPATH", bootclasspath.c_str(), 1);
+  }
+  if (have_boot_image) {
+    image_option = "-Ximage:" + boot_image.string();
     if (trace_enabled()) {
       std::fprintf(stderr, "nuah ART: using boot image %s\n",
                    boot_image.c_str());
@@ -784,6 +851,33 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   }
   jvm->vm_owner = ::pthread_self();
   jvm->vm_owner_attached = true;
+
+  // ART 9.0 standalone requires core runtime JNI registration via JNI_OnLoad.
+  for (const char* companion_name : {
+           "libjavacore.so",
+           "libopenjdk.so"
+       }) {
+    std::filesystem::path comp_path = std::filesystem::path(dex_root) / "natives" / companion_name;
+    if (!std::filesystem::is_regular_file(comp_path)) {
+      comp_path = std::filesystem::path(art_path()).parent_path() / "natives" / companion_name;
+    }
+    void* handle = ::dlopen(comp_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) handle = ::dlopen(companion_name, RTLD_NOW | RTLD_GLOBAL);
+    if (handle) {
+      using JniOnLoadFn = jint (*)(JavaVM*, void*);
+      auto on_load = reinterpret_cast<JniOnLoadFn>(::dlsym(handle, "JNI_OnLoad"));
+      if (on_load) {
+        on_load(jvm->vm, nullptr);
+      }
+      using InitIdsFn = void (*)(JNIEnv*, jclass);
+      if (auto init_ids = reinterpret_cast<InitIdsFn>(
+              ::dlsym(handle, "Java_java_io_UnixFileSystem_initIDs"))) {
+        jclass ufs = jvm->env->FindClass("java/io/UnixFileSystem");
+        init_ids(jvm->env, ufs);
+        if (jvm->env->ExceptionCheck()) jvm->env->ExceptionClear();
+      }
+    }
+  }
 
   // ART/ATL resolves System.loadLibrary through the process bionic linker.
   // Open the same app-private file through that linker first; opening the
@@ -1371,6 +1465,173 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
          "Java_android_view_Window_remove_1gtk_1background"},
         {"android/view/Window", "set_screen_brightness", "(F)V",
          "Java_android_view_Window_set_1screen_1brightness"},
+        {"android/view/ViewTreeObserver", "native_set_have_global_layout_listeners",
+         "(Z)V",
+         "Java_android_view_ViewTreeObserver_native_1set_1have_1global_1layout_1listeners"},
+        {"android/view/WindowManagerImpl", "native_addView",
+         "(JIIIII)V",
+         "Java_android_view_WindowManagerImpl_native_1addView"},
+        {"android/view/WindowManagerImpl", "native_removeView", "(J)V",
+         "Java_android_view_WindowManagerImpl_native_1removeView"},
+        {"android/view/WindowManagerImpl", "native_updateViewLayout",
+         "(JIIII)V",
+         "Java_android_view_WindowManagerImpl_native_1updateViewLayout"},
+        {"android/widget/TextView", "native_constructor",
+         "(Landroid/content/Context;Landroid/util/AttributeSet;)J",
+         "Java_android_widget_TextView_native_1constructor"},
+        {"android/widget/TextView", "native_setText",
+         "(Ljava/lang/String;)V",
+         "Java_android_widget_TextView_native_1setText"},
+        {"android/widget/TextView", "native_setTextColor",
+         "(I)V",
+         "Java_android_widget_TextView_native_1setTextColor"},
+        {"android/widget/TextView", "setTextSize",
+         "(F)V",
+         "Java_android_widget_TextView_setTextSize"},
+        {"android/widget/TextView", "native_setCompoundDrawables",
+         "(JJJJ)V",
+         "Java_android_widget_TextView_native_1setCompoundDrawables"},
+        {"android/widget/Button", "native_constructor",
+         "(Landroid/content/Context;Landroid/util/AttributeSet;)J",
+         "Java_android_widget_Button_native_1constructor"},
+        {"android/widget/Button", "native_setText",
+         "(JLjava/lang/String;)V",
+         "Java_android_widget_Button_native_1setText"},
+        {"android/widget/Button", "nativeSetOnClickListener",
+         "(J)V",
+         "Java_android_widget_Button_nativeSetOnClickListener"},
+        {"android/widget/ImageView", "native_constructor",
+         "(Landroid/content/Context;Landroid/util/AttributeSet;)J",
+         "Java_android_widget_ImageView_native_1constructor"},
+        {"android/widget/ImageView", "native_setDrawable",
+         "(JJ)V",
+         "Java_android_widget_ImageView_native_1setDrawable"},
+        {"android/widget/ImageButton", "native_constructor",
+         "(Landroid/content/Context;Landroid/util/AttributeSet;)J",
+         "Java_android_widget_ImageButton_native_1constructor"},
+        {"android/widget/ImageButton", "native_setDrawable",
+         "(JJ)V",
+         "Java_android_widget_ImageButton_native_1setDrawable"},
+        {"android/widget/ImageButton", "nativeSetOnClickListener",
+         "()V",
+         "Java_android_widget_ImageButton_nativeSetOnClickListener"},
+        {"android/widget/EditText", "native_constructor",
+         "(Landroid/content/Context;Landroid/util/AttributeSet;)J",
+         "Java_android_widget_EditText_native_1constructor"},
+        {"android/widget/EditText", "native_setText",
+         "(JLjava/lang/String;)V",
+         "Java_android_widget_EditText_native_1setText"},
+        {"android/widget/EditText", "native_getText",
+         "(J)Ljava/lang/String;",
+         "Java_android_widget_EditText_native_1getText"},
+        {"android/widget/EditText", "native_setHint",
+         "(JLjava/lang/String;)V",
+         "Java_android_widget_EditText_native_1setHint"},
+        {"android/widget/EditText", "native_getHint",
+         "(J)Ljava/lang/String;",
+         "Java_android_widget_EditText_native_1getHint"},
+        {"android/widget/EditText", "native_addTextChangedListener",
+         "(JLandroid/text/TextWatcher;)V",
+         "Java_android_widget_EditText_native_1addTextChangedListener"},
+        {"android/widget/EditText", "native_removeTextChangedListener",
+         "(JLandroid/text/TextWatcher;)V",
+         "Java_android_widget_EditText_native_1removeTextChangedListener"},
+        {"android/widget/EditText", "native_setOnEditorActionListener",
+         "(JLandroid/widget/TextView$OnEditorActionListener;)V",
+         "Java_android_widget_EditText_native_1setOnEditorActionListener"},
+        {"android/widget/ProgressBar", "native_constructor",
+         "(Landroid/content/Context;Landroid/util/AttributeSet;)J",
+         "Java_android_widget_ProgressBar_native_1constructor"},
+        {"android/widget/ProgressBar", "native_setProgress",
+         "(JI)V",
+         "Java_android_widget_ProgressBar_native_1setProgress"},
+        {"android/widget/ProgressBar", "native_setIndeterminate",
+         "(JZ)V",
+         "Java_android_widget_ProgressBar_native_1setIndeterminate"},
+        {"android/widget/ScrollView", "native_constructor",
+         "(Landroid/content/Context;Landroid/util/AttributeSet;)J",
+         "Java_android_widget_ScrollView_native_1constructor"},
+        {"android/widget/ScrollView", "native_addView",
+         "(JJ)V",
+         "Java_android_widget_ScrollView_native_1addView"},
+        {"android/widget/ScrollView", "native_removeView",
+         "(JJ)V",
+         "Java_android_widget_ScrollView_native_1removeView"},
+        {"android/graphics/BitmapFactory", "nativeDecodeStream",
+         "(Ljava/io/InputStream;[BLandroid/graphics/Rect;Landroid/graphics/BitmapFactory$Options;)J",
+         "Java_android_graphics_BitmapFactory_nativeDecodeStream"},
+        {"android/graphics/Bitmap", "native_create_snapshot", "(JJ)J",
+         "Java_android_graphics_Bitmap_native_1create_1snapshot"},
+        {"android/graphics/Bitmap", "native_create_texture", "(II)J",
+         "Java_android_graphics_Bitmap_native_1create_1texture"},
+        {"android/graphics/Bitmap", "native_get_width", "(J)I",
+         "Java_android_graphics_Bitmap_native_1get_1width"},
+        {"android/graphics/Bitmap", "native_get_height", "(J)I",
+         "Java_android_graphics_Bitmap_native_1get_1height"},
+        {"android/graphics/Bitmap", "native_erase_color", "(JI)V",
+         "Java_android_graphics_Bitmap_native_1erase_1color"},
+        {"android/graphics/Bitmap", "native_recycle", "(J)V",
+         "Java_android_graphics_Bitmap_native_1recycle"},
+        {"android/graphics/Bitmap", "native_ref_texture", "(J)V",
+         "Java_android_graphics_Bitmap_native_1ref_1texture"},
+        {"android/graphics/Bitmap", "native_get_pixels", "(J[IIIIIII)V",
+         "Java_android_graphics_Bitmap_native_1get_1pixels"},
+        {"android/graphics/Bitmap", "native_set_pixels", "(J[IIIIIII)V",
+         "Java_android_graphics_Bitmap_native_1set_1pixels"},
+        {"android/graphics/Bitmap", "native_copy_to_buffer", "(JLjava/nio/Buffer;)V",
+         "Java_android_graphics_Bitmap_native_1copy_1to_1buffer"},
+        {"android/graphics/Bitmap", "native_save_to_png", "(JLjava/io/OutputStream;)Z",
+         "Java_android_graphics_Bitmap_native_1save_1to_1png"},
+        {"android/graphics/drawable/NinePatchDrawable", "nativeCreate", "([BJ)J",
+         "Java_android_graphics_drawable_NinePatchDrawable_nativeCreate___3BJ"},
+        {"android/graphics/drawable/NinePatchDrawable", "nativeCreate", "(Ljava/lang/String;)J",
+         "Java_android_graphics_drawable_NinePatchDrawable_nativeCreate__Ljava_lang_String_2"},
+        {"android/graphics/drawable/NinePatchDrawable", "nativeSetTint", "(JI)V",
+         "Java_android_graphics_drawable_NinePatchDrawable_nativeSetTint"},
+        {"android/graphics/drawable/DrawableContainer", "native_constructor", "()J",
+         "Java_android_graphics_drawable_DrawableContainer_native_1constructor"},
+        {"android/graphics/drawable/DrawableContainer", "native_selectChild", "(JI)V",
+         "Java_android_graphics_drawable_DrawableContainer_native_1selectChild"},
+        {"android/graphics/Path", "native_create_builder", "()J",
+         "Java_android_graphics_Path_native_1create_1builder"},
+        {"android/graphics/Path", "native_create_path", "()J",
+         "Java_android_graphics_Path_native_1create_1path"},
+        {"android/graphics/Path", "native_ref_path", "(J)V",
+         "Java_android_graphics_Path_native_1ref_1path"},
+        {"android/graphics/Path", "native_reset", "(J)V",
+         "Java_android_graphics_Path_native_1reset"},
+        {"android/graphics/Path", "native_close", "(J)V",
+         "Java_android_graphics_Path_native_1close"},
+        {"android/graphics/Path", "native_move_to", "(JFF)V",
+         "Java_android_graphics_Path_native_1move_1to"},
+        {"android/graphics/Path", "native_line_to", "(JFF)V",
+         "Java_android_graphics_Path_native_1line_1to"},
+        {"android/graphics/Path", "native_arc_to", "(JFFFFFF)V",
+         "Java_android_graphics_Path_native_1arc_1to"},
+        {"android/graphics/Path", "native_cubic_to", "(JFFFFFF)V",
+         "Java_android_graphics_Path_native_1cubic_1to"},
+        {"android/graphics/Path", "native_quad_to", "(JFFFF)V",
+         "Java_android_graphics_Path_native_1quad_1to"},
+        {"android/graphics/Path", "native_rel_move_to", "(JFF)V",
+         "Java_android_graphics_Path_native_1rel_1move_1to"},
+        {"android/graphics/Path", "native_rel_line_to", "(JFF)V",
+         "Java_android_graphics_Path_native_1rel_1line_1to"},
+        {"android/graphics/Path", "native_rel_cubic_to", "(JFFFFFF)V",
+         "Java_android_graphics_Path_native_1rel_1cubic_1to"},
+        {"android/graphics/Path", "native_rel_quad_to", "(JFFFF)V",
+         "Java_android_graphics_Path_native_1rel_1quad_1to"},
+        {"android/graphics/Path", "native_add_arc", "(JFFFFFF)V",
+         "Java_android_graphics_Path_native_1add_1arc"},
+        {"android/graphics/Path", "native_add_path", "(JJ)V",
+         "Java_android_graphics_Path_native_1add_1path"},
+        {"android/graphics/Path", "native_transform", "(JJ)V",
+         "Java_android_graphics_Path_native_1transform"},
+        {"android/graphics/Path", "native_add_rect", "(JFFFF)V",
+         "Java_android_graphics_Path_native_1add_1rect"},
+        {"android/graphics/Path", "native_add_round_rect", "(JFFFFFF)V",
+         "Java_android_graphics_Path_native_1add_1round_1rect"},
+        {"android/graphics/Path", "native_get_bounds", "(JLandroid/graphics/RectF;)V",
+         "Java_android_graphics_Path_native_1get_1bounds"},
     };
     register_atl_natives(jvm->env, jvm->api_native, jvm->api_dlsym,
                          kAssetAndXmlNatives,

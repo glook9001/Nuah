@@ -465,6 +465,112 @@ void bionic_freeaddrinfo(struct bionic_addrinfo *ai)
 	freeaddrinfo((struct addrinfo *)ai);
 }
 
+#include <pwd.h>
+
+struct passwd *bionic_getpwuid(uid_t uid)
+{
+	return getpwuid(uid);
+}
+
+struct passwd *bionic_getpwnam(const char *name)
+{
+	return getpwnam(name);
+}
+
+int bionic_getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen, struct passwd **result)
+{
+	if (!pwd || !buf) {
+		if (result) *result = NULL;
+		return EINVAL;
+	}
+	struct passwd *res = getpwuid(uid);
+	if (!res) {
+		if (result) *result = NULL;
+		return 0;
+	}
+	size_t n_name = strlen(res->pw_name) + 1;
+	size_t n_pass = strlen(res->pw_passwd) + 1;
+	size_t n_gecos = strlen(res->pw_gecos ? res->pw_gecos : "") + 1;
+	size_t n_dir = strlen(res->pw_dir) + 1;
+	size_t n_shell = strlen(res->pw_shell) + 1;
+	if (buflen < n_name + n_pass + n_gecos + n_dir + n_shell) {
+		if (result) *result = NULL;
+		return ERANGE;
+	}
+	char *p = buf;
+	pwd->pw_uid = res->pw_uid;
+	pwd->pw_gid = res->pw_gid;
+
+	pwd->pw_name = p;
+	memcpy(p, res->pw_name, n_name);
+	p += n_name;
+
+	pwd->pw_passwd = p;
+	memcpy(p, res->pw_passwd, n_pass);
+	p += n_pass;
+
+	pwd->pw_gecos = p;
+	memcpy(p, res->pw_gecos ? res->pw_gecos : "", n_gecos);
+	p += n_gecos;
+
+	pwd->pw_dir = p;
+	memcpy(p, res->pw_dir, n_dir);
+	p += n_dir;
+
+	pwd->pw_shell = p;
+	memcpy(p, res->pw_shell, n_shell);
+
+	if (result) *result = pwd;
+	return 0;
+}
+
+int bionic_getpwnam_r(const char *name, struct passwd *pwd, char *buf, size_t buflen, struct passwd **result)
+{
+	if (!pwd || !buf) {
+		if (result) *result = NULL;
+		return EINVAL;
+	}
+	struct passwd *res = getpwnam(name);
+	if (!res) {
+		if (result) *result = NULL;
+		return 0;
+	}
+	size_t n_name = strlen(res->pw_name) + 1;
+	size_t n_pass = strlen(res->pw_passwd) + 1;
+	size_t n_gecos = strlen(res->pw_gecos ? res->pw_gecos : "") + 1;
+	size_t n_dir = strlen(res->pw_dir) + 1;
+	size_t n_shell = strlen(res->pw_shell) + 1;
+	if (buflen < n_name + n_pass + n_gecos + n_dir + n_shell) {
+		if (result) *result = NULL;
+		return ERANGE;
+	}
+	char *p = buf;
+	pwd->pw_uid = res->pw_uid;
+	pwd->pw_gid = res->pw_gid;
+
+	pwd->pw_name = p;
+	memcpy(p, res->pw_name, n_name);
+	p += n_name;
+
+	pwd->pw_passwd = p;
+	memcpy(p, res->pw_passwd, n_pass);
+	p += n_pass;
+
+	pwd->pw_gecos = p;
+	memcpy(p, res->pw_gecos ? res->pw_gecos : "", n_gecos);
+	p += n_gecos;
+
+	pwd->pw_dir = p;
+	memcpy(p, res->pw_dir, n_dir);
+	p += n_dir;
+
+	pwd->pw_shell = p;
+	memcpy(p, res->pw_shell, n_shell);
+
+	if (result) *result = pwd;
+	return 0;
+}
+
 #ifdef VERBOSE_FUNCTIONS
 #include "libc-verbose.h"
 #endif

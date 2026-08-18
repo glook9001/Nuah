@@ -1028,7 +1028,10 @@ size_t nuah_fread_chk_n(void* destination, size_t size, size_t count,
 asm(".symver nuah_fread_chk_n,__fread_chk@LIBC_N");
 char* __strncpy_chk(char* destination, const char* source, size_t count,
                     size_t destination_size) {
-  if (count > destination_size) std::abort();
+  if (!destination || !source) return destination;
+  if (destination_size != static_cast<size_t>(-1) && count > destination_size) {
+    return strncpy(destination, source, destination_size);
+  }
   return strncpy(destination, source, count);
 }
 int __vsnprintf_chk(char* destination, size_t size, int, size_t destination_size,

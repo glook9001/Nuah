@@ -161,7 +161,16 @@ std::string atl_executable() {
 }
 
 void install_legacy_overlay_preload() {
-  const std::filesystem::path overlay = NUAH_ATL_OVERLAY_PATH;
+  // The build-tree binary has a compile-time fallback, but release launchers
+  // must be able to relocate the whole runtime (AppImage, tarball, etc.).
+  // Keep the override in the process environment so the overlay is resolved
+  // beside the packaged executable instead of pointing back at the builder's
+  // absolute build directory.
+  std::filesystem::path overlay = NUAH_ATL_OVERLAY_PATH;
+  if (const char* configured = std::getenv("NUAH_ATL_OVERLAY_PATH");
+      configured && *configured) {
+    overlay = configured;
+  }
   if (!std::filesystem::is_regular_file(overlay)) {
     throw std::runtime_error("Nuah ATL compatibility overlay is missing: " +
                              overlay.string());

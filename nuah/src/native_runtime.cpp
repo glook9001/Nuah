@@ -187,11 +187,16 @@ std::string packaged_client_settings(const std::filesystem::path& app_data) {
   if (!enabled || !*enabled || std::strcmp(enabled, "0") == 0) {
     return {};
   }
+  std::filesystem::path default_nuah_dicts;
+  if (const char* home = std::getenv("HOME"); home && *home) {
+    default_nuah_dicts = std::filesystem::path(home) /
+                         ".local/share/nuah/base.apk_/files/assets/"
+                         "shared_compression_dictionaries";
+  }
   const std::array<std::filesystem::path, 3> roots = {
       app_data / "files/assets/shared_compression_dictionaries",
       app_data / "assets/shared_compression_dictionaries",
-      std::filesystem::path("/home/pepe/.local/share/nuah/base.apk_/") /
-          "files/assets/shared_compression_dictionaries"};
+      default_nuah_dicts};
   for (const auto& root : roots) {
     std::error_code error;
     if (!std::filesystem::is_directory(root, error) || error) continue;
@@ -507,6 +512,88 @@ void prime_roblox_cookie_store(JNIEnv* env, bool early_bootstrap) {
   }
 }
 
+void extract_cookie_user_id_and_name(const std::string& line,
+                                       const std::string& sec_value) {
+  for (std::string_view marker :
+       {"rbxuid=", "UserID=", "userid="}) {
+    const std::size_t pos = line.find(marker);
+    if (pos != std::string::npos) {
+      const std::size_t begin = pos + marker.size();
+      const std::size_t end = line.find_first_not_of("0123456789", begin);
+      const std::string id = line.substr(
+          begin, end == std::string::npos ? std::string::npos : end - begin);
+      if (!id.empty() && id.size() <= 20) {
+        (void)::setenv("NUAH_ROBLOX_USER_ID", id.c_str(), 1);
+        break;
+      }
+    }
+  }
+  const std::size_t prefix_pos = sec_value.find("|_");
+  if (prefix_pos != std::string::npos) {
+    const std::size_t b64_start = prefix_pos + 2;
+    const std::size_t b64_end = sec_value.find('.', b64_start);
+    const std::string b64 = sec_value.substr(
+        b64_start, b64_end == std::string::npos ? std::string::npos
+                                                : b64_end - b64_start);
+    static const int b64_table[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,62,-1,63,
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1
+    };
+    std::string decoded;
+    int val = 0, valb = -8;
+    for (unsigned char c : b64) {
+      if (b64_table[c] == -1) break;
+      val = (val << 6) + b64_table[c];
+      valb += 6;
+      if (valb >= 0) {
+        decoded.push_back(char((val >> valb) & 0xFF));
+        valb -= 8;
+      }
+    }
+    const std::size_t uid_pos = decoded.find("\x03uid\x12");
+    if (uid_pos != std::string::npos) {
+      std::size_t dig_start = uid_pos + 5;
+      if (dig_start < decoded.size() &&
+          static_cast<unsigned char>(decoded[dig_start]) < 32) {
+        ++dig_start;
+      }
+      const std::size_t dig_end =
+          decoded.find_first_not_of("0123456789", dig_start);
+      const std::string uid = decoded.substr(
+          dig_start, dig_end == std::string::npos ? std::string::npos
+                                                  : dig_end - dig_start);
+      if (!uid.empty() && uid.size() <= 20) {
+        (void)::setenv("NUAH_ROBLOX_USER_ID", uid.c_str(), 1);
+      }
+    }
+    const std::size_t uname_pos = decoded.find("\x05uname\x12");
+    if (uname_pos != std::string::npos) {
+      std::size_t u_start = uname_pos + 7;
+      if (u_start < decoded.size() &&
+          static_cast<unsigned char>(decoded[u_start]) < 32) {
+        ++u_start;
+      }
+      const std::size_t u_end = decoded.find_first_of(
+          "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
+          "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"
+          "\"\t\r\n; ",
+          u_start);
+      const std::string uname = decoded.substr(
+          u_start, u_end == std::string::npos ? std::string::npos
+                                              : u_end - u_start);
+      if (!uname.empty() && uname.size() <= 50) {
+        (void)::setenv("NUAH_ROBLOX_USERNAME", uname.c_str(), 1);
+      }
+    }
+  }
+}
+
 /* Direct native-run has no WebKit supervisor to press the explicit
  * "use-browser-session" button.  Sober already persists the live session in
  * a mode-600 one-line cookie file, so adopt that file at the process boundary
@@ -558,20 +645,7 @@ bool discover_sober_session_cookie() {
           line.find_first_of("\r\n") == std::string::npos) {
         (void)::setenv("NUAH_ROBLOX_COOKIE_HEADER", line.c_str(), 1);
       }
-      const std::string_view user_marker = "rbxuid=";
-      const std::size_t user_pos = line.find(user_marker);
-      if (user_pos != std::string::npos) {
-        const std::size_t user_begin = user_pos + user_marker.size();
-        const std::size_t user_end =
-            line.find_first_not_of("0123456789", user_begin);
-        const std::string user_id = line.substr(
-            user_begin, user_end == std::string::npos
-                           ? std::string::npos
-                           : user_end - user_begin);
-        if (!user_id.empty() && user_id.size() <= 20) {
-          (void)::setenv("NUAH_ROBLOX_USER_ID", user_id.c_str(), 1);
-        }
-      }
+      extract_cookie_user_id_and_name(line, value);
       std::cerr << "nuah native: adopted Sober browser session from "
                 << path << '\n';
       return true;
@@ -1149,7 +1223,10 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       call_string("setReservedServerAccessCode",
                   reserved_server_access_code.c_str()) &&
       call_long("setUserId", nuah_roblox_user_id()) &&
-      call_string("setUsername", empty) &&
+      call_string(
+          "setUsername",
+          (::getenv("NUAH_ROBLOX_USERNAME") ? ::getenv("NUAH_ROBLOX_USERNAME")
+                                            : empty)) &&
       /* rh.y0.D0() is false for the normal desktop session, so the APK does
        * not set a VR activity.  Keep this nullable unless explicitly testing
        * the VR path. */
@@ -1801,6 +1878,10 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       configured && *configured) {
     host_android_dirs.emplace_back(std::filesystem::path(configured).parent_path());
   }
+  if (const char* configured_dir = std::getenv("NUAH_ART_LIBRARY_DIR");
+      configured_dir && *configured_dir) {
+    host_android_dirs.emplace_back(configured_dir);
+  }
   host_android_dirs.emplace_back("/usr/local/lib64/art");
   for (const auto& directory : host_android_dirs) {
     if (!std::filesystem::is_regular_file(directory / "libandroidfw.so"))
@@ -2090,9 +2171,11 @@ int run_nuah_jni(const NativeLaunchOptions& options,
     const auto app_assets = app_data_directory / "files/assets";
     const auto app_assets_legacy = app_data_directory / "assets";
     const auto data_assets = data_directory / "assets";
-    const auto sober_assets =
-        std::filesystem::path("/home/pepe/.var/app/org.vinegarhq.Sober/data/"
-                              "sober/assets");
+    std::filesystem::path sober_assets;
+    if (const char* home = ::getenv("HOME"); home && *home) {
+      sober_assets = std::filesystem::path(home) /
+                     ".var/app/org.vinegarhq.Sober/data/sober/assets";
+    }
     const std::array<std::filesystem::path, 4> asset_roots = {
         app_assets, app_assets_legacy, data_assets, sober_assets};
     for (const auto& root : asset_roots) {

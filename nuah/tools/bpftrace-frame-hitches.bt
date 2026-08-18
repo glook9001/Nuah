@@ -1,0 +1,25 @@
+/*
+ * Read-only proof capture for Nuah/Roblox frame hitches.
+ *
+ * Run as root, passing the native-run child PID as the first argument:
+ *   bpftrace bpftrace-frame-hitches.bt <pid>
+ *
+ * The probe is intentionally at Nuah's vkQueuePresentKHR wrapper.  It logs
+ * only gaps of at least 50 ms between present entries on each thread and
+ * includes raw user/kernel stacks.  It neither reads game assets nor writes
+ * to process memory.
+ */
+
+uprobe:/home/pepe/Documents/sober/build/android/libvulkan.so:vkQueuePresentKHR
+/pid == $1/
+{
+  $now = nsecs;
+  $previous = @last_present_ns[tid];
+  if ($previous && $now - $previous >= 50000000) {
+    printf("NUAH_FRAME_HITCH pid=%d tid=%d gap_us=%llu ts_ns=%llu\\n",
+           pid, tid, ($now - $previous) / 1000, $now);
+    print(ustack(16));
+    print(kstack(12));
+  }
+  @last_present_ns[tid] = $now;
+}

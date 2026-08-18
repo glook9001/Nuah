@@ -1067,12 +1067,19 @@ void configure_host_provider_hooks(void* hybris) {
         configured && *configured) {
       candidates.emplace_back(configured);
     }
+    if (const char* atl_lib_dir = ::getenv("NUAH_ATL_LIBRARY_DIR");
+        atl_lib_dir && *atl_lib_dir) {
+      candidates.emplace_back(std::filesystem::path(atl_lib_dir) /
+                              "libpthread_bio.so.0");
+      candidates.emplace_back(std::filesystem::path(atl_lib_dir) /
+                              "libpthread_bio.so");
+    }
     candidates.emplace_back(runtime_directory() / "bionic-translation" /
                              "libpthread_bio.so.0");
     for (const auto& candidate : candidates) {
       if (!std::filesystem::is_regular_file(candidate)) continue;
       pthread_bridge_handle =
-          ::dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL);
+          ::dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL);
       if (pthread_bridge_handle) {
         if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
             trace && *trace) {
@@ -1580,14 +1587,14 @@ void configure_android_library_path(
         ::dlsym(RTLD_DEFAULT, "dl_parse_library_path"));
   }
   if (!parse) {
-    // Fedora's ATL install keeps the bionic linker as a system soname. Keep
-    // that known-good linker first: replacing it with a separately rebuilt
-    // linker changes ATL's loader ABI and can corrupt ART's startup mutexes.
-    static const char* candidates[] = {
+    std::vector<std::string> candidates = {
         "/lib64/libdl_bio.so.0", "/usr/lib64/libdl_bio.so.0",
         "/lib/libdl_bio.so.0", "/usr/lib/libdl_bio.so.0"};
-    for (const char* candidate : candidates) {
-      void* linker = ::dlopen(candidate, RTLD_NOW | RTLD_GLOBAL);
+    if (const char* atl_lib_dir = ::getenv("NUAH_ATL_LIBRARY_DIR"); atl_lib_dir && *atl_lib_dir) {
+      candidates.insert(candidates.begin(), (std::filesystem::path(atl_lib_dir) / "libdl_bio.so.0").string());
+    }
+    for (const auto& candidate : candidates) {
+      void* linker = ::dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL);
       if (!linker) continue;
       linker_handle = linker;
       parse = reinterpret_cast<ParseLibraryPath>(
@@ -1894,6 +1901,12 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
                        "nuah loader: promoted host libandroid handle=%p path=%s\n",
                        promoted, host_android.c_str());
         }
+      }
+      if (const char* atl_lib_dir = ::getenv("NUAH_ATL_LIBRARY_DIR")) {
+        const auto pth = std::filesystem::path(atl_lib_dir) / "libpthread_bio.so.0";
+        if (std::filesystem::is_regular_file(pth)) (void)::dlopen(pth.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        const auto cbio = std::filesystem::path(atl_lib_dir) / "libc_bio.so.0";
+        if (std::filesystem::is_regular_file(cbio)) (void)::dlopen(cbio.c_str(), RTLD_NOW | RTLD_GLOBAL);
       }
       handle = bionic_dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
       bionic_handle = handle != nullptr;

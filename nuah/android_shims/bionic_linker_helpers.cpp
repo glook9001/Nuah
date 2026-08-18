@@ -52,7 +52,10 @@ std::size_t __strlen_chk(const char* text, std::size_t) {
 }
 char* __strncpy_chk(char* dst, const char* src, std::size_t count,
                     std::size_t capacity) {
-  if (!dst || !src || count > capacity) std::abort();
+  if (!dst || !src) return dst;
+  if (capacity != static_cast<std::size_t>(-1) && count > capacity) {
+    return std::strncpy(dst, src, capacity);
+  }
   return std::strncpy(dst, src, count);
 }
 char* __strncpy_chk2(char* dst, const char* src, std::size_t count,

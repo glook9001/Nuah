@@ -122,16 +122,36 @@ esac
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 nuah_binary=${NUAH_BINARY:-$repo_root/build/nuah}
-nuah_data=${NUAH_DATA_DIR:-$HOME/.local/share/nuah}
-sober_data="$HOME/.var/app/org.vinegarhq.Sober/data/sober"
-package="$sober_data/packages/x86_64/com.roblox.client"
+nuah_command=("$nuah_binary")
+if [[ -n "${NUAH_APPIMAGE:-}" ]]; then
+  nuah_command=("$NUAH_APPIMAGE")
+  nuah_data=${NUAH_DATA_DIR:-$HOME/.local/share/nuah}
+  sober_data="$HOME/.var/app/org.vinegarhq.Sober/data/sober"
+  package=${NUAH_PACKAGE_DIR:-$sober_data/packages/x86_64/com.roblox.client}
+  cookie_file=${NUAH_COOKIE_FILE:-$sober_data/cookies}
+elif [[ ${NUAH_FLATPAK:-0} != 0 ]]; then
+  command -v flatpak >/dev/null 2>&1 || {
+    echo "NUAH_FLATPAK=1 requires the flatpak command" >&2
+    exit 1
+  }
+  nuah_command=(flatpak run org.nuah.Nuah)
+  nuah_data=${NUAH_DATA_DIR:-$HOME/.local/share/nuah}
+  sober_data="$HOME/.var/app/org.vinegarhq.Sober/data/sober"
+  package=${NUAH_PACKAGE_DIR:-$sober_data/packages/x86_64/com.roblox.client}
+  cookie_file=${NUAH_COOKIE_FILE:-$sober_data/cookies}
+else
+  nuah_data=${NUAH_DATA_DIR:-$HOME/.local/share/nuah}
+  sober_data="$HOME/.var/app/org.vinegarhq.Sober/data/sober"
+  package="$sober_data/packages/x86_64/com.roblox.client"
+  cookie_file="$sober_data/cookies"
+fi
 lock_file="$nuah_data/nuah-runtime.lock"
 
 art_library_dir=""
 if [[ -n "${NUAH_ART_LIBRARY_DIR:-}" ]]; then
   art_library_dir="$NUAH_ART_LIBRARY_DIR"
 else
-  for cand in /usr/local/lib64/art "$HOME/.local/share/nuah/art" "$repo_root/art" "$repo_root/build/art"; do
+  for cand in "$repo_root/dist/art" "$repo_root/art" "$repo_root/build/art" /usr/local/lib64/art "$HOME/.local/share/nuah/art"; do
     if [[ -r "$cand/libandroidfw.so" ]]; then
       art_library_dir="$cand"
       break
@@ -144,7 +164,7 @@ hybris_library_dir=""
 if [[ -n "${NUAH_HYBRIS_LIBRARY_DIR:-}" ]]; then
   hybris_library_dir="$NUAH_HYBRIS_LIBRARY_DIR"
 else
-  for cand in "$nuah_data/hybris/lib" "$repo_root/hybris/lib" /usr/local/lib64/hybris/lib; do
+  for cand in "$repo_root/dist/hybris/lib" "$repo_root/hybris/lib" "$nuah_data/hybris/lib" /usr/local/lib64/hybris/lib; do
     if [[ -r "$cand/libhybris-common.so" ]]; then
       hybris_library_dir="$cand"
       break
@@ -159,7 +179,7 @@ ispc_library_dir=""
 if [[ -n "${NUAH_ISPC_LIBRARY_DIR:-}" ]]; then
   ispc_library_dir="$NUAH_ISPC_LIBRARY_DIR"
 else
-  for cand in "$repo_root/build/ispc" "$repo_root/ispc" "$nuah_data/ispc"; do
+  for cand in "$repo_root/build/ispc" "$repo_root/dist/android" "$repo_root/ispc" "$nuah_data/ispc"; do
     if [[ -r "$cand/libnuah_ispc_asset.so" ]]; then
       ispc_library_dir="$cand"
       break
@@ -173,7 +193,7 @@ atl_library_dir=""
 if [[ -n "${NUAH_ATL_LIBRARY_DIR:-}" ]]; then
   atl_library_dir="$NUAH_ATL_LIBRARY_DIR"
 else
-  for cand in "$repo_root/build/atl-bionic" "$repo_root/atl-bionic" "$nuah_data/atl-bionic"; do
+  for cand in "$repo_root/build/atl-bionic" "$repo_root/dist/atl-bionic" "$repo_root/atl-bionic" "$nuah_data/atl-bionic"; do
     if [[ -r "$cand/libdl_bio.so.0" ]]; then
       atl_library_dir="$cand"
       break
@@ -183,32 +203,34 @@ else
 fi
 atl_native_dir=${NUAH_ATL_NATIVE_DIR:-$nuah_data/base.apk_/lib}
 
-[[ -x "$nuah_binary" ]] || {
-  echo "build/nuah is missing; build Nuah first" >&2
-  exit 2
-}
-[[ -r "$art_library_dir/libandroidfw.so" ]] || {
-  echo "ART runtime is missing: $art_library_dir/libandroidfw.so" >&2
-  exit 2
-}
-[[ -r "$hybris_library" && -d "$hybris_linker_dir" ]] || {
-  echo "libhybris runtime is missing: $hybris_library / $hybris_linker_dir" >&2
-  exit 2
-}
-[[ -r "$ispc_library_dir/libnuah_ispc_asset.so" ]] || {
-  echo "ISPC runtime is missing: $ispc_library_dir/libnuah_ispc_asset.so" >&2
-  exit 2
-}
-if [[ -n "$vulkan_library_dir" ]]; then
-  [[ -r "$vulkan_library_dir/libvulkan.so.1" ]] || {
-    echo "Vulkan host loader is missing: $vulkan_library_dir/libvulkan.so.1" >&2
+if [[ ${NUAH_FLATPAK:-0} == 0 && -z "${NUAH_APPIMAGE:-}" ]]; then
+  [[ -x "$nuah_binary" ]] || {
+    echo "build/nuah is missing; build Nuah first" >&2
+    exit 2
+  }
+  [[ -r "$art_library_dir/libandroidfw.so" ]] || {
+    echo "ART runtime is missing: $art_library_dir/libandroidfw.so" >&2
+    exit 2
+  }
+  [[ -r "$hybris_library" && -d "$hybris_linker_dir" ]] || {
+    echo "libhybris runtime is missing: $hybris_library / $hybris_linker_dir" >&2
+    exit 2
+  }
+  [[ -r "$ispc_library_dir/libnuah_ispc_asset.so" ]] || {
+    echo "ISPC runtime is missing: $ispc_library_dir/libnuah_ispc_asset.so" >&2
+    exit 2
+  }
+  if [[ -n "$vulkan_library_dir" ]]; then
+    [[ -r "$vulkan_library_dir/libvulkan.so.1" ]] || {
+      echo "Vulkan host loader is missing: $vulkan_library_dir/libvulkan.so.1" >&2
+      exit 2
+    }
+  fi
+  [[ -r "$atl_library_dir/libdl_bio.so.0" ]] || {
+    echo "ATL bionic linker is missing: $atl_library_dir/libdl_bio.so.0" >&2
     exit 2
   }
 fi
-[[ -r "$atl_library_dir/libdl_bio.so.0" ]] || {
-  echo "ATL bionic linker is missing: $atl_library_dir/libdl_bio.so.0" >&2
-  exit 2
-}
 if [[ -e $lock_file ]] && lsof "$lock_file" >/dev/null 2>&1; then
   echo "Nuah already owns $lock_file; close that session before an A/B run" >&2
   exit 1
@@ -275,7 +297,28 @@ split_apk_path=${NUAH_SPLIT_APK_PATH:-$package/split_config.x86_64.apk}
   exit 1
 }
 
-cookie_file="$sober_data/cookies"
+if [[ ! -d "$nuah_data/base.apk_/files/assets/content" || -z "$(ls -A "$nuah_data/base.apk_/files/assets/content" 2>/dev/null)" ]]; then
+  echo "Unpacking APK assets into $nuah_data/base.apk_/files/assets..."
+  mkdir -p "$nuah_data/base.apk_/files/assets"
+  python3 - "$apk_path" "$nuah_data/base.apk_/files/assets" <<'PY'
+import sys, zipfile, os
+apk_path, dest_dir = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(apk_path, 'r') as z:
+    for member in z.infolist():
+        if member.filename.startswith("assets/"):
+            rel = member.filename[len("assets/"):]
+            if not rel:
+                continue
+            target = os.path.join(dest_dir, rel)
+            if member.is_dir():
+                os.makedirs(target, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with z.open(member) as src, open(target, "wb") as dst:
+                    dst.write(src.read())
+PY
+fi
+
 cookie=$(python3 - "$cookie_file" <<'PY'
 import re
 import sys
@@ -294,9 +337,47 @@ if matches:
 PY
 )
 [[ -n $cookie ]] || {
-  echo "no Roblox session cookie found; sign in through Sober first" >&2
+  if [[ ${NUAH_FLATPAK:-0} != 0 ]]; then
+    echo "no Roblox session cookie found in Nuah's Flatpak data: $cookie_file" >&2
+  else
+    echo "no Roblox session cookie found; sign in through Sober first" >&2
+  fi
   exit 1
 }
+
+cookie_user_id=$(python3 - "$cookie_file" <<'PY'
+import re, sys, base64
+
+try:
+    contents = open(sys.argv[1], encoding="utf-8").read()
+except OSError:
+    raise SystemExit
+
+for marker in (r"rbxuid=(\d+)", r"UserID=(\d+)", r"userid=(\d+)"):
+    m = re.search(marker, contents)
+    if m:
+        print(m.group(1), end="")
+        sys.exit(0)
+
+m = re.search(r"(?:^|[;\t\s])\.ROBLOSECURITY(?:[=\t\s]+)([^;\t\s]+)", contents)
+if m:
+    sec = m.group(1)
+    if "|_" in sec:
+        token = sec.split("|_")[-1].split(".")[0]
+        padded = token + "=" * (-len(token) % 4)
+        try:
+            raw = base64.b64decode(padded)
+            uid_idx = raw.find(b"\x03uid\x12")
+            if uid_idx != -1:
+                sub = raw[uid_idx + 5:uid_idx + 30]
+                digs = re.search(rb"^\x0b?(\d+)", sub)
+                if digs:
+                    print(digs.group(1).decode("ascii"), end="")
+                    sys.exit(0)
+        except Exception:
+            pass
+PY
+)
 
 timestamp=$(date +%Y%m%d-%H%M%S)
 log="/tmp/nuah-rivals-${width}x${height}-workers${threads}-${timestamp}.log"
@@ -365,13 +446,28 @@ for icu_lib in "$art_library_dir/libicudata.so.77" "$art_library_dir/libicuuc.so
   fi
 done
 
+session_env=("ROBLOX_COOKIE=$cookie")
+if [[ ${NUAH_FLATPAK:-0} != 0 ]]; then
+  # The Flatpak has no access to Sober's profile, so pass the imported Nuah
+  # profile cookie explicitly and keep discovery disabled inside the sandbox.
+  session_env+=(
+    "NUAH_ROBLOX_COOKIES=.ROBLOSECURITY=$cookie"
+    "NUAH_ROBLOX_COOKIE_HEADER=.ROBLOSECURITY=$cookie"
+    NUAH_DISABLE_SESSION_DISCOVERY=1
+  )
+fi
+
 "${launch_prefix[@]}" env \
-  ROBLOX_COOKIE="$cookie" \
+  "${session_env[@]}" \
+  ${cookie_user_id:+NUAH_ROBLOX_USER_ID="$cookie_user_id"} \
   NUAH_CLIENT_SETTINGS_JSON="{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true,\"FIntRenderTextureMipBias\":\"$mip_bias\"}}" \
+  NUAH_ART_LIBRARY_DIR="$art_library_dir" \
+  NUAH_ATL_ANDROID16_HOME="${NUAH_ATL_ANDROID16_HOME:-/usr/local/lib64/java/dex/art}" \
+  NUAH_ATL_HOME="${NUAH_ATL_HOME:-$repo_root/dist/java/dex/android_translation_layer}" \
   NUAH_ATL_NATIVE_DIR="$atl_native_dir" \
   NUAH_HYBRIS_LIBRARY="$hybris_library" \
   HYBRIS_LINKER_DIR="$hybris_linker_dir" \
-  LD_LIBRARY_PATH="$repo_root/build:$art_library_dir:$art_library_dir/natives:$hybris_library_dir:$ispc_library_dir:$atl_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" \
+  LD_LIBRARY_PATH="$repo_root/build:$art_library_dir:$art_library_dir/natives:$repo_root/dist/java/dex/art/natives:$hybris_library_dir:$ispc_library_dir:$atl_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" \
   NUAH_ATL_LIBRARY_DIR="$atl_library_dir" \
   LD_PRELOAD="${icu_preload:+$icu_preload:}${android_preload:+$android_preload:}/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:$art_library_dir/libandroidfw.so" \
   NUAH_GRAPHICS_BACKEND=vulkan \
@@ -403,6 +499,6 @@ done
   NUAH_TEXTURE_SIDECAR=0 \
   NUAH_PERF_TRACE="$perf_trace" \
   NUAH_SHADER_CACHE_DIR="$nuah_data/base.apk_/mesa-shader-cache" \
-  "$nuah_binary" native-run --width "$width" --height "$height" \
+  "${nuah_command[@]}" native-run --width "$width" --height "$height" \
     --apk "$apk_path" --split "$split_apk_path" \
     --data "$runtime_data" --uri 'roblox://placeId=17625359962' >"$log" 2>&1

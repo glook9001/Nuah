@@ -1,0 +1,45 @@
+/*
+ * Attribute long render-thread gaps to scheduler sleep/wait intervals.
+ *
+ * Run as root with the native-run PID:
+ *   pkexec bpftrace bpftrace-render-offcpu.bt <pid>
+ *
+ * A sampled user stack inside ANV only says where the thread was observed.
+ * This trace records the stack at the moment the render thread is actually
+ * descheduled and prints the matching wake-up interval, which distinguishes
+ * a CPU-side wait (futex/condition variable), a compositor wait, and a
+ * runnable thread that was merely preempted.
+ */
+
+tracepoint:sched:sched_switch
+/args->prev_pid == $1/
+{
+  @off_ns[args->prev_pid] = nsecs;
+  @off_state[args->prev_pid] = args->prev_state;
+  @off_ustack[args->prev_pid] = ustack(20);
+  @off_kstack[args->prev_pid] = kstack(16);
+}
+
+tracepoint:sched:sched_switch
+/args->next_pid == $1 && @off_ns[args->next_pid]/
+{
+  $gap = nsecs - @off_ns[args->next_pid];
+  if ($gap >= 20000000) {
+    printf("NUAH_RENDER_OFFCPU pid=%d gap_us=%llu prev_state=%llu\n",
+           args->next_pid, $gap / 1000, @off_state[args->next_pid]);
+    print(@off_ustack[args->next_pid]);
+    print(@off_kstack[args->next_pid]);
+  }
+  delete(@off_ns[args->next_pid]);
+  delete(@off_state[args->next_pid]);
+  delete(@off_ustack[args->next_pid]);
+  delete(@off_kstack[args->next_pid]);
+}
+
+END
+{
+  clear(@off_ns);
+  clear(@off_state);
+  clear(@off_ustack);
+  clear(@off_kstack);
+}

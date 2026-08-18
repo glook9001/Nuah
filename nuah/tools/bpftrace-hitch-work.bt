@@ -1,0 +1,37 @@
+/*
+ * Read-only hitch-work classifier.
+ *
+ * Pass the native-run child PID.  The first vkQueuePresentKHR call identifies
+ * the render thread.  While that thread has gone >=50 ms without presenting,
+ * profile samples are accumulated by user stack.  At the next present, the
+ * stacks are printed and cleared.  This distinguishes CPU-side Roblox work,
+ * driver submission, kernel waits, and file/asset activity during the hitch.
+ */
+
+uprobe:/home/pepe/Documents/sober/build/android/libvulkan.so:vkQueuePresentKHR
+/pid == $1/
+{
+  if (@render_tid == 0) {
+    @render_tid = tid;
+    @last_present_ns = nsecs;
+    printf("NUAH_HITCH_WORK render_tid=%d\n", tid);
+  } else if (tid == @render_tid) {
+    $gap = nsecs - @last_present_ns;
+    if ($gap >= 50000000) {
+      printf("NUAH_HITCH_WORK gap_us=%llu samples_follow\n", $gap / 1000);
+      print(@hitch_stacks);
+      print(@hitch_kstacks);
+      clear(@hitch_stacks);
+      clear(@hitch_kstacks);
+    }
+    @last_present_ns = nsecs;
+  }
+}
+
+profile:hz:199
+/pid == $1 && @render_tid != 0 && tid == @render_tid &&
+  nsecs - @last_present_ns >= 50000000/
+{
+  @hitch_stacks[ustack(16)] = count();
+  @hitch_kstacks[kstack(16)] = count();
+}

@@ -32,29 +32,62 @@ cmake --build build --target nuah nuah-services
 ./build/nuah config
 ```
 
-`native-run` is the supported Nuah game path. From the repository root, this
-is the known-working local launch for RIVALS (place `17625359962`) with the
-current Sober APK and login cookie. Run Sober first and sign in so its cookie
-store and APK package are current. Adjust the provider/APK paths if they are
-installed elsewhere:
+### Automated Launch (Recommended)
+
+The standard and tested way to launch RIVALS is via `run-rivals-worker-ab.sh`:
+
+```sh
+# Syntax: ./nuah/tools/run-rivals-worker-ab.sh [workers] [width] [height]
+./nuah/tools/run-rivals-worker-ab.sh 0 1220 920
+```
+
+The script automatically:
+1. **Adopts Session Credentials**: Reads authentication cookies from Sober (`~/.var/app/org.vinegarhq.Sober/data/sober/cookies` or `~/.config/sober/cookies`) and extracts the authenticated User ID (`NUAH_ROBLOX_USER_ID`) from the token payload.
+2. **Extracts APK Assets**: Checks if `~/.local/share/nuah/base.apk_/files/assets/content` is present, and if missing, automatically uncompresses the APK's `assets/` tree into place.
+3. **Configures Display & Transport**: Sets up Vulkan with FIFO swapchain pacing, Wayland surface presentation, disables `RbxTransport DummyClient` (required for RIVALS server join), and targets 60 FPS.
+4. **Connects to Lobby**: Boots the native runtime directly into the multiplayer game lobby.
+
+### Manual native-run (Advanced)
+
+If launching `nuah native-run` directly without the automated script, ensure Sober is signed in, assets are unpacked, and run:
 
 ```sh
 SOBER_DATA="$HOME/.var/app/org.vinegarhq.Sober/data/sober"
 SOBER_PACKAGE="$SOBER_DATA/packages/x86_64/com.roblox.client"
-ROBLOX_COOKIE="$(sed -n 's/.*\.ROBLOSECURITY=\([^;[:space:]]*\).*/\1/p' \
-  "$SOBER_DATA/cookies" | head -1)"
-export NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$ROBLOX_COOKIE"
-export NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$ROBLOX_COOKIE"
-# Required for the current RIVALS server handshake: use Roblox's real
-# transport instead of the RbxTransport DummyClient.
+NUAH_DATA="$HOME/.local/share/nuah"
+
+# Ensure APK assets are extracted (first run only)
+if [ ! -d "$NUAH_DATA/base.apk_/files/assets/content" ]; then
+  mkdir -p "$NUAH_DATA/base.apk_/files/assets"
+  python3 - "$SOBER_PACKAGE/base.apk" "$NUAH_DATA/base.apk_/files/assets" <<'PY'
+import sys, zipfile, os
+apk_path, dest_dir = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(apk_path, 'r') as z:
+    for m in z.infolist():
+        if m.filename.startswith("assets/"):
+            rel = m.filename[len("assets/"):]
+            if rel:
+                target = os.path.join(dest_dir, rel)
+                if m.is_dir():
+                    os.makedirs(target, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with z.open(m) as src, open(target, "wb") as dst:
+                        dst.write(src.read())
+PY
+fi
+
+# Required for RIVALS server handshake: use Roblox's real transport instead of RbxTransport DummyClient
 export NUAH_CLIENT_SETTINGS_JSON='{"applicationSettings":{"DFFlagDebugDisableRbxTransportDummyClient":true}}'
-export NUAH_ATL_NATIVE_DIR="$HOME/.local/share/nuah/base.apk_/lib"
-export NUAH_HYBRIS_LIBRARY="$HOME/.local/share/nuah/hybris/lib/libhybris-common.so"
-export HYBRIS_LINKER_DIR="$HOME/.local/share/nuah/hybris/lib/libhybris/linker"
-export LD_LIBRARY_PATH=/usr/local/lib64/art:"$HOME/.local/share/nuah/hybris/lib"
+export NUAH_ART_LIBRARY_DIR=/usr/local/lib64/art
+export NUAH_ATL_ANDROID16_HOME=/usr/local/lib64/java/dex/art
+export NUAH_ATL_NATIVE_DIR="$NUAH_DATA/base.apk_/lib"
+export NUAH_HYBRIS_LIBRARY="$NUAH_DATA/hybris/lib/libhybris-common.so"
+export HYBRIS_LINKER_DIR="$NUAH_DATA/hybris/lib/libhybris/linker"
+export LD_LIBRARY_PATH="$PWD/build:/usr/local/lib64/art:/usr/local/lib64/art/natives:$NUAH_DATA/hybris/lib:$NUAH_DATA/base.apk_/lib"
 export LD_PRELOAD=/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:/usr/local/lib64/art/libandroidfw.so
 export NUAH_GRAPHICS_BACKEND=vulkan
-export NUAH_PERFORMANCE_MODE=turbo
+export NUAH_PERFORMANCE_MODE=quality
 export NUAH_VULKAN_PRESENT_MODE=fifo
 export NUAH_VULKAN_SUBMIT_THREAD=0
 export MESA_VK_ENABLE_SUBMIT_THREAD=0
@@ -65,17 +98,42 @@ export NUAH_FAST_RENDER=1
 export NUAH_ASSET_BACKGROUND=1
 export NUAH_TASK_THREADS=0
 export NUAH_TARGET_FPS=60
-export NUAH_SHADER_CACHE_DIR="$HOME/.local/share/nuah/base.apk_/mesa-shader-cache"
+export NUAH_SHADER_CACHE_DIR="$NUAH_DATA/base.apk_/mesa-shader-cache"
 
 ./build/nuah native-run \
   --apk "$SOBER_PACKAGE/base.apk" \
   --split "$SOBER_PACKAGE/split_config.x86_64.apk" \
-  --data "$HOME/.local/share/nuah" \
+  --data "$NUAH_DATA" \
   --uri 'roblox://placeId=17625359962'
 ```
 
-Do not print or commit `ROBLOX_COOKIE`; it is an authentication credential.
-If the cookie is empty, sign in through Sober again before launching Nuah.
+Do not print or commit session cookies. If unauthenticated or guest errors occur, sign in through Sober again before launching Nuah.
+
+### Remote Machine Execution & Deployment
+
+To deploy and run Nuah on a remote Linux host (e.g. over SSH):
+
+1. **Prerequisites on Remote Host**:
+   - Graphics stack: Mesa/Vulkan driver and active Wayland/X11 compositor.
+   - Android runtime: ART runtime at `/usr/local/lib64/art` and libhybris libraries.
+   - Sober session: Run Sober on the remote machine (or copy `~/.var/app/org.vinegarhq.Sober/data/sober/cookies` and `packages/x86_64/com.roblox.client/` to the remote machine).
+
+2. **Sync Nuah Binary and Launcher**:
+   ```sh
+   rsync -avz build/nuah nuah/tools/run-rivals-worker-ab.sh user@<remote-ip>:~/sober/
+   ```
+
+3. **Launch over SSH**:
+   Ensure display environment variables (`DISPLAY` / `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`) are exported for the active desktop session:
+   ```sh
+   ssh user@<remote-ip> "cd ~/sober && \
+     export DISPLAY=:0 \
+     export WAYLAND_DISPLAY=wayland-0 \
+     export XDG_RUNTIME_DIR=/run/user/\$(id -u) \
+     ./nuah/tools/run-rivals-worker-ab.sh 0 1220 920"
+   ```
+
+The runner on the remote host automatically extracts missing APK assets from `base.apk`, parses the session cookie, configures Vulkan FIFO presentation, and joins the game server.
 
 ### Verify the RIVALS join
 
