@@ -365,6 +365,13 @@ int start_services(const char* argv0) {
             std::cerr << "nuah supervisor: authenticated session stored for game launch\n";
           }
         }
+      } else if (event.payload.find(R"("type":"web.session_clear")") !=
+                 std::string::npos) {
+        pending_cookie_header.clear();
+        std::error_code ec;
+        std::filesystem::remove(
+            std::filesystem::path(supervisor_data_directory()) / "cookies", ec);
+        std::cerr << "nuah supervisor: session cleared on logout\n";
       } else if (event.payload.find(R"("moduleID")") != std::string::npos) {
         static const std::regex module_pattern(
             "\\\"moduleID\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");

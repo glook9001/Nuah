@@ -225,6 +225,32 @@ void session_cookies_finished(GObject* source, GAsyncResult* result,
   }
 }
 
+void on_logout_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (!state->web_view) return;
+  auto* session = webkit_web_view_get_network_session(state->web_view);
+  auto* cookie_manager = webkit_network_session_get_cookie_manager(session);
+  webkit_cookie_manager_replace_cookies(cookie_manager, nullptr, nullptr, nullptr, nullptr);
+  auto* data_manager = webkit_network_session_get_website_data_manager(session);
+  if (data_manager) {
+    webkit_website_data_manager_clear(
+        data_manager,
+        static_cast<WebKitWebsiteDataTypes>(WEBKIT_WEBSITE_DATA_COOKIES |
+                                            WEBKIT_WEBSITE_DATA_DOM_CACHE |
+                                            WEBKIT_WEBSITE_DATA_LOCAL_STORAGE |
+                                            WEBKIT_WEBSITE_DATA_INDEXEDDB_DATABASES),
+        0, nullptr, nullptr, nullptr);
+  }
+  std::error_code ec;
+  std::filesystem::remove(state->data_directory / "cookies", ec);
+  send_to_supervisor(state, R"({"type":"web.session_clear"})");
+  set_status(state, "Logged out — loading login page…");
+  if (state->session_button) {
+    gtk_widget_set_sensitive(GTK_WIDGET(state->session_button), false);
+  }
+  webkit_web_view_load_uri(state->web_view, "https://www.roblox.com/login");
+}
+
 void on_use_browser_session_clicked(GtkButton*, gpointer data) {
   auto* state = static_cast<ServiceState*>(data);
   if (!state->web_view) return;
@@ -354,13 +380,14 @@ GtkWidget* build_login(ServiceState* state) {
   g_signal_connect(back, "clicked", G_CALLBACK(on_back_clicked), state);
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), back);
   state->session_button = GTK_BUTTON(
-      gtk_button_new_with_label("Open in Roblox"));
+      gtk_button_new_with_label("Logout"));
   gtk_widget_set_sensitive(GTK_WIDGET(state->session_button), false);
+  gtk_widget_add_css_class(GTK_WIDGET(state->session_button), "destructive-action");
   gtk_widget_set_tooltip_text(
       GTK_WIDGET(state->session_button),
-      "Continue with the signed-in Roblox Android client");
+      "Log out and clear saved Roblox cookies");
   g_signal_connect(state->session_button, "clicked",
-                   G_CALLBACK(on_use_browser_session_clicked), state);
+                   G_CALLBACK(on_logout_clicked), state);
   adw_header_bar_pack_end(ADW_HEADER_BAR(header),
                           GTK_WIDGET(state->session_button));
   adw_header_bar_set_title_widget(
