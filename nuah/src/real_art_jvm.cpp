@@ -863,12 +863,30 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
            "libjavacore.so",
            "libopenjdk.so"
        }) {
-    std::filesystem::path comp_path = std::filesystem::path(dex_root) / "natives" / companion_name;
-    if (!std::filesystem::is_regular_file(comp_path)) {
-      comp_path = std::filesystem::path(art_path()).parent_path() / "natives" / companion_name;
+    std::filesystem::path comp_path;
+    for (const auto& candidate : {
+             std::filesystem::path(art_path()).parent_path() / companion_name,
+             std::filesystem::path(art_path()).parent_path() / "natives" / companion_name,
+             std::filesystem::path(dex_root) / companion_name,
+             std::filesystem::path(dex_root) / "natives" / companion_name,
+             std::filesystem::path("/usr/local/lib64/java/dex/art/natives") / companion_name,
+             std::filesystem::path("/usr/local/lib64/art") / companion_name,
+         }) {
+      if (std::filesystem::is_regular_file(candidate)) {
+        comp_path = candidate;
+        break;
+      }
     }
-    void* handle = ::dlopen(comp_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    void* handle = nullptr;
+    if (!comp_path.empty()) {
+      handle = ::dlopen(comp_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    }
     if (!handle) handle = ::dlopen(companion_name, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+      std::fprintf(stderr, "nuah ART: failed to load companion library %s: %s\n",
+                   comp_path.empty() ? companion_name : comp_path.c_str(),
+                   ::dlerror());
+    }
     if (handle) {
       using JniOnLoadFn = jint (*)(JavaVM*, void*);
       auto on_load = reinterpret_cast<JniOnLoadFn>(::dlsym(handle, "JNI_OnLoad"));

@@ -41,10 +41,12 @@ cp -a "$REPO_ROOT/dist/hybris/lib/." "$OUT_DIR/lib/hybris/"
 cp -a "$REPO_ROOT/dist/android/." "$OUT_DIR/lib/android/"
 cp -a "$REPO_ROOT/dist/java/dex/art/." "$OUT_DIR/share/java/art/"
 
-# Ensure JNI companion DSOs are present in art lib dir
+# Ensure JNI companion DSOs are present in art lib dir and share natives dir
+mkdir -p "$OUT_DIR/share/java/art/natives"
 for soname in libnativehelper.so libopenjdkjvm.so libjavacore.so libopenjdk.so; do
   if [[ -r "$REPO_ROOT/dist/java/dex/art/natives/$soname" ]]; then
     cp -af "$REPO_ROOT/dist/java/dex/art/natives/$soname" "$OUT_DIR/lib/art/$soname"
+    cp -af "$REPO_ROOT/dist/java/dex/art/natives/$soname" "$OUT_DIR/share/java/art/natives/$soname"
   fi
 done
 
