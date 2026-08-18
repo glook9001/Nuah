@@ -1,0 +1,10 @@
+# Exclude non-source assets and third_party subtrees not needed for compiling nuah
+third_party/wolfssl/** export-ignore
+*.pdf export-ignore
+*.png export-ignore
+*.jpg export-ignore
+*.svg export-ignore
+*.mp4 export-ignore
+dist-portable/** export-ignore
+build/** export-ignore
+source.zip export-ignore
