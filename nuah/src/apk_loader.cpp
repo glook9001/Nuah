@@ -1811,9 +1811,27 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     }
     void* loader_library = nullptr;
     const char* configured_library = ::getenv("NUAH_HYBRIS_LIBRARY");
-    const std::string library = configured_library && *configured_library
-        ? configured_library
-        : (runtime_directory() / "hybris" / "lib" / "libhybris-common.so").string();
+    std::string library;
+    if (configured_library && *configured_library) {
+      library = configured_library;
+    } else {
+      const char* home = ::getenv("HOME");
+      for (const auto& candidate : {
+               std::filesystem::path(home ? home : "") / ".local/share/nuah/hybris/lib/libhybris-common.so",
+               runtime_directory() / "hybris" / "lib" / "libhybris-common.so",
+               runtime_directory().parent_path() / "dist/hybris/lib/libhybris-common.so",
+               std::filesystem::path("/usr/local/lib64/hybris/lib/libhybris-common.so"),
+               std::filesystem::path("/usr/lib64/libhybris-common.so"),
+           }) {
+        if (!candidate.empty() && std::filesystem::is_regular_file(candidate)) {
+          library = candidate.string();
+          break;
+        }
+      }
+      if (library.empty()) {
+        library = (runtime_directory() / "hybris" / "lib" / "libhybris-common.so").string();
+      }
+    }
     configure_hybris_environment(library.c_str());
     loader_library = ::dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!loader_library) {

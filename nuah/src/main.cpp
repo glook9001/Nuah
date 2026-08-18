@@ -180,8 +180,67 @@ int start_services(const char* argv0) {
       const auto apk = cache.base_apk.string();
       const auto split = cache.split_apk.string();
       const auto data = supervisor_data_directory();
+      if (!pending_cookie_header.empty()) {
+        ::setenv("NUAH_ROBLOX_COOKIE_HEADER", pending_cookie_header.c_str(), 1);
+        ::setenv("NUAH_ROBLOX_COOKIES", pending_cookie_header.c_str(), 1);
+      }
+      if (!::getenv("NUAH_CLIENT_SETTINGS_JSON")) {
+        ::setenv("NUAH_CLIENT_SETTINGS_JSON",
+                 "{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true}}", 1);
+      }
+      if (!::getenv("NUAH_ART_LIBRARY_DIR")) {
+        ::setenv("NUAH_ART_LIBRARY_DIR", "/usr/local/lib64/art", 1);
+      }
+      if (!::getenv("NUAH_ATL_ANDROID16_HOME")) {
+        ::setenv("NUAH_ATL_ANDROID16_HOME", "/usr/local/lib64/java/dex/art", 1);
+      }
+      if (!::getenv("NUAH_ATL_HOME")) {
+        const std::string sys_atl = "/usr/local/lib64/java/dex/android_translation_layer";
+        if (std::filesystem::is_regular_file(sys_atl + "/framework-res.apk")) {
+          ::setenv("NUAH_ATL_HOME", sys_atl.c_str(), 1);
+        } else {
+          const auto dist_atl = (executable.parent_path().parent_path() / "dist/java/dex/android_translation_layer").string();
+          if (std::filesystem::is_regular_file(dist_atl + "/framework-res.apk")) {
+            ::setenv("NUAH_ATL_HOME", dist_atl.c_str(), 1);
+          }
+        }
+      }
+      if (!::getenv("NUAH_ATL_NATIVE_DIR")) {
+        const std::string atl_native = (std::filesystem::path(data) / "base.apk_/lib").string();
+        ::setenv("NUAH_ATL_NATIVE_DIR", atl_native.c_str(), 1);
+      }
+      if (!::getenv("NUAH_HYBRIS_LIBRARY")) {
+        const std::string hybris_lib = (std::filesystem::path(data) / "hybris/lib/libhybris-common.so").string();
+        ::setenv("NUAH_HYBRIS_LIBRARY", hybris_lib.c_str(), 1);
+      }
+      if (!::getenv("HYBRIS_LINKER_DIR")) {
+        const std::string hybris_linker = (std::filesystem::path(data) / "hybris/lib/libhybris/linker").string();
+        ::setenv("HYBRIS_LINKER_DIR", hybris_linker.c_str(), 1);
+      }
+      if (!::getenv("NUAH_GRAPHICS_BACKEND")) {
+        ::setenv("NUAH_GRAPHICS_BACKEND", "vulkan", 1);
+      }
+      if (!::getenv("NUAH_VULKAN_PRESENT_MODE")) {
+        ::setenv("NUAH_VULKAN_PRESENT_MODE", "fifo", 1);
+      }
+      const char* existing_preload = ::getenv("LD_PRELOAD");
+      std::string preload = "/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:/usr/local/lib64/art/libandroidfw.so";
+      if (existing_preload && *existing_preload) {
+        preload = std::string(existing_preload) + ":" + preload;
+      }
+      ::setenv("LD_PRELOAD", preload.c_str(), 1);
+
+      const char* existing_ld = ::getenv("LD_LIBRARY_PATH");
+      std::string ld_path = "/usr/local/lib64/art:/usr/local/lib64/art/natives:/usr/local/lib64/java/dex/art/natives:" +
+                            (std::filesystem::path(data) / "hybris/lib").string() + ":" +
+                            (std::filesystem::path(data) / "base.apk_/lib").string();
+      if (existing_ld && *existing_ld) {
+        ld_path = std::string(existing_ld) + ":" + ld_path;
+      }
+      ::setenv("LD_LIBRARY_PATH", ld_path.c_str(), 1);
+
       if (uri.empty()) {
-            ::execl(executable.c_str(), executable.c_str(), "native-run", "--apk",
+        ::execl(executable.c_str(), executable.c_str(), "native-run", "--apk",
                 apk.c_str(), "--split", split.c_str(), "--data", data.c_str(),
                 static_cast<char*>(nullptr));
       } else {

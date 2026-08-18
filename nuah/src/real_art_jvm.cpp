@@ -181,10 +181,15 @@ jclass find_class(JNIEnv* env, const char* name) {
 std::string artifact_root() {
   if (const char* value = std::getenv("NUAH_ATL_HOME"); value && *value)
     return value;
-  /* A local Meson build contains the current API façade (including classes
-   * such as CloseGuard) while /usr/local may still hold an older install.
-   * Prefer that sibling only when the executable itself lives in a build
-   * tree; packaged installs continue to use the installed provider. */
+  for (const auto& candidate : {
+           std::filesystem::path("/usr/local/lib64/java/dex/android_translation_layer"),
+           std::filesystem::path(std::getenv("HOME") ? std::getenv("HOME") : "") / ".local/share/nuah/android_translation_layer",
+       }) {
+    if (!candidate.empty() && std::filesystem::is_regular_file(candidate / "framework-res.apk") &&
+        std::filesystem::is_regular_file(candidate / "api-impl.jar")) {
+      return candidate.string();
+    }
+  }
   if (const char* disable = std::getenv("NUAH_PREFER_LOCAL_ATL");
       !disable || std::strcmp(disable, "0") != 0) {
     std::error_code error;
@@ -192,7 +197,8 @@ std::string artifact_root() {
         std::filesystem::read_symlink("/proc/self/exe", error);
     if (!error && executable.parent_path().filename() == "build") {
       const auto local = executable.parent_path() / "atl-full";
-      if (std::filesystem::is_regular_file(local / "api-impl.jar"))
+      if (std::filesystem::is_regular_file(local / "api-impl.jar") &&
+          std::filesystem::is_regular_file(local / "framework-res.apk"))
         return local.string();
     }
   }
