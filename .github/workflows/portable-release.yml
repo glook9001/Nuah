@@ -1,0 +1,64 @@
+name: Build Portable Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - master
+      - libhybris-pivot
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-portable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build g++ ccache pkg-config zip \
+            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+            libvulkan-dev libsdl3-dev libarchive-dev libseccomp-dev \
+            libglib2.0-dev libssl-dev libpng-dev libjpeg-dev \
+            libelf-dev libunwind-dev libicu-dev
+
+      - name: Compile Nuah binaries
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ninja -C build nuah nuah-services
+
+      - name: Build standalone portable package
+        run: |
+          bash packaging/portable/build-portable.sh
+
+      - name: Upload portable release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nuah-Linux-x86_64
+          path: |
+            dist-portable/Nuah-Linux-x86_64.zip
+            dist-portable/Nuah-Linux-x86_64.tar.gz
+          if-no-files-found: error
+
+      - name: Create GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-portable/Nuah-Linux-x86_64.zip
+            dist-portable/Nuah-Linux-x86_64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
