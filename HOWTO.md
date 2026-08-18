@@ -1,4 +1,4 @@
-# Nuah Compilation & Release Packaging Guide
+# Nuah Compilation, Packaging & GitHub Workflows Guide
 
 Nuah is a native Linux runtime that runs the Roblox Android x86_64 native engine (`libroblox.so`) directly on Linux with native Vulkan graphics, an embedded ART 9 execution engine, a libhybris Bionic bridge, and a GTK4/Adwaita WebKit launcher.
 
@@ -38,15 +38,15 @@ sudo pacman -S --needed \
 
 ---
 
-## 2. Compiling the Binaries
+## 2. Compiling the Binaries Locally
 
 From the repository root:
 
 ```bash
-# 1. Configure the build directory
+# 1. Configure CMake with Ninja build generator
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-# 2. Compile the supervisor (nuah) and WebKit launcher (nuah-services)
+# 2. Compile the supervisor (nuah) and WebKit login launcher (nuah-services)
 ninja -C build nuah nuah-services
 ```
 
@@ -56,7 +56,57 @@ Output binaries will be placed in `build/`:
 
 ---
 
-## 3. Sourcing Runtime Shared Libraries (`.so` DSOs)
+## 3. GitHub Actions Workflows Guide
+
+The repository includes automated CI/CD workflows under `.github/workflows/`:
+
+| Workflow File | Purpose | Trigger |
+| :--- | :--- | :--- |
+| `.github/workflows/portable-release.yml` | Builds `nuah`, packages standalone `Nuah-Linux-x86_64.zip`, and creates GitHub releases. | Git tags (`v*`), push to `main`/`libhybris-pivot`, or manual trigger. |
+| `.github/workflows/nuah-native.yml` | Builds `libhybris` loader from source, tests Bionic dynamic linker shims, and runs smoke probes. | Push to core paths or manual trigger. |
+| `.github/workflows/bionic-core.yml` | Verifies and builds the Android API-36 Bionic core runtime environment. | Push or manual trigger. |
+
+### How to Trigger Workflows
+
+#### Option A: Via GitHub Web Interface
+1. Go to the **Actions** tab on your GitHub repository (`https://github.com/glook9001/Nuah/actions`).
+2. Select **Build Portable Release** from the left sidebar.
+3. Click the **Run workflow** button on the right, select the branch (`libhybris-pivot` or `main`), and click **Run workflow**.
+
+#### Option B: Via GitHub CLI (`gh`)
+```bash
+# Trigger the portable release workflow manually
+gh workflow run portable-release.yml --ref libhybris-pivot
+
+# Check status of running workflow
+gh run list --workflow=portable-release.yml
+
+# Watch live execution logs
+gh run watch
+```
+
+#### Option C: Automated Release on Git Tag
+Pushing a version tag triggers a build and automatically attaches `Nuah-Linux-x86_64.zip` to a new GitHub Release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### Downloading Workflow Artifacts
+
+```bash
+# Download the packaged portable bundle from the latest workflow run:
+gh run download --name Nuah-Linux-x86_64 --dir ./release-artifacts
+
+# Download prebuilt runtime DSOs (if updating libhybris or bionic core):
+gh run download --name nuah-libhybris-x86_64 --dir dist/hybris
+gh run download --name nuah-bionic-core-api36-x86_64 --dir dist/bionic
+```
+
+---
+
+## 4. Sourcing Runtime Shared Libraries (`.so` DSOs)
 
 The portable bundle embeds standalone Android runtime dependencies so that target machines do not need Android system files or Flatpak installed.
 
@@ -72,20 +122,7 @@ dist/
     └── android_translation_layer/      # Android framework bytecode & assets (api-impl.jar, framework-res.apk)
 ```
 
-### Sourcing via GitHub Actions
-Prebuilt, verified runtime DSOs are archived and published via repository workflow artifacts:
-
-```bash
-# Sourcing libhybris x86_64:
-gh run download --repo glook9001/Nuah --name nuah-libhybris-x86_64 --dir dist/hybris
-
-# Sourcing API-36 bionic runtime:
-gh run download --repo glook9001/Nuah --name nuah-bionic-core-api36-x86_64 --dir dist/bionic
-```
-
-### Building `libhybris` from Source
-To compile the pinned `libhybris` loader manually:
-
+### Building `libhybris` from Source Manually
 ```bash
 # Read pinned upstream revision
 . third_party/libhybris.lock
@@ -106,7 +143,7 @@ make -C common install
 
 ---
 
-## 4. Packaging the Standalone Release Bundle (`.zip` and `.tar.gz`)
+## 5. Packaging the Standalone Release Bundle (`.zip` and `.tar.gz`)
 
 Run the automated packaging script:
 
@@ -121,7 +158,7 @@ This generates:
 
 ---
 
-## 5. Running the Release
+## 6. Running the Release
 
 ### On Any Linux Machine
 ```bash
