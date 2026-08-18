@@ -138,7 +138,15 @@ SCRIPT
 chmod +x "$OUT_DIR/nuah"
 ln -sf nuah "$OUT_DIR/run-nuah.sh"
 
+TAR_OUT="${REPO_ROOT}/dist-portable/Nuah-Linux-x86_64.tar.gz"
+ZIP_OUT="${REPO_ROOT}/dist-portable/Nuah-Linux-x86_64.zip"
+
 echo "==> Packaging pure untouched bundle..."
 mkdir -p "$REPO_ROOT/dist-portable"
 tar -C "$REPO_ROOT/dist-portable" -czf "$TAR_OUT" nuah-portable
 echo "==> Done: $TAR_OUT"
+
+echo "==> Creating zip archive in $ZIP_OUT..."
+rm -f "$ZIP_OUT"
+(cd "$REPO_ROOT/dist-portable" && zip -rq "$ZIP_OUT" nuah-portable)
+echo "==> Done: $ZIP_OUT"
