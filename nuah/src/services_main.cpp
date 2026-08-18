@@ -109,13 +109,26 @@ void on_load_changed(WebKitWebView* view, WebKitLoadEvent event, gpointer data) 
             g_error_free(error);
             return;
           }
-          bool signed_in = false;
+          SoupCookie* session_cookie = nullptr;
           for (GList* item = cookies; item; item = item->next) {
             auto* cookie = static_cast<SoupCookie*>(item->data);
             if (g_strcmp0(soup_cookie_get_name(cookie),
                           ".ROBLOSECURITY") == 0) {
-              signed_in = true;
+              session_cookie = cookie;
               break;
+            }
+          }
+          const bool signed_in = (session_cookie != nullptr);
+          if (session_cookie) {
+            const char* value = soup_cookie_get_value(session_cookie);
+            if (value && *value) {
+              gchar* encoded = g_base64_encode(reinterpret_cast<const guchar*>(value),
+                                               std::strlen(value));
+              const std::string event =
+                  std::string(R"({"type":"web.session_cookie","value_b64":")") +
+                  encoded + R"("})";
+              g_free(encoded);
+              send_to_supervisor(service, event);
             }
           }
           g_list_free_full(cookies, free_soup_cookie);
@@ -125,7 +138,7 @@ void on_load_changed(WebKitWebView* view, WebKitLoadEvent event, gpointer data) 
           }
           if (signed_in) {
             set_status(service,
-                       "Signed in — choose Open in Roblox to continue");
+                       "Signed in to Roblox");
           }
         },
         state);

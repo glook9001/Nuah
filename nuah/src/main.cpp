@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <filesystem>
+#include <fstream>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -349,6 +350,15 @@ int start_services(const char* argv0) {
             // the real game runtime is created for a join URI.
             pending_cookie_header = header;
             accepted = true;
+            try {
+              const auto cookies_file =
+                  std::filesystem::path(supervisor_data_directory()) / "cookies";
+              std::ofstream out(cookies_file, std::ios::trunc);
+              if (out.is_open()) {
+                out << ".ROBLOSECURITY=" << cookie << '\n';
+              }
+            } catch (...) {
+            }
             if (runtime->load() > 0 && ::kill(runtime->load(), 0) == 0) {
               accepted = install_cookie(pending_cookie_header, cookie_error);
             }
