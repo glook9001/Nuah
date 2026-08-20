@@ -32,6 +32,44 @@ cmake --build build --target nuah nuah-services
 ./build/nuah config
 ```
 
+### Launch RIVALS with the current Sober APK
+
+The recommended launch path is the worker script. It discovers the current
+Sober APK and split, adopts Sober's active login cookie, selects the rebuilt
+ATL/libhybris runtime, and supplies the join parameters required by current
+Roblox APKs (including a non-empty `joinAttemptId`):
+
+```sh
+cd ~/Documents/nuah
+cmake --build build --target nuah nuah-services -j"$(nproc)"
+./nuah/tools/run-rivals-worker-ab.sh 0 1280 720
+```
+
+Start Sober and sign in first. The script uses the current package at:
+
+```text
+~/.var/app/org.vinegarhq.Sober/data/sober/packages/x86_64/com.roblox.client/
+```
+
+Do not replace the current APK's `libroblox.so` with an older extracted copy.
+The current client is identified in the log by its `RobloxGitHash` and must be
+run with its matching `ExtraContent` assets. A successful launch contains:
+
+```text
+NetworkClient:Create
+Connection accepted
+onGameLoaded: placeId:17625359962
+```
+
+For the older APK saved under `~/Documents/sober/dist/apk`, use explicit
+overrides when testing it:
+
+```sh
+NUAH_APK_PATH=~/Documents/sober/dist/apk/base.apk \
+NUAH_SPLIT_APK_PATH=~/Documents/sober/dist/apk/split_config.x86_64.apk \
+./nuah/tools/run-rivals-worker-ab.sh 0 1280 720
+```
+
 `native-run` is the supported Nuah game path. From the repository root, this
 is the known-working local launch for RIVALS (place `17625359962`) with the
 current Sober APK and login cookie. Run Sober first and sign in so its cookie

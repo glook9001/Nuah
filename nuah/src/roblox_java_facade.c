@@ -523,10 +523,11 @@ START_GAME_STRING(callId, "")
 START_GAME_LONG(conversationId, 0)
 START_GAME_STRING(eventId, "")
 START_GAME_STRING(gameId, "")
+START_GAME_STRING(gameIdToExclude, "")
 START_GAME_STRING(gameJoinContext, "")
 START_GAME_BOOLEAN(isUnder13, JNI_FALSE)
 START_GAME_STRING(isoContext, "")
-START_GAME_STRING(joinAttemptId, "")
+START_GAME_STRING(joinAttemptId, "00000000-0000-0000-0000-000000000000")
 START_GAME_STRING(joinAttemptOrigin, "")
 /* vi.j0.a(placeId, null, ...) uses request type 2 for a WebView launch. */
 START_GAME_INT(joinRequestType, nuah_launch_join_request_type)
@@ -537,7 +538,7 @@ START_GAME_STRING(referralPage, "WebView")
 START_GAME_LONG(referredByPlayerId, 0)
 START_GAME_STRING(reservedServerAccessCode, nuah_launch_reserved_server_access_code)
 START_GAME_LONG(userId, nuah_launch_user_id)
-START_GAME_STRING(username, "")
+START_GAME_STRING(username, (getenv("NUAH_ROBLOX_USERNAME") ? getenv("NUAH_ROBLOX_USERNAME") : ""))
 
 jobject com_roblox_engine_jni_autovalue_AutoValue_StartGameParams_surface(
     JNIEnv* env, jobject object, va_list args) {

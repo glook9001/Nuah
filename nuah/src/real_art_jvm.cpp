@@ -1576,19 +1576,36 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
       find_class(jvm->env, "com/roblox/client/RobloxApplication");
   if (!roblox_application) return 0;
   if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state RobloxApplication class ready\n");
-  const jfieldID application_field = jvm->env->GetStaticFieldID(
-      roblox_application, "b", "Landroid/content/Context;");
+  const char* application_field_name = "b";
+  jfieldID application_field = jvm->env->GetStaticFieldID(
+      roblox_application, application_field_name,
+      "Landroid/content/Context;");
+  /* Roblox 2.734 moved the static Application context from b to c while
+   * reusing b for a long-lived native/session value. Keep the old contract
+   * for the Aug-16 package, but select the newer field by type rather than
+   * assuming the obfuscated name is stable. */
   if (!application_field) {
     clear_exception(jvm->env, "RobloxApplication.b lookup");
+    application_field_name = "c";
+    application_field = jvm->env->GetStaticFieldID(
+        roblox_application, application_field_name,
+        "Landroid/content/Context;");
+    if (application_field && trace_enabled())
+      std::fprintf(stderr, "nuah ART: app-state context moved to RobloxApplication.c\n");
+  }
+  if (!application_field) {
+    clear_exception(jvm->env, "RobloxApplication context lookup");
     return 0;
   }
   jvm->env->SetStaticObjectField(roblox_application, application_field,
                                  application);
   if (jvm->env->ExceptionCheck()) {
-    clear_exception(jvm->env, "RobloxApplication.b");
+    clear_exception(jvm->env, "RobloxApplication context");
     return 0;
   }
-  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state RobloxApplication.b set\n");
+  if (trace_enabled())
+    std::fprintf(stderr, "nuah ART: app-state RobloxApplication.%s set\n",
+                 application_field_name);
 
   // Older Roblox builds kept the files/cache/device-id bootstrap in rh.y0
   // (e0/S/r).  That class is obfuscated and its methods move between APK
@@ -1665,6 +1682,45 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
     clear_exception(jvm->env, "rh.y0.S optional lookup");
     if (trace_enabled())
       std::fprintf(stderr, "nuah ART: optional rh.y0.S/r absent; continuing\n");
+
+    /* Roblox 2.734 moved the shared-preferences bootstrap to rh.w0.  Its
+     * singleton reads rh.w0.r during class initialization, so seed that
+     * field from the public T(Context) provider before MainGameActivity
+     * constructs the AppManager. */
+    jclass moved_preferences = find_class(jvm->env, "rh/w0");
+    if (moved_preferences) {
+      const jmethodID preferences_provider = jvm->env->GetStaticMethodID(
+          moved_preferences, "T",
+          "(Landroid/content/Context;)Landroid/content/SharedPreferences;");
+      if (preferences_provider) {
+        jobject preferences = jvm->env->CallStaticObjectMethod(
+            moved_preferences, preferences_provider, application);
+        if (preferences && !jvm->env->ExceptionCheck()) {
+          const jfieldID moved_preferences_field = jvm->env->GetStaticFieldID(
+              moved_preferences, "r",
+              "Landroid/content/SharedPreferences;");
+          if (moved_preferences_field) {
+            jvm->env->SetStaticObjectField(moved_preferences,
+                                           moved_preferences_field,
+                                           preferences);
+            if (jvm->env->ExceptionCheck()) {
+              clear_exception(jvm->env, "rh.w0.r");
+            } else if (trace_enabled()) {
+              std::fprintf(stderr,
+                           "nuah ART: app-state rh.w0.T/r initialized\n");
+            }
+          } else {
+            clear_exception(jvm->env, "rh.w0.r lookup");
+          }
+        } else {
+          clear_exception(jvm->env, "rh.w0.T");
+        }
+      } else {
+        clear_exception(jvm->env, "rh.w0.T lookup");
+      }
+    } else {
+      clear_exception(jvm->env, "rh.w0 class lookup");
+    }
   }
   return 1;
 }

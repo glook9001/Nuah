@@ -389,13 +389,110 @@ extern "C" jint nuah_native_get_running_architecture(JNIEnv*, jclass) {
  * bootstrap report "Invalid cookie format" and silently drops authentication.
  * Keep the source deliberately narrow: NUAH_ROBLOX_COOKIES contains only the
  * .ROBLOSECURITY value (or the same value prefixed with its cookie name). */
+/* The Sober cookie export can contain only .ROBLOSECURITY.  Its signed
+ * payload still carries the account name and user ID, which the newer Android join path
+ * uses when constructing the authenticated network session. */
+void extract_cookie_user_name(std::string_view cookie_value) {
+  const std::size_t marker = cookie_value.find("|_");
+  if (marker == std::string_view::npos) return;
+  const std::size_t begin = marker + 2;
+  const std::size_t end = cookie_value.find('.', begin);
+  const std::string_view encoded = cookie_value.substr(
+      begin, end == std::string_view::npos ? std::string_view::npos
+                                            : end - begin);
+  if (encoded.empty() || encoded.size() > 4096) return;
+  static constexpr char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  std::string decoded;
+  int value = 0;
+  int bits = -8;
+  for (const unsigned char c : encoded) {
+    const char* found = std::strchr(alphabet, c);
+    if (!found) break;
+    value = (value << 6) + static_cast<int>(found - alphabet);
+    bits += 6;
+    if (bits >= 0) {
+      decoded.push_back(static_cast<char>((value >> bits) & 0xff));
+      bits -= 8;
+    }
+  }
+  const std::string_view key("\x05uname\x12", 7);
+  const std::size_t name_pos = decoded.find(key);
+  if (name_pos != std::string::npos) {
+    std::size_t name_begin = name_pos + key.size();
+    if (name_begin < decoded.size()) {
+      const unsigned char len = static_cast<unsigned char>(decoded[name_begin]);
+      ++name_begin;
+      if (name_begin + len <= decoded.size()) {
+        const std::string name = decoded.substr(name_begin, len);
+        if (!name.empty() && name.size() <= 50) {
+          (void)::setenv("NUAH_ROBLOX_USERNAME", name.c_str(), 1);
+        }
+      }
+    }
+  }
+
+  const std::string_view uid_key("\x03uid\x12", 5);
+  const std::size_t uid_pos = decoded.find(uid_key);
+  if (uid_pos != std::string::npos) {
+    std::size_t uid_begin = uid_pos + uid_key.size();
+    if (uid_begin < decoded.size()) {
+      const unsigned char len = static_cast<unsigned char>(decoded[uid_begin]);
+      ++uid_begin;
+      if (uid_begin + len <= decoded.size()) {
+        const std::string uid_str = decoded.substr(uid_begin, len);
+        if (!uid_str.empty() && uid_str.size() <= 20) {
+          (void)::setenv("NUAH_ROBLOX_USER_ID", uid_str.c_str(), 1);
+        }
+      }
+    }
+  }
+}
+
+/* Cookie persistence belongs to the WebKit/session supervisor.  A Roblox
+ * Android build asks for two different representations: the engine bootstrap
+ * parses a Netscape cookie file, while the HTTP cookie bridge wants a normal
+ * `name=value` header.  Returning one representation for both calls makes the
+ * bootstrap report "Invalid cookie format" and silently drops authentication.
+ * Keep the source deliberately narrow: NUAH_ROBLOX_COOKIES contains only the
+ * .ROBLOSECURITY value (or the same value prefixed with its cookie name). */
 std::string nuah_roblox_cookie_value() {
   const char* raw = ::getenv("NUAH_ROBLOX_COOKIES");
-  if (!raw || !*raw) return {};
-  std::string value(raw);
-  constexpr std::string_view prefix = ".ROBLOSECURITY=";
-  if (value.starts_with(prefix)) value.erase(0, prefix.size());
-  return value;
+  if (!raw || !*raw) raw = ::getenv("ROBLOX_COOKIE");
+  if (!raw || !*raw) raw = ::getenv("NUAH_ROBLOX_COOKIE_HEADER");
+  if (raw && *raw) {
+    std::string value(raw);
+    constexpr std::string_view prefix = ".ROBLOSECURITY=";
+    const std::size_t pos = value.find(prefix);
+    if (pos != std::string::npos) {
+      const std::size_t start = pos + prefix.size();
+      const std::size_t end = value.find_first_of(";\t\r\n", start);
+      return value.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    }
+    return value;
+  }
+  const char* home = ::getenv("HOME");
+  if (home && *home) {
+    const std::filesystem::path cookie_path =
+        std::filesystem::path(home) / ".var/app/org.vinegarhq.Sober/data/sober/cookies";
+    if (std::filesystem::is_regular_file(cookie_path)) {
+      std::ifstream is(cookie_path);
+      std::string content((std::istreambuf_iterator<char>(is)),
+                          std::istreambuf_iterator<char>());
+      constexpr std::string_view prefix = ".ROBLOSECURITY=";
+      const std::size_t pos = content.find(prefix);
+      if (pos != std::string::npos) {
+        const std::size_t start = pos + prefix.size();
+        const std::size_t end = content.find_first_of(";\t\r\n \t", start);
+        std::string value = content.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!value.empty()) {
+          (void)::setenv("NUAH_ROBLOX_COOKIES", (".ROBLOSECURITY=" + value).c_str(), 0);
+          return value;
+        }
+      }
+    }
+  }
+  return {};
 }
 
 std::string nuah_roblox_cookie_header() {
@@ -409,6 +506,13 @@ std::string nuah_roblox_cookie_header() {
 
 jlong nuah_roblox_user_id() {
   const char* raw = ::getenv("NUAH_ROBLOX_USER_ID");
+  if (!raw || !*raw) {
+    const std::string cookie_val = nuah_roblox_cookie_value();
+    if (!cookie_val.empty()) {
+      extract_cookie_user_name(cookie_val);
+      raw = ::getenv("NUAH_ROBLOX_USER_ID");
+    }
+  }
   if (!raw || !*raw) return 0;
   char* end = nullptr;
   const long long value = std::strtoll(raw, &end, 10);
@@ -444,6 +548,7 @@ void adopt_cookie_header(std::string_view header) {
   }
   const std::string cookie = std::string(marker) + std::string(value);
   (void)::setenv("NUAH_ROBLOX_COOKIES", cookie.c_str(), 1);
+  extract_cookie_user_name(value);
   if (header.size() <= 16384 &&
       header.find_first_of("\r\n") == std::string_view::npos) {
     const std::string full(header);
@@ -516,6 +621,7 @@ void prime_roblox_cookie_store(JNIEnv* env, bool early_bootstrap) {
 bool discover_sober_session_cookie() {
   if (const char* existing = ::getenv("NUAH_ROBLOX_COOKIES");
       existing && *existing) {
+    extract_cookie_user_name(existing);
     return true;
   }
   std::vector<std::filesystem::path> candidates;
@@ -554,6 +660,7 @@ bool discover_sober_session_cookie() {
       if (::setenv("NUAH_ROBLOX_COOKIES", cookie.c_str(), 1) != 0) {
         throw std::runtime_error("cannot import Sober session cookie");
       }
+      extract_cookie_user_name(value);
       if (line.size() <= 16384 &&
           line.find_first_of("\r\n") == std::string::npos) {
         (void)::setenv("NUAH_ROBLOX_COOKIE_HEADER", line.c_str(), 1);
@@ -1017,6 +1124,26 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
     env->DeleteLocalRef(text);
     return ok;
   };
+  auto call_optional_string = [&](const char* name, const char* value) -> bool {
+    jstring text = env->NewStringUTF(value ? value : "");
+    if (!text) return false;
+    const jmethodID method = env->GetMethodID(
+        builder_class, name,
+        "(Ljava/lang/String;)"
+        "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;");
+    if (!method) {
+      clear_java_exception(env, name);
+      env->DeleteLocalRef(text);
+      return true;
+    }
+    builder = env->CallObjectMethod(builder, method, text);
+    env->DeleteLocalRef(text);
+    if (!builder || env->ExceptionCheck()) {
+      clear_java_exception(env, name);
+      return false;
+    }
+    return true;
+  };
   auto call_long = [&](const char* name, jlong value) -> bool {
     const jmethodID method = env->GetMethodID(
         builder_class, name,
@@ -1111,9 +1238,8 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       request.reserved_server_access_code.value_or("");
   const std::string launch_data = request.launch_data.value_or("");
   const std::string call_id = request.call_id.value_or("");
-  /* Match the observed vi.j0 WebView path: an authenticated place join uses
-   * type 1 only when no explicit access code is present; an instance/private
-   * launch remains on the type-2 path. */
+  /* Authenticated place joins use the normal type-1 path; explicit instance
+   * launches use the WebView-style type-2 path. */
   const jint join_request_type =
       nuah_roblox_user_id() > 0 && access_code.empty() ? 1 : 2;
   const jlong place_id = static_cast<jlong>(std::stoll(request.place_id));
@@ -1136,10 +1262,11 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       call_string("setCallId", call_id.c_str()) &&
       call_string("setEventId", empty) &&
       call_string("setGameId", empty) &&
+      call_optional_string("setGameIdToExclude", empty) &&
       call_string("setGameJoinContext", empty) &&
       call_bool("setIsUnder13", JNI_FALSE) &&
       call_string("setIsoContext", empty) &&
-      call_string("setJoinAttemptId", empty) &&
+      call_string("setJoinAttemptId", "00000000-0000-0000-0000-000000000000") &&
       call_string("setJoinAttemptOrigin", empty) &&
       call_int("setJoinRequestType", join_request_type) &&
       call_string("setLaunchData", launch_data.c_str()) &&
@@ -1149,7 +1276,10 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       call_string("setReservedServerAccessCode",
                   reserved_server_access_code.c_str()) &&
       call_long("setUserId", nuah_roblox_user_id()) &&
-      call_string("setUsername", empty) &&
+      call_string("setUsername",
+                  (::getenv("NUAH_ROBLOX_USERNAME")
+                       ? ::getenv("NUAH_ROBLOX_USERNAME")
+                       : empty)) &&
       /* rh.y0.D0() is false for the normal desktop session, so the APK does
        * not set a VR activity.  Keep this nullable unless explicitly testing
        * the VR path. */
@@ -1904,6 +2034,24 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       "nativeSetFilesDirectory", "(Ljava/lang/String;)V",
       "Java_com_roblox_engine_jni_NativeSettingsInterface_"
       "nativeSetFilesDirectory");
+  /* Roblox 2.734 invokes these crashpad entry points during
+   * MainGameActivity.onCreate. They are exported by libroblox, but the
+   * older APK did not require them during the pre-JNI bootstrap. */
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface", "nativeInitCrashpad",
+      "(Lcom/roblox/engine/jni/model/NativeInitCrashpadParams;)Z",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeInitCrashpad");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeInitAppCrashpadReporter",
+      "(Lcom/roblox/engine/jni/model/NativeInitCrashpadParams;)Z",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeInitAppCrashpadReporter");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeRunCrashpadHandler", "([Ljava/lang/String;)I",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeRunCrashpadHandler");
   // MainGameActivity and Roblox's application bootstrap install the same
   // callback before they create the native bridge.  Keep this binding in the
   // pre-bootstrap phase, matching the working Sober path; waiting until
