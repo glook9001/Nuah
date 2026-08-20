@@ -1862,8 +1862,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(
                  reinterpret_cast<void*>(cache),
                  reinterpret_cast<void*>(effective_cache), count);
   const uint64_t started_ns = monotonic_ns();
-  const VkResult result =
+  VkResult result =
       function(device, effective_cache, count, create_info, allocator, pipelines);
+  if (result != VK_SUCCESS && effective_cache != cache) {
+    result = function(device, cache, count, create_info, allocator, pipelines);
+  }
   if (result == VK_SUCCESS && residency_snapshot_enabled())
     save_pipeline_cache_handle(device, effective_cache);
   const uint64_t elapsed_us = (monotonic_ns() - started_ns) / 1000ULL;
@@ -1901,8 +1904,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(
                  reinterpret_cast<void*>(cache),
                  reinterpret_cast<void*>(effective_cache), count);
   const uint64_t started_ns = monotonic_ns();
-  const VkResult result =
+  VkResult result =
       function(device, effective_cache, count, create_info, allocator, pipelines);
+  if (result != VK_SUCCESS && effective_cache != cache) {
+    result = function(device, cache, count, create_info, allocator, pipelines);
+  }
   if (result == VK_SUCCESS && residency_snapshot_enabled())
     save_pipeline_cache_handle(device, effective_cache);
   const uint64_t elapsed_us = (monotonic_ns() - started_ns) / 1000ULL;

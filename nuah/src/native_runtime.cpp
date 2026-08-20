@@ -629,8 +629,15 @@ bool discover_sober_session_cookie() {
       configured && *configured) {
     candidates.emplace_back(configured);
   }
+  if (const char* data = ::getenv("NUAH_DATA_DIR"); data && *data) {
+    candidates.emplace_back(std::filesystem::path(data) / "cookies");
+  }
+  if (const char* xdg = ::getenv("XDG_DATA_HOME"); xdg && *xdg) {
+    candidates.emplace_back(std::filesystem::path(xdg) / "nuah" / "cookies");
+  }
   if (const char* home = ::getenv("HOME"); home && *home) {
     const std::filesystem::path home_path(home);
+    candidates.push_back(home_path / ".local/share/nuah/cookies");
     candidates.push_back(home_path / ".var/app/org.vinegarhq.Sober/data/sober/cookies");
     candidates.push_back(home_path / ".config/sober/cookies");
   }
@@ -679,8 +686,7 @@ bool discover_sober_session_cookie() {
           (void)::setenv("NUAH_ROBLOX_USER_ID", user_id.c_str(), 1);
         }
       }
-      std::cerr << "nuah native: adopted Sober browser session from "
-                << path << '\n';
+      std::cerr << "nuah native: adopted browser session from " << path << '\n';
       return true;
     }
   }

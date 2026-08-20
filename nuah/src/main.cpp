@@ -4,6 +4,7 @@
 #include "nuah/sober_cache.hpp"
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -11,12 +12,14 @@
 #include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <glib.h>
 #include <iostream>
 #include <mutex>
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -94,6 +97,40 @@ std::string supervisor_data_directory() {
     return (std::filesystem::path(home) / ".local/share/nuah").string();
   }
   return (std::filesystem::temp_directory_path() / "nuah").string();
+}
+
+std::filesystem::path supervisor_cookie_file() {
+  return std::filesystem::path(supervisor_data_directory()) / "cookies";
+}
+
+std::string roblox_security_token(std::string_view header) {
+  constexpr std::string_view marker = ".ROBLOSECURITY=";
+  const auto pos = header.find(marker);
+  if (pos == std::string_view::npos) return {};
+  const auto start = pos + marker.size();
+  const auto end = header.find_first_of(";\t\r\n", start);
+  return std::string(header.substr(
+      start, end == std::string_view::npos ? std::string_view::npos : end - start));
+}
+
+void persist_supervisor_cookie(const std::string& token) {
+  if (token.empty() || token.size() > 4096) return;
+  const auto path = supervisor_cookie_file();
+  std::error_code error;
+  std::filesystem::create_directories(path.parent_path(), error);
+  if (error) return;
+  std::ofstream out(path, std::ios::trunc);
+  if (!out) return;
+  out << ".ROBLOSECURITY=" << token << '\n';
+  out.close();
+  (void)::chmod(path.c_str(), S_IRUSR | S_IWUSR);
+}
+
+void clear_supervisor_cookie() {
+  std::error_code error;
+  std::filesystem::remove(supervisor_cookie_file(), error);
+  (void)::unsetenv("NUAH_ROBLOX_COOKIES");
+  (void)::unsetenv("NUAH_ROBLOX_COOKIE_HEADER");
 }
 
 
@@ -180,8 +217,22 @@ int start_services(const char* argv0) {
       const auto apk = cache.base_apk.string();
       const auto split = cache.split_apk.string();
       const auto data = supervisor_data_directory();
+      if (!pending_cookie_header.empty()) {
+        const std::string token = roblox_security_token(pending_cookie_header);
+        if (!token.empty()) {
+          const std::string cookie = ".ROBLOSECURITY=" + token;
+          (void)::setenv("NUAH_ROBLOX_COOKIES", cookie.c_str(), 1);
+          (void)::setenv("NUAH_ROBLOX_COOKIE_HEADER", cookie.c_str(), 1);
+        }
+      }
+      if (!::getenv("NUAH_CLIENT_SETTINGS_JSON")) {
+        (void)::setenv(
+            "NUAH_CLIENT_SETTINGS_JSON",
+            "{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true}}",
+            1);
+      }
       if (uri.empty()) {
-            ::execl(executable.c_str(), executable.c_str(), "native-run", "--apk",
+        ::execl(executable.c_str(), executable.c_str(), "native-run", "--apk",
                 apk.c_str(), "--split", split.c_str(), "--data", data.c_str(),
                 static_cast<char*>(nullptr));
       } else {
@@ -193,10 +244,8 @@ int start_services(const char* argv0) {
     }
     runtime->store(spawned_runtime);
     std::cerr << "nuah supervisor: started Roblox runtime pid=" << spawned_runtime << '\n';
-    // Sober keeps Services as the supervised WebKit/control helper, not as a
-    // competing desktop window once the Android client owns the interaction.
-    // Hiding rather than terminating it preserves the private bridge and its
-    // WebKit session for a later explicit return to Services.
+    // Hide Services after the game process exists so WebKit can drop the GPU
+    // before Roblox starts Vulkan. Keep the helper alive for a later return.
     send_service_command(nuah::kSoberSetVisible, std::string(1, '\0'));
     if (!pending_cookie_header.empty()) {
       std::string cookie_error;
@@ -289,6 +338,7 @@ int start_services(const char* argv0) {
             // because the user authenticated.  The header is installed after
             // the real game runtime is created for a join URI.
             pending_cookie_header = header;
+            persist_supervisor_cookie(cookie);
             accepted = true;
             if (runtime->load() > 0 && ::kill(runtime->load(), 0) == 0) {
               accepted = install_cookie(pending_cookie_header, cookie_error);
@@ -296,6 +346,11 @@ int start_services(const char* argv0) {
             std::cerr << "nuah supervisor: authenticated session stored for game launch\n";
           }
         }
+      } else if (event.payload.find(R"("type":"web.session_clear")") !=
+                 std::string::npos) {
+        pending_cookie_header.clear();
+        clear_supervisor_cookie();
+        std::cerr << "nuah supervisor: session cleared on logout\n";
       } else if (event.payload.find(R"("moduleID")") != std::string::npos) {
         static const std::regex module_pattern(
             "\\\"moduleID\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");

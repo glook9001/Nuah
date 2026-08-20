@@ -5,6 +5,7 @@
 #include <glib-unix.h>
 #include <webkit/webkit.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -20,6 +21,7 @@ struct ServiceState {
   GtkLabel* status = nullptr;
   GtkButton* play_button = nullptr;
   GtkButton* session_button = nullptr;
+  GtkSearchEntry* search_entry = nullptr;
   WebKitWebView* web_view = nullptr;
   WebKitUserContentManager* bridge = nullptr;
   int server_fd = -1;
@@ -94,7 +96,7 @@ void on_load_changed(WebKitWebView* view, WebKitLoadEvent event, gpointer data) 
     const char* title = webkit_web_view_get_title(view);
     set_status(state, title && *title ? title : "Roblox web page loaded");
     // Roblox sets the authenticated cookie asynchronously while its login
-    // page navigates.  Refresh the explicit “open in Roblox” action after
+    // page navigates.  Stream it to the supervisor and enable Logout after
     // each completed navigation instead of guessing from the page title.
     auto* cookie_manager = webkit_network_session_get_cookie_manager(
         webkit_web_view_get_network_session(view));
@@ -109,13 +111,26 @@ void on_load_changed(WebKitWebView* view, WebKitLoadEvent event, gpointer data) 
             g_error_free(error);
             return;
           }
-          bool signed_in = false;
+          SoupCookie* session_cookie = nullptr;
           for (GList* item = cookies; item; item = item->next) {
             auto* cookie = static_cast<SoupCookie*>(item->data);
             if (g_strcmp0(soup_cookie_get_name(cookie),
                           ".ROBLOSECURITY") == 0) {
-              signed_in = true;
+              session_cookie = cookie;
               break;
+            }
+          }
+          const bool signed_in = (session_cookie != nullptr);
+          if (session_cookie) {
+            const char* value = soup_cookie_get_value(session_cookie);
+            if (value && *value) {
+              gchar* encoded = g_base64_encode(
+                  reinterpret_cast<const guchar*>(value), std::strlen(value));
+              const std::string event =
+                  std::string(R"({"type":"web.session_cookie","value_b64":")") +
+                  encoded + R"("})";
+              g_free(encoded);
+              send_to_supervisor(service, event);
             }
           }
           g_list_free_full(cookies, free_soup_cookie);
@@ -124,8 +139,7 @@ void on_load_changed(WebKitWebView* view, WebKitLoadEvent event, gpointer data) 
                                      signed_in);
           }
           if (signed_in) {
-            set_status(service,
-                       "Signed in — choose Open in Roblox to continue");
+            set_status(service, "Signed in to Roblox");
           }
         },
         state);
@@ -212,6 +226,33 @@ void session_cookies_finished(GObject* source, GAsyncResult* result,
   }
 }
 
+void on_logout_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (!state->web_view) return;
+  auto* session = webkit_web_view_get_network_session(state->web_view);
+  auto* cookie_manager = webkit_network_session_get_cookie_manager(session);
+  webkit_cookie_manager_replace_cookies(cookie_manager, nullptr, nullptr,
+                                        nullptr, nullptr);
+  auto* data_manager = webkit_network_session_get_website_data_manager(session);
+  if (data_manager) {
+    webkit_website_data_manager_clear(
+        data_manager,
+        static_cast<WebKitWebsiteDataTypes>(WEBKIT_WEBSITE_DATA_COOKIES |
+                                            WEBKIT_WEBSITE_DATA_DOM_CACHE |
+                                            WEBKIT_WEBSITE_DATA_LOCAL_STORAGE |
+                                            WEBKIT_WEBSITE_DATA_INDEXEDDB_DATABASES),
+        0, nullptr, nullptr, nullptr);
+  }
+  std::error_code ec;
+  std::filesystem::remove(state->data_directory / "cookies", ec);
+  send_to_supervisor(state, R"({"type":"web.session_clear"})");
+  set_status(state, "Logged out — loading login page…");
+  if (state->session_button) {
+    gtk_widget_set_sensitive(GTK_WIDGET(state->session_button), false);
+  }
+  webkit_web_view_load_uri(state->web_view, "https://www.roblox.com/login");
+}
+
 void on_use_browser_session_clicked(GtkButton*, gpointer data) {
   auto* state = static_cast<ServiceState*>(data);
   if (!state->web_view) return;
@@ -268,6 +309,58 @@ void on_sign_in_clicked(GtkButton*, gpointer data) {
         return G_SOURCE_REMOVE;
       },
       state);
+}
+
+void on_home_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (state->web_view) webkit_web_view_load_uri(state->web_view, "https://www.roblox.com/home");
+}
+
+void on_discover_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (state->web_view) webkit_web_view_load_uri(state->web_view, "https://www.roblox.com/discover");
+}
+
+void on_reload_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (state->web_view) webkit_web_view_reload(state->web_view);
+}
+
+void on_search_activated(GtkSearchEntry* entry, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (!state->web_view) return;
+  const char* raw = gtk_editable_get_text(GTK_EDITABLE(entry));
+  if (!raw || !*raw) return;
+  std::string text(raw);
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) text.erase(text.begin());
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.pop_back();
+  if (text.empty()) return;
+
+  if (text.rfind("http://", 0) == 0 || text.rfind("https://", 0) == 0) {
+    webkit_web_view_load_uri(state->web_view, text.c_str());
+    return;
+  }
+  if (text.rfind("roblox.com", 0) == 0 || text.rfind("www.roblox.com", 0) == 0) {
+    webkit_web_view_load_uri(state->web_view, ("https://" + text).c_str());
+    return;
+  }
+
+  bool is_all_digits = true;
+  for (char c : text) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      is_all_digits = false;
+      break;
+    }
+  }
+  if (is_all_digits) {
+    webkit_web_view_load_uri(state->web_view, ("https://www.roblox.com/games/" + text + "/").c_str());
+    return;
+  }
+
+  gchar* encoded = g_uri_escape_string(text.c_str(), nullptr, false);
+  const std::string search_url = "https://www.roblox.com/discover/?Keyword=" + std::string(encoded ? encoded : text.c_str());
+  if (encoded) g_free(encoded);
+  webkit_web_view_load_uri(state->web_view, search_url.c_str());
 }
 
 void on_back_clicked(GtkButton*, gpointer data) {
@@ -336,22 +429,52 @@ GtkWidget* build_welcome(ServiceState* state) {
 GtkWidget* build_login(ServiceState* state) {
   auto* toolbar = adw_toolbar_view_new();
   auto* header = adw_header_bar_new();
+
+  auto* nav_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
   auto* back = gtk_button_new_from_icon_name("go-previous-symbolic");
-  gtk_widget_set_tooltip_text(back, "Back");
+  gtk_widget_set_tooltip_text(back, "Home / Back");
   g_signal_connect(back, "clicked", G_CALLBACK(on_back_clicked), state);
-  adw_header_bar_pack_start(ADW_HEADER_BAR(header), back);
+  gtk_box_append(GTK_BOX(nav_box), back);
+
+  auto* home = gtk_button_new_from_icon_name("user-home-symbolic");
+  gtk_widget_set_tooltip_text(home, "Roblox Home");
+  g_signal_connect(home, "clicked", G_CALLBACK(on_home_clicked), state);
+  gtk_box_append(GTK_BOX(nav_box), home);
+
+  auto* discover = gtk_button_new_from_icon_name("compass-symbolic");
+  gtk_widget_set_tooltip_text(discover, "Discover Games");
+  g_signal_connect(discover, "clicked", G_CALLBACK(on_discover_clicked), state);
+  gtk_box_append(GTK_BOX(nav_box), discover);
+
+  auto* reload = gtk_button_new_from_icon_name("view-refresh-symbolic");
+  gtk_widget_set_tooltip_text(reload, "Reload");
+  g_signal_connect(reload, "clicked", G_CALLBACK(on_reload_clicked), state);
+  gtk_box_append(GTK_BOX(nav_box), reload);
+
+  adw_header_bar_pack_start(ADW_HEADER_BAR(header), nav_box);
+
   state->session_button = GTK_BUTTON(
-      gtk_button_new_with_label("Open in Roblox"));
+      gtk_button_new_with_label("Logout"));
   gtk_widget_set_sensitive(GTK_WIDGET(state->session_button), false);
+  gtk_widget_add_css_class(GTK_WIDGET(state->session_button),
+                           "destructive-action");
   gtk_widget_set_tooltip_text(
       GTK_WIDGET(state->session_button),
-      "Continue with the signed-in Roblox Android client");
+      "Log out and clear saved Roblox cookies");
   g_signal_connect(state->session_button, "clicked",
-                   G_CALLBACK(on_use_browser_session_clicked), state);
+                   G_CALLBACK(on_logout_clicked), state);
   adw_header_bar_pack_end(ADW_HEADER_BAR(header),
                           GTK_WIDGET(state->session_button));
-  adw_header_bar_set_title_widget(
-      ADW_HEADER_BAR(header), gtk_label_new("Sign in to Roblox"));
+
+  state->search_entry = GTK_SEARCH_ENTRY(gtk_search_entry_new());
+  gtk_search_entry_set_placeholder_text(state->search_entry,
+                                        "Search games or enter Place ID…");
+  gtk_widget_set_size_request(GTK_WIDGET(state->search_entry), 360, -1);
+  g_signal_connect(state->search_entry, "activate",
+                   G_CALLBACK(on_search_activated), state);
+  adw_header_bar_set_title_widget(ADW_HEADER_BAR(header),
+                                  GTK_WIDGET(state->search_entry));
+
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
 
   state->bridge = webkit_user_content_manager_new();
@@ -368,57 +491,116 @@ GtkWidget* build_login(ServiceState* state) {
   auto* bridge_script = webkit_user_script_new(
       R"JS(
 window.__globalRobloxAndroidBridge__={executeRoblox:(query)=>{
-  const json=JSON.parse(query);
+  const json=typeof query==='string'?JSON.parse(query):query;
   window.webkit.messageHandlers.executeRoblox.postMessage(json);
 }};
 
-// The Android Hybrid page normally supplies its own Play control.  Some
-// Roblox experience pages omit it in WebKit's tablet/app layout, leaving the
-// user with a detail page and no way to join.  Keep this as a page-level
-// fallback, not a second native window: it emits the same Game.launchGame
-// request that the recovered Sober bridge consumes.
+// In-app Hybrid pages leave #game-details-play-button-container empty:
+// Android draws Play in the native chrome. WebKit has no such chrome, so
+// fill that same slot with Roblox's own play-button classes. Do not create
+// window.Roblox before their scripts; that can skip their bootstrap.
 (()=>{
-  const installPlay=()=>{
+  if(window.top!==window) return;
+  const LAUNCH_MODES={
+    SIMPLE_GAME:'SimpleGame',
+    GAME_INSTANCE:'GameInstance',
+    FOLLOW_USER:'FollowUser',
+    PRIVATE_SERVER:'PrivateServer'
+  };
+  const post=(payload)=>{
+    window.__globalRobloxAndroidBridge__.executeRoblox(JSON.stringify(payload));
+  };
+  const launchGame=(params,callback)=>{
+    const src=(params&&params.request)?params.request:(params||{});
+    const request={};
+    if(src.placeId!=null){
+      const placeId=Number(src.placeId);
+      request.placeId=placeId;
+      request.rootPlaceId=Number(src.rootPlaceId!=null?src.rootPlaceId:placeId);
+    }
+    if(src.instanceId) request.gameInstanceId=String(src.instanceId);
+    if(src.gameId && !request.gameInstanceId) request.gameInstanceId=String(src.gameId);
+    if(src.accessCode) request.reservedServerAccessCode=String(src.accessCode);
+    if(src.userId) request.playerId=String(src.userId);
+    if(src.joinAttemptId) request.joinAttemptId=String(src.joinAttemptId);
+    if(src.joinAttemptOrigin) request.joinAttemptOrigin=String(src.joinAttemptOrigin);
+    const callbackID=(typeof crypto!=='undefined'&&crypto.randomUUID)
+      ?crypto.randomUUID():String(Date.now());
+    post({
+      moduleID:'Game',
+      functionName:'launchGame',
+      params:{request},
+      callbackID
+    });
+    if(typeof callback==='function') callback();
+  };
+  const attachHybrid=(root)=>{
+    if(!root||typeof root!=='object') return root;
+    const hybrid=root.Hybrid||(root.Hybrid={});
+    hybrid.Game=hybrid.Game||{};
+    hybrid.Game.LAUNCH_MODES=hybrid.Game.LAUNCH_MODES||LAUNCH_MODES;
+    if(typeof hybrid.Game.launchGame!=='function')
+      hybrid.Game.launchGame=launchGame;
+    if(typeof hybrid.Game.startWithPlaceID!=='function')
+      hybrid.Game.startWithPlaceID=(placeId,callback)=>launchGame({placeId},callback);
+    hybrid.Bridge=hybrid.Bridge||{};
+    if(typeof hybrid.Bridge.nativeCallback!=='function')
+      hybrid.Bridge.nativeCallback=function(){};
+    return root;
+  };
+  let roblox=window.Roblox;
+  if(roblox) attachHybrid(roblox);
+  try{
+    Object.defineProperty(window,'Roblox',{
+      configurable:true,
+      enumerable:true,
+      get(){return roblox;},
+      set(value){roblox=attachHybrid(value);}
+    });
+  }catch(e){}
+  const fillPlay=()=>{
     if(!location.hostname.endsWith('roblox.com')) return;
     const match=location.pathname.match(/^\/games\/(\d+)/);
-    if(!match || document.getElementById('nuah-play-fallback')) return;
-    const visible=(element)=>{
-      const box=element.getBoundingClientRect();
-      return box.width>0 && box.height>0;
-    };
-    const hasPlay=[...document.querySelectorAll('button,a,[role="button"]')]
-      .some(element=>visible(element) && /^(play|join)$/i.test(
-        (element.textContent||element.getAttribute('aria-label')||'').trim()));
-    if(hasPlay) return;
-    const button=document.createElement('button');
-    button.id='nuah-play-fallback';
-    button.type='button';
-    button.textContent='Play';
-    button.setAttribute('aria-label','Play Roblox experience');
-    Object.assign(button.style,{
-      position:'fixed',right:'28px',top:'82px',zIndex:'2147483647',
-      minWidth:'132px',height:'48px',padding:'0 28px',border:'0',
-      borderRadius:'8px',background:'#00A2FF',color:'#fff',
-      font:'700 18px system-ui,sans-serif',cursor:'pointer',
-      boxShadow:'0 2px 8px rgba(0,0,0,.25)'
+    if(!match) return;
+    const box=document.getElementById('game-details-play-button-container');
+    if(!box) return;
+    const native=box.querySelector(
+      '[data-testid="play-button"]:not([data-nuah-play]), .VisitButtonPlay, .VisitButtonPlayGLI, .btn-common-play-game-lg:not([data-nuah-play])');
+    if(native){
+      const ours=box.querySelector('[data-nuah-play]');
+      if(ours) ours.remove();
+      return;
+    }
+    if(box.querySelector('[data-nuah-play]')) return;
+    if(box.querySelector('.spinner') && !box.dataset.nuahPlayReady) return;
+    const placeId=Number(match[1]);
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.dataset.nuahPlay='1';
+    btn.dataset.testid='play-button';
+    btn.className='btn-common-play-game-lg btn-full-width';
+    btn.setAttribute('aria-label','Play');
+    btn.innerHTML='<span class="icon-common-play"></span><span class="play-button-text">Play</span>';
+    btn.addEventListener('click',(event)=>{
+      event.preventDefault();
+      event.stopPropagation();
+      launchGame({placeId:placeId,rootPlaceId:placeId,requestType:LAUNCH_MODES.SIMPLE_GAME});
     });
-    button.addEventListener('click',()=>{
-      button.disabled=true;
-      button.textContent='Joining…';
-      button.style.opacity='.7';
-      window.__globalRobloxAndroidBridge__.executeRoblox(JSON.stringify({
-        moduleID:'Game',functionName:'launchGame',
-        params:{request:{rootPlaceId:Number(match[1]),placeId:Number(match[1])}},
-        callbackID:null
-      }));
-    });
-    document.body.appendChild(button);
+    box.replaceChildren(btn);
+  };
+  const watchPlay=()=>{
+    fillPlay();
+    const box=document.getElementById('game-details-play-button-container');
+    if(!box) return;
+    window.setTimeout(()=>{
+      box.dataset.nuahPlayReady='1';
+      fillPlay();
+    },1800);
+    new MutationObserver(fillPlay).observe(box,{childList:true,subtree:true});
   };
   if(document.readyState==='loading')
-    document.addEventListener('DOMContentLoaded',installPlay,{once:true});
-  else installPlay();
-  new MutationObserver(installPlay).observe(document.documentElement,
-    {childList:true,subtree:true});
+    document.addEventListener('DOMContentLoaded',watchPlay,{once:true});
+  else watchPlay();
 })();
 )JS",
       WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
@@ -436,8 +618,8 @@ window.__globalRobloxAndroidBridge__={executeRoblox:(query)=>{
   webkit_settings_set_user_agent(
       settings,
       "Mozilla/5.0 AppleWebKit/605.1.15 (KHTML, like Gecko) "
-      "ROBLOX Android App 2.730.790 Tablet Hybrid() GooglePlayStore "
-      "RobloxApp/2.730.790 "
+      "ROBLOX Android App 2.734.790 Tablet Hybrid() GooglePlayStore "
+      "RobloxApp/2.734.790 "
       "(GlobalDist; GooglePlayStore)");
   auto* cookie_manager = webkit_network_session_get_cookie_manager(
       webkit_web_view_get_network_session(state->web_view));
