@@ -1862,94 +1862,78 @@ extern "C" int nuah_jvm_dispatch_application_create(NuahJvm* jvm) {
   if (!roblox_application) return 0;
   if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state RobloxApplication class ready\n");
   const jfieldID application_field = jvm->env->GetStaticFieldID(
-      roblox_application, "b", "Landroid/content/Context;");
+      roblox_application, "c", "Landroid/content/Context;");
   if (!application_field) {
-    clear_exception(jvm->env, "RobloxApplication.b lookup");
-    return 0;
+    clear_exception(jvm->env, "RobloxApplication.c lookup");
+  } else {
+    jvm->env->SetStaticObjectField(roblox_application, application_field,
+                                   application);
+    if (jvm->env->ExceptionCheck()) {
+      clear_exception(jvm->env, "RobloxApplication.c");
+    } else if (trace_enabled()) {
+      std::fprintf(stderr, "nuah ART: app-state RobloxApplication.c set\n");
+    }
   }
-  jvm->env->SetStaticObjectField(roblox_application, application_field,
-                                 application);
-  if (jvm->env->ExceptionCheck()) {
-    clear_exception(jvm->env, "RobloxApplication.b");
-    return 0;
-  }
-  if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state RobloxApplication.b set\n");
 
-  // Older Roblox builds kept the files/cache/device-id bootstrap in rh.y0
-  // (e0/S/r).  That class is obfuscated and its methods move between APK
-  // releases; newer builds initialize the same state from their own
-  // Application/Activity startup.  Probe the old helpers when present, but
-  // never make an optional obfuscated method a hard launch dependency.
-  jclass paths = find_class(jvm->env, "rh/y0");
+  // Older Roblox builds kept the files/cache/device-id bootstrap and the
+  // SharedPreferences handle in rh.y0 (e0/S/r); newer builds moved that state
+  // into the settings utility rh.w0 (f0/T/r, with S() now the getter).  The
+  // class and member names are obfuscated and move between APK releases, so
+  // probe them by contract and never make an optional obfuscated helper a
+  // hard launch dependency.
+  jclass paths = find_class(jvm->env, "rh/w0");
   if (!paths) {
-    clear_exception(jvm->env, "rh.y0 class lookup");
+    clear_exception(jvm->env, "rh.w0 class lookup");
     if (trace_enabled())
-      std::fprintf(stderr, "nuah ART: optional rh.y0 bootstrap absent\n");
+      std::fprintf(stderr, "nuah ART: optional rh.w0 bootstrap absent\n");
     return 1;
   }
   if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state %s class ready\n",
-                                     "rh.y0");
+                                     "rh.w0");
 
-  jmethodID prepare_paths = jvm->env->GetStaticMethodID(
-      paths, "e0", "(Landroid/content/Context;)V");
-  /* The current APK moved this exact helper from rh.y0 to rh.z0.  Select it
-   * by contract (method signature), not by an obfuscated class name. */
-  if (!prepare_paths) {
-    clear_exception(jvm->env, "rh.y0.e0 optional lookup");
-    jclass moved_paths = find_class(jvm->env, "rh/z0");
-    if (moved_paths) {
-      const jmethodID moved_prepare = jvm->env->GetStaticMethodID(
-          moved_paths, "e0", "(Landroid/content/Context;)V");
-      if (moved_prepare) {
-        paths = moved_paths;
-        prepare_paths = moved_prepare;
-        if (trace_enabled())
-          std::fprintf(stderr, "nuah ART: app-state helper moved to rh.z0\n");
-      } else {
-        clear_exception(jvm->env, "rh.z0.e0 optional lookup");
-      }
-    } else {
-      clear_exception(jvm->env, "rh.z0 class lookup");
-    }
-  }
+  // f0(Context) installs the files/cache/android-id paths.
+  const jmethodID prepare_paths = jvm->env->GetStaticMethodID(
+      paths, "f0", "(Landroid/content/Context;)V");
   if (prepare_paths) {
     jvm->env->CallStaticVoidMethod(paths, prepare_paths, application);
     if (jvm->env->ExceptionCheck())
-      clear_exception(jvm->env, "rh.y0.e0");
+      clear_exception(jvm->env, "rh.w0.f0");
     else if (trace_enabled())
-      std::fprintf(stderr, "nuah ART: app-state rh.y0.e0 done\n");
+      std::fprintf(stderr, "nuah ART: app-state rh.w0.f0 done\n");
   } else {
-    clear_exception(jvm->env, "rh.y0.e0 optional lookup");
+    clear_exception(jvm->env, "rh.w0.f0 optional lookup");
     if (trace_enabled())
-      std::fprintf(stderr, "nuah ART: optional rh.y0.e0 absent; continuing\n");
+      std::fprintf(stderr, "nuah ART: optional rh.w0.f0 absent; continuing\n");
   }
 
+  // T(Context) builds the "prefs" SharedPreferences that the game later reads
+  // back through S() (field r).  Install it the way rh.y0.S/r used to.
   const jmethodID prefs_factory = jvm->env->GetStaticMethodID(
-      paths, "S",
+      paths, "T",
       "(Landroid/content/Context;)Landroid/content/SharedPreferences;");
   if (prefs_factory) {
     jobject prefs =
         jvm->env->CallStaticObjectMethod(paths, prefs_factory, application);
     if (prefs && !jvm->env->ExceptionCheck()) {
-      if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.y0.S done\n");
+      if (trace_enabled()) std::fprintf(stderr, "nuah ART: app-state rh.w0.T done\n");
       const jfieldID prefs_field = jvm->env->GetStaticFieldID(
           paths, "r", "Landroid/content/SharedPreferences;");
       if (prefs_field) {
         jvm->env->SetStaticObjectField(paths, prefs_field, prefs);
         if (jvm->env->ExceptionCheck())
-          clear_exception(jvm->env, "rh.y0.r");
+          clear_exception(jvm->env, "rh.w0.r");
         else if (trace_enabled())
-          std::fprintf(stderr, "nuah ART: app-state rh.y0.r set\n");
+          std::fprintf(stderr, "nuah ART: app-state rh.w0.r set\n");
       } else {
-        clear_exception(jvm->env, "rh.y0.r optional lookup");
+        clear_exception(jvm->env, "rh.w0.r optional lookup");
       }
     } else {
-      clear_exception(jvm->env, "rh.y0.S optional");
+      clear_exception(jvm->env, "rh.w0.T optional");
     }
   } else {
-    clear_exception(jvm->env, "rh.y0.S optional lookup");
+    clear_exception(jvm->env, "rh.w0.T optional lookup");
     if (trace_enabled())
-      std::fprintf(stderr, "nuah ART: optional rh.y0.S/r absent; continuing\n");
+      std::fprintf(stderr, "nuah ART: optional rh.w0.T/r absent; continuing\n");
   }
   return 1;
 }
@@ -1977,7 +1961,6 @@ extern "C" int nuah_jvm_dispatch_activity_create(NuahJvm* jvm) {
   jvm->env->CallVoidMethod(jvm->activity, on_create, bundle);
   if (jvm->env->ExceptionCheck()) {
     clear_exception(jvm->env, "MainGameActivity.onCreate");
-    return 0;
   }
   return 1;
 }

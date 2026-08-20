@@ -433,6 +433,9 @@ std::string jstring_utf8(JNIEnv* env, jstring value) {
   return result;
 }
 
+void extract_cookie_user_id_and_name(const std::string& line,
+                                       const std::string& sec_value);
+
 void adopt_cookie_header(std::string_view header) {
   constexpr std::string_view marker = ".ROBLOSECURITY=";
   const std::size_t marker_pos = header.find(marker);
@@ -454,6 +457,7 @@ void adopt_cookie_header(std::string_view header) {
     const std::string full(header);
     (void)::setenv("NUAH_ROBLOX_COOKIE_HEADER", full.c_str(), 1);
   }
+  extract_cookie_user_id_and_name(std::string(header), std::string(value));
 }
 
 void prime_roblox_cookie_store(JNIEnv* env, bool early_bootstrap) {
@@ -610,8 +614,12 @@ bool discover_sober_session_cookie() {
       configured && *configured) {
     candidates.emplace_back(configured);
   }
+  if (const char* nuah_data = ::getenv("NUAH_DATA_DIR"); nuah_data && *nuah_data) {
+    candidates.push_back(std::filesystem::path(nuah_data) / "cookies");
+  }
   if (const char* home = ::getenv("HOME"); home && *home) {
     const std::filesystem::path home_path(home);
+    candidates.push_back(home_path / ".local/share/nuah/cookies");
     candidates.push_back(home_path / ".var/app/org.vinegarhq.Sober/data/sober/cookies");
     candidates.push_back(home_path / ".config/sober/cookies");
   }
@@ -1926,6 +1934,15 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   if (!std::getenv("NUAH_DISABLE_PROPERTY_PATCH"))
     (void)patch_loaded_module_property_import(image);
   NuahJvm* jvm = nuah_native_session_jvm(session.get());
+  using JniOnLoadFn = jint (*)(JavaVM*, void*);
+  if (auto* jni_onload = reinterpret_cast<JniOnLoadFn>(image.symbol("JNI_OnLoad"))) {
+    if (JavaVM* vm = reinterpret_cast<JavaVM*>(nuah_jvm_java_vm(jvm))) {
+      jint version = jni_onload(vm, nullptr);
+      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
+        std::fprintf(stderr, "nuah native: JNI_OnLoad initialized with version %d\n", version);
+      }
+    }
+  }
   // MainGameActivity.onCreate runs Roblox's own AppManager before the
   // GameActivity native handoff. Its settings methods are exported by this
   // image but are not discoverable through ART's class-loader lookup because
@@ -1966,6 +1983,24 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       "com/roblox/engine/jni/NativeSettingsInterface", "nativeInitFastLog",
       "()V",
       "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeInitFastLog");
+  // MainGameActivity.onCreate initializes Crashpad through rh.w0.g0 before the
+  // native engine starts.  These exports are present but ART cannot resolve
+  // them through its class-loader search (libroblox was loaded via libhybris),
+  // so register them as part of the pre-create contract.
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface", "nativeInitCrashpad",
+      "(Lcom/roblox/engine/jni/model/NativeInitCrashpadParams;)Z",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeInitCrashpad");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeInitAppCrashpadReporter",
+      "(Lcom/roblox/engine/jni/model/NativeInitCrashpadParams;)Z",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_"
+      "nativeInitAppCrashpadReporter");
+  bind_roblox_native(
+      "com/roblox/engine/jni/NativeSettingsInterface",
+      "nativeRunCrashpadHandler", "([Ljava/lang/String;)I",
+      "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeRunCrashpadHandler");
   bind_roblox_native(
       "com/roblox/engine/jni/NativeSettingsInterface",
       "nativeSetRobloxVersion", "(Ljava/lang/String;)V",
