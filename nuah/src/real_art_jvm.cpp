@@ -2379,9 +2379,30 @@ extern "C" int nuah_jvm_dispatch_key(
                      "nuah input: Roblox key dispatched keycode=%d "
                      "scancode=%d down=%d repeat=%d\n",
                      keycode, scancode, key_down ? 1 : 0, repeat ? 1 : 0);
-      return 1;
+      if (keycode != NUAH_KEY_ESCAPE) {
+        return 1;
+      }
+    } else {
+      clear_exception(jvm->env, "NativeGLInterface gameplay key");
     }
-    clear_exception(jvm->env, "NativeGLInterface gameplay key");
+  }
+
+  if (keycode == NUAH_KEY_ESCAPE && key_down && ensure_native_gl_method(jvm)) {
+    jmethodID back_pressed = find_static_method(
+        jvm->env, jvm->native_gl_interface, "nativeHandleBackPressed", "()Z");
+    if (!back_pressed) {
+      clear_exception(jvm->env, "nativeHandleBackPressed ()Z");
+      back_pressed = find_static_method(
+          jvm->env, jvm->native_gl_interface, "nativeHandleBackPressed", "()V");
+    }
+    if (back_pressed) {
+      jvm->env->CallStaticVoidMethod(jvm->native_gl_interface, back_pressed);
+      if (jvm->env->ExceptionCheck()) {
+        clear_exception(jvm->env, "NativeGLInterface.nativeHandleBackPressed");
+      } else if (input_trace_enabled()) {
+        std::fprintf(stderr, "nuah input: nativeHandleBackPressed invoked for ESC\n");
+      }
+    }
   }
 
   if (activity_method) {
