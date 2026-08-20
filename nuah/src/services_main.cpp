@@ -20,6 +20,7 @@ struct ServiceState {
   GtkLabel* status = nullptr;
   GtkButton* play_button = nullptr;
   GtkButton* session_button = nullptr;
+  GtkSearchEntry* search_entry = nullptr;
   WebKitWebView* web_view = nullptr;
   WebKitUserContentManager* bridge = nullptr;
   int server_fd = -1;
@@ -309,6 +310,58 @@ void on_sign_in_clicked(GtkButton*, gpointer data) {
       state);
 }
 
+void on_home_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (state->web_view) webkit_web_view_load_uri(state->web_view, "https://www.roblox.com/home");
+}
+
+void on_discover_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (state->web_view) webkit_web_view_load_uri(state->web_view, "https://www.roblox.com/discover");
+}
+
+void on_reload_clicked(GtkButton*, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (state->web_view) webkit_web_view_reload(state->web_view);
+}
+
+void on_search_activated(GtkSearchEntry* entry, gpointer data) {
+  auto* state = static_cast<ServiceState*>(data);
+  if (!state->web_view) return;
+  const char* raw = gtk_editable_get_text(GTK_EDITABLE(entry));
+  if (!raw || !*raw) return;
+  std::string text(raw);
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) text.erase(text.begin());
+  while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.pop_back();
+  if (text.empty()) return;
+
+  if (text.rfind("http://", 0) == 0 || text.rfind("https://", 0) == 0) {
+    webkit_web_view_load_uri(state->web_view, text.c_str());
+    return;
+  }
+  if (text.rfind("roblox.com", 0) == 0 || text.rfind("www.roblox.com", 0) == 0) {
+    webkit_web_view_load_uri(state->web_view, ("https://" + text).c_str());
+    return;
+  }
+
+  bool is_all_digits = true;
+  for (char c : text) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      is_all_digits = false;
+      break;
+    }
+  }
+  if (is_all_digits) {
+    webkit_web_view_load_uri(state->web_view, ("https://www.roblox.com/games/" + text + "/").c_str());
+    return;
+  }
+
+  gchar* encoded = g_uri_escape_string(text.c_str(), nullptr, false);
+  const std::string search_url = "https://www.roblox.com/discover/?Keyword=" + std::string(encoded ? encoded : text.c_str());
+  if (encoded) g_free(encoded);
+  webkit_web_view_load_uri(state->web_view, search_url.c_str());
+}
+
 void on_back_clicked(GtkButton*, gpointer data) {
   auto* state = static_cast<ServiceState*>(data);
   gtk_stack_set_visible_child_name(state->stack, "login");
@@ -375,10 +428,30 @@ GtkWidget* build_welcome(ServiceState* state) {
 GtkWidget* build_login(ServiceState* state) {
   auto* toolbar = adw_toolbar_view_new();
   auto* header = adw_header_bar_new();
+
+  auto* nav_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
   auto* back = gtk_button_new_from_icon_name("go-previous-symbolic");
-  gtk_widget_set_tooltip_text(back, "Back");
+  gtk_widget_set_tooltip_text(back, "Home / Back");
   g_signal_connect(back, "clicked", G_CALLBACK(on_back_clicked), state);
-  adw_header_bar_pack_start(ADW_HEADER_BAR(header), back);
+  gtk_box_append(GTK_BOX(nav_box), back);
+
+  auto* home = gtk_button_new_from_icon_name("user-home-symbolic");
+  gtk_widget_set_tooltip_text(home, "Roblox Home");
+  g_signal_connect(home, "clicked", G_CALLBACK(on_home_clicked), state);
+  gtk_box_append(GTK_BOX(nav_box), home);
+
+  auto* discover = gtk_button_new_from_icon_name("compass-symbolic");
+  gtk_widget_set_tooltip_text(discover, "Discover Games");
+  g_signal_connect(discover, "clicked", G_CALLBACK(on_discover_clicked), state);
+  gtk_box_append(GTK_BOX(nav_box), discover);
+
+  auto* reload = gtk_button_new_from_icon_name("view-refresh-symbolic");
+  gtk_widget_set_tooltip_text(reload, "Reload");
+  g_signal_connect(reload, "clicked", G_CALLBACK(on_reload_clicked), state);
+  gtk_box_append(GTK_BOX(nav_box), reload);
+
+  adw_header_bar_pack_start(ADW_HEADER_BAR(header), nav_box);
+
   state->session_button = GTK_BUTTON(
       gtk_button_new_with_label("Logout"));
   gtk_widget_set_sensitive(GTK_WIDGET(state->session_button), false);
@@ -390,8 +463,16 @@ GtkWidget* build_login(ServiceState* state) {
                    G_CALLBACK(on_logout_clicked), state);
   adw_header_bar_pack_end(ADW_HEADER_BAR(header),
                           GTK_WIDGET(state->session_button));
-  adw_header_bar_set_title_widget(
-      ADW_HEADER_BAR(header), gtk_label_new("Sign in to Roblox"));
+
+  state->search_entry = GTK_SEARCH_ENTRY(gtk_search_entry_new());
+  gtk_search_entry_set_placeholder_text(state->search_entry,
+                                        "Search games or enter Place ID…");
+  gtk_widget_set_size_request(GTK_WIDGET(state->search_entry), 360, -1);
+  g_signal_connect(state->search_entry, "activate",
+                   G_CALLBACK(on_search_activated), state);
+  adw_header_bar_set_title_widget(ADW_HEADER_BAR(header),
+                                  GTK_WIDGET(state->search_entry));
+
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
 
   state->bridge = webkit_user_content_manager_new();
