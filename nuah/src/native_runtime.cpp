@@ -1934,15 +1934,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   if (!std::getenv("NUAH_DISABLE_PROPERTY_PATCH"))
     (void)patch_loaded_module_property_import(image);
   NuahJvm* jvm = nuah_native_session_jvm(session.get());
-  using JniOnLoadFn = jint (*)(JavaVM*, void*);
-  if (auto* jni_onload = reinterpret_cast<JniOnLoadFn>(image.symbol("JNI_OnLoad"))) {
-    if (JavaVM* vm = reinterpret_cast<JavaVM*>(nuah_jvm_java_vm(jvm))) {
-      jint version = jni_onload(vm, nullptr);
-      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
-        std::fprintf(stderr, "nuah native: JNI_OnLoad initialized with version %d\n", version);
-      }
-    }
-  }
   // MainGameActivity.onCreate runs Roblox's own AppManager before the
   // GameActivity native handoff. Its settings methods are exported by this
   // image but are not discoverable through ART's class-loader lookup because
