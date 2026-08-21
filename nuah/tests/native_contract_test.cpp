@@ -7,6 +7,7 @@
 #include <jni.h>
 
 #include <cassert>
+#include <cstdlib>
 
 void native_marker() {}
 int key_callback_count = 0;
@@ -43,12 +44,18 @@ int main() {
   assert(nuah_android_keycode_from_ascii('w') == NUAH_KEY_W);
   assert(nuah_android_keycode_from_ascii('A') == NUAH_KEY_A);
   assert(nuah_android_keycode_from_ascii('9') == NUAH_KEY_9);
-  assert(nuah_android_keycode_from_ascii('0') == NUAH_KEY_UNKNOWN);
+  assert(nuah_android_keycode_from_ascii('0') == NUAH_KEY_0);
   assert(nuah_jni_register_native("com/roblox/Game", "nativeStart", "()V",
                                   native_marker) == 0);
   assert(nuah_jni_find_native("com/roblox/Game", "nativeStart", "()V") ==
          native_marker);
   assert(nuah_jni_registered_count() == 1);
+  /* ART session setup needs the Roblox APK.  Host/CI unit runs only cover the
+   * keycode and JNI registration contract unless an APK path is provided. */
+  if ((!std::getenv("NUAH_APK_PATHS") || !*std::getenv("NUAH_APK_PATHS")) &&
+      (!std::getenv("NUAH_APK_PATH") || !*std::getenv("NUAH_APK_PATH"))) {
+    return 0;
+  }
   auto* runtime = nuah_native_session_create();
   if (!runtime) return 1;
   auto* jvm = nuah_native_session_jvm(runtime);

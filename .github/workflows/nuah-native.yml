@@ -298,7 +298,6 @@ jobs:
         run: |
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DNUAH_BUILD_ATL=OFF \
             -DNUAH_SDL3_ROOT="$GITHUB_WORKSPACE/.ci/sdl3/root" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache

@@ -108,7 +108,9 @@ void fatal_signal_handler(int signal_number, siginfo_t* info,
             static_cast<greg_t>(pc + 2);  // skip `div ecx`
         static constexpr char message[] =
             "nuah: recovered Roblox NaN render divisor (diagnostic)\n";
-        (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
+        const ssize_t written =
+            ::write(STDERR_FILENO, message, sizeof(message) - 1);
+        (void)written;
         return;
       }
     }
@@ -142,9 +144,11 @@ void fatal_signal_handler(int signal_number, siginfo_t* info,
         static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_RAX]),
         static_cast<unsigned long long>(context->uc_mcontext.gregs[REG_RCX]),
         xmm0_bits, xmm1_bits, xmm2_bits, xmm3_bits);
-    if (register_length > 0)
-      (void)::write(STDERR_FILENO, registers,
-                    static_cast<std::size_t>(register_length));
+    if (register_length > 0) {
+      const ssize_t written = ::write(
+          STDERR_FILENO, registers, static_cast<std::size_t>(register_length));
+      (void)written;
+    }
     record_address(
         static_cast<uintptr_t>(context->uc_mcontext.gregs[REG_RIP]));
   }
