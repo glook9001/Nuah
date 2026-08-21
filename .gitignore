@@ -25,3 +25,7 @@
 # Generated standalone ART output
 /third_party/art_standalone/out/
 /third_party/art_standalone/art-standalone.pc
+
+# Culled from the live libhybris + CI-artifact path. Do not re-vendor.
+/third_party/android_translation_layer/
+/third_party/wolfssl/

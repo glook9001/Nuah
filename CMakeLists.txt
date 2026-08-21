@@ -41,16 +41,6 @@ if(NUAH_ENABLE_ISPC_ASSET_PACK)
   endif()
 endif()
 
-# Dependency-free loader-boundary diagnostics.  This is built beside Nuah so
-# the binary under test can be audited without a second compiler invocation
-# using different flags.
-add_library(nuah_rtld_audit SHARED Investigation/nuah_rtld_audit.c)
-set_target_properties(nuah_rtld_audit PROPERTIES
-  OUTPUT_NAME nuah_rtld_audit
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-target_compile_options(nuah_rtld_audit PRIVATE
-  -Wall -Wextra -Wpedantic -Werror -fno-stack-protector)
-
 include(CTest)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -74,61 +64,30 @@ target_compile_definitions(nuah_pthread_bio PRIVATE _GNU_SOURCE)
 target_compile_options(nuah_pthread_bio PRIVATE -O3 -fPIC)
 target_link_libraries(nuah_pthread_bio PRIVATE pthread dl)
 
-option(NUAH_BUILD_ATL "Build the legacy ATL fork during this configure" OFF)
+# Android-ELF helpers and libhybris probes are compiled by
+# .github/workflows/nuah-native.yml (NDK clang / host cc), not as host
+# libraries below. Keep the sources in this graph so a tree cull cannot drop
+# the .so inputs CI publishes into the bionic bundle. See CI_BUILD.md.
+set(NUAH_NDK_BIONIC_HELPER_SOURCES
+  nuah/helper/bionic_loader_main.c
+  nuah/helper/jni_facade.c
+  nuah/helper/jni_facade.h
+  nuah/helper/graphics_proxy.c
+  nuah/helper/platform_proxy.c)
+set(NUAH_HYBRIS_PROBE_SOURCES
+  nuah/tests/hybris_probe_module.c
+  nuah/tests/hybris_host_dependency_probe.c
+  nuah/tests/hybris_loader_probe.c)
+foreach(source IN LISTS NUAH_NDK_BIONIC_HELPER_SOURCES NUAH_HYBRIS_PROBE_SOURCES)
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${source}")
+    message(FATAL_ERROR
+      "Missing CI-compiled source ${source} (see CI_BUILD.md)")
+  endif()
+endforeach()
+add_custom_target(nuah_ci_android_elf_sources
+  SOURCES ${NUAH_NDK_BIONIC_HELPER_SOURCES} ${NUAH_HYBRIS_PROBE_SOURCES})
 set(NUAH_SDL3_ROOT "" CACHE PATH
     "Private prefix containing a prebuilt SDL3 development package")
-
-set(NUAH_ATL_FULL_SOURCE "${CMAKE_SOURCE_DIR}/third_party/android_translation_layer")
-set(NUAH_ATL_FULL_BUILD "${CMAKE_BINARY_DIR}/atl-full")
-set(NUAH_ATL_BOOTCLASSPATH "" CACHE STRING
-    "Android boot class path passed to the ATL Meson build")
-set(NUAH_ATL_JAVA_HOME "" CACHE PATH
-    "JDK home passed to ATL when jni.pc is unavailable")
-if(NUAH_BUILD_ATL)
-  find_program(MESON_EXECUTABLE meson REQUIRED)
-  find_program(NINJA_EXECUTABLE ninja REQUIRED)
-  if(NOT NUAH_ATL_BOOTCLASSPATH)
-    message(FATAL_ERROR
-      "NUAH_BUILD_ATL requires NUAH_ATL_BOOTCLASSPATH")
-  endif()
-  set(NUAH_ATL_MESON_OPTIONS --buildtype=release --prefix=/usr/local)
-  list(APPEND NUAH_ATL_MESON_OPTIONS
-       "-Datl_bootclasspath=${NUAH_ATL_BOOTCLASSPATH}")
-  if(NUAH_ATL_JAVA_HOME)
-    list(APPEND NUAH_ATL_MESON_OPTIONS
-         "-Datl_java_home=${NUAH_ATL_JAVA_HOME}")
-  endif()
-  if(NOT EXISTS "${NUAH_ATL_FULL_SOURCE}/meson.build")
-    message(FATAL_ERROR "Pinned Android Translation Layer source is missing")
-  endif()
-  if(EXISTS "${NUAH_ATL_FULL_BUILD}/build.ninja")
-    set(NUAH_ATL_MESON_RECONFIGURE --reconfigure)
-  else()
-    set(NUAH_ATL_MESON_RECONFIGURE)
-  endif()
-  execute_process(
-    COMMAND "${MESON_EXECUTABLE}" setup ${NUAH_ATL_MESON_RECONFIGURE}
-            "${NUAH_ATL_FULL_BUILD}" "${NUAH_ATL_FULL_SOURCE}"
-            ${NUAH_ATL_MESON_OPTIONS}
-    RESULT_VARIABLE NUAH_ATL_FULL_SETUP_RESULT
-    COMMAND_ECHO STDOUT)
-  if(NOT NUAH_ATL_FULL_SETUP_RESULT EQUAL 0)
-    message(FATAL_ERROR "Could not configure pinned Android Translation Layer")
-  endif()
-  add_custom_target(nuah_atl_runtime
-    COMMAND "${MESON_EXECUTABLE}" compile -C "${NUAH_ATL_FULL_BUILD}" android-translation-layer
-    BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/android-translation-layer"
-    COMMENT "Building legacy ATL fork (transitional only)"
-    VERBATIM)
-  add_custom_target(nuah_atl_api_jar
-    COMMAND "${NINJA_EXECUTABLE}" -C "${NUAH_ATL_FULL_BUILD}" src/api-impl/hax.jar
-    BYPRODUCTS "${NUAH_ATL_FULL_BUILD}/src/api-impl/hax.jar"
-    COMMENT "Building transitional ATL API classes"
-    VERBATIM)
-else()
-  add_custom_target(nuah_atl_runtime)
-  add_custom_target(nuah_atl_api_jar)
-endif()
 
 add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
 target_include_directories(nuah_host_bridge PUBLIC nuah/include)
@@ -411,25 +370,12 @@ if(TARGET nuah_ispc_asset)
   add_dependencies(nuah nuah_ispc_asset)
 endif()
 set_target_properties(nuah PROPERTIES BUILD_RPATH "$ORIGIN" ENABLE_EXPORTS ON)
-add_dependencies(nuah nuah_atl_runtime)
-add_dependencies(nuah nuah_atl_api_jar)
 add_dependencies(nuah nuah_android_abi_registry_test)
 add_dependencies(nuah nuah_pthread_bio)
 
 add_executable(nuah-services nuah/src/services_main.cpp)
 target_link_libraries(nuah-services PRIVATE nuah_core PkgConfig::NUAH_UI)
 set_target_properties(nuah-services PROPERTIES BUILD_RPATH "$ORIGIN")
-add_dependencies(nuah-services nuah_atl_runtime)
-add_dependencies(nuah-services nuah_atl_api_jar)
 
 configure_file(nuah/share/applications/org.nuah.Nuah.desktop
                ${CMAKE_BINARY_DIR}/org.nuah.Nuah.desktop COPYONLY)
-
-if(BUILD_TESTING AND NUAH_BUILD_ATL)
-  find_program(NUAH_JAVAP_EXECUTABLE javap REQUIRED)
-  add_test(NAME nuah-atl-input-abi
-    COMMAND "${CMAKE_COMMAND}"
-      "-DJAVAP=${NUAH_JAVAP_EXECUTABLE}"
-      "-DATL_JAR=${NUAH_ATL_FULL_BUILD}/src/api-impl/hax.jar"
-      -P "${CMAKE_SOURCE_DIR}/nuah/tests/atl_input_abi.cmake")
-endif()

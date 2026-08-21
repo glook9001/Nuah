@@ -1,56 +1,112 @@
-# CI-only builds
+# How Nuah is compiled
 
-The supported build machine is GitHub Actions. The `Android 16 ART/ATL build`
-workflow produces two artifacts:
+Two GitHub workflows own the compile contract. A local `cmake --build`
+does **not** produce every `.so` that a Roblox launch needs. The Android-ELF
+providers and the API-36 linker bundle are built or extracted in CI.
 
-- `com.android.art-x86_64`: the Android ART APEX.
-- `android16-host-art-x86_64`: Android 16 host ART libraries used by the ATL
-  adapter.
-- `android16-atl-runtime-x86_64`: produced by the manual Android 16 ABI gate
-  once ATL links successfully against those libraries.
+## Workflows
 
-The Android 16 adapter gate is available through **Run workflow** in GitHub
-Actions. It configures Nuah with the staged ART bootclasspath and builds the
-Nuah binaries against that runtime; it does not use the low-power client.
+| Workflow | File | What it produces |
+|---|---|---|
+| Extract API-36 bionic core | `.github/workflows/bionic-core.yml` | `libc.so`, `libdl.so`, `libm.so`, `linker64` from the Android 36 system image |
+| Nuah native runtime | `.github/workflows/nuah-native.yml` | libhybris, host Nuah, Android helper `.so` files, published `nuah-native-runtime-x86_64` |
 
-On a low-power client, download the artifact from the Actions run and unpack
-it. Do not run CMake or Meson locally. To download the latest successful run
-with GitHub CLI:
+`NUAH_BUILD_ATL` is **OFF** in CI. The in-tree ATL/wolfSSL/bhook trees are not compiled.
 
-```bash
-gh run download --repo OWNER/REPOSITORY --name android16-atl-runtime-x86_64
+## Host CMake (`cmake -S . -B build -DNUAH_BUILD_ATL=OFF`)
+
+These are **host** ELF objects (glibc). They live under `build/` / `build-ci/`.
+
+| Output | Source |
+|---|---|
+| `nuah`, `nuah-services` | `nuah/src/main.cpp`, `nuah/src/services_main.cpp` + `nuah_core` |
+| `libnuah_host_bridge.so` | `nuah/src/native_window_bridge.cpp` |
+| `libnuah_atl_overlay.so` | `nuah/atl_overlay/compat.cpp` |
+| `android/libbionic.so` | `nuah/android_shims/bionic.cpp` + asm |
+| `android/libbionic-linker-helpers.so` | `nuah/android_shims/bionic_linker_helpers.cpp` |
+| `android/liblog.so` | `nuah/android_shims/log.cpp` |
+| `android/libm.so` | `nuah/android_shims/math.cpp` |
+| `android/libandroid.so` | `asset_manager.cpp`, `egl.cpp`, `looper_fast.cpp`, `platform.cpp` |
+| `android/libvulkan.so` | `nuah/android_shims/vulkan.cpp` |
+| `android/libmediandk.so`, `libOpenSLES.so`, `libOpenMAXAL.so` | `platform.cpp` (SONAME aliases) |
+| `android/libnuah_android_registry.so` | `nuah/android_shims/registry.cpp` |
+| `android/linker-deps/*.so` | `nuah/android_shims/linker_stub.c` (empty DT_NEEDED placeholders) |
+| `bionic-translation/libpthread_bio.so` | `third_party/bionic_translation/pthread_wrapper/libpthread.c` |
+| `libnuah_ispc_asset.so` | `nuah/ispc/asset_pack.ispc` (optional) |
+
+CMake also compiles these JNI files from **your** android2gnulinux fork (static, not a `.so`):
+
+- `third_party/android2gnulinux/src/jvm/jvm.c`
+- `third_party/android2gnulinux/src/libjvm-java.c`
+- `third_party/android2gnulinux/src/wrapper/wrapper.c`
+
+JNI headers come from `third_party/libnativehelper/include_jni`.
+
+## CI-only Android ELF (NDK, not host CMake)
+
+`.github/workflows/nuah-native.yml` compiles these with
+`x86_64-linux-android35-clang` so **linker64** can load them. Do not delete
+`nuah/helper/` — CMake does not list them as libraries, but CI publishes them
+into `build-ci/bionic/lib64/`.
+
+| Output | Source |
+|---|---|
+| `nuah-bionic-loader` | `nuah/helper/bionic_loader_main.c`, `nuah/helper/jni_facade.c` |
+| `lib64/libEGL.so` | `nuah/helper/graphics_proxy.c` (`-DNUAH_EGL_PROXY`) |
+| `lib64/libGLESv2.so` | `nuah/helper/graphics_proxy.c` (`-DNUAH_GLES_PROXY`) |
+| `lib64/libandroid.so` | `nuah/helper/platform_proxy.c` |
+| `lib64/liblog.so` | same |
+| `lib64/libmediandk.so` | same |
+| `lib64/libOpenSLES.so` | same |
+| `lib64/libOpenMAXAL.so` | same |
+
+Libhybris smoke probes (also CI-only, host `cc`):
+
+- `nuah/tests/hybris_probe_module.c`
+- `nuah/tests/hybris_host_dependency_probe.c`
+- `nuah/tests/hybris_loader_probe.c`
+
+## Extracted, not compiled
+
+`bionic-core.yml` pulls the API-36 Google system image and publishes:
+
+- `lib64/libc.so`
+- `lib64/libdl.so`
+- `lib64/libm.so`
+- `lib64/linker64`
+
+The native-runtime job downloads a **pinned** artifact of that bundle
+(`gh run download 30408623995`). It is not rebuilt on every push.
+
+## libhybris (cloned in CI, not vendored)
+
+`third_party/libhybris.lock` pins `libhybris/libhybris.git` at revision
+`7079712a42ea2754adf747e70c6cc75764c8596e`. CI applies
+`nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch` and builds:
+
+- `lib/libhybris-common.so`
+- `lib/libhybris/linker/q.so`
+
+Headers: `nuah/hybris_headers/`. Local launches use the installed copy under
+`~/.local/share/nuah/hybris/`.
+
+## Trees this compile does **not** use
+
+Removed from Git: full ATL, wolfSSL, bhook, packaging. Host ART/AOSP checkouts
+stay gitignored local dumps, not this repo.
+
+Keep `third_party/bionic_translation/` (patched; `libpthread_bio` and the
+Meson `libdl_bio` pin), the android2gnulinux **submodule**, `nuah/helper/`,
+and the hybris probe sources.
+
+## Local product build
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNUAH_BUILD_ATL=OFF
+cmake --build build --target nuah nuah-services
 ```
 
-Replace `OWNER/REPOSITORY` with the repository name. CI caching accelerates
-subsequent builds, but it cannot reduce runtime input/render latency on the
-client machine.
-
-Install the downloaded archive without compiling locally:
-
-```bash
-bash tools/install_android16_runtime.sh android16-atl-runtime.tar.gz
-```
-
-When the Android 16 host runtime bundle is available, select it explicitly
-without rebuilding Nuah:
-
-```bash
-export NUAH_ATL_RUNTIME=android16
-export NUAH_ATL_ANDROID16_HOME=/path/to/android16-runtime
-```
-
-The bundle must contain `android-translation-layer` and a `natives/`
-directory containing `libtranslation_layer_main.so`; Android 16 ART shared
-objects belong in a sibling `lib/` directory, and `bootclasspath.txt` must
-contain the split Android 16 bootclasspath (relative `java/...` entries are
-resolved against the bundle). Alternatively set
-`NUAH_ATL_ANDROID16_BOOTCLASSPATH` explicitly. Nuah refuses to launch unless
-an Android 16 runtime is available.
-
-Nuah also auto-selects Android 16 when the bundle is installed under
-`/usr/local/lib64/nuah/android16-runtime`, `/usr/local/share/nuah/android16-runtime`,
-or `/opt/nuah/android16-runtime`. Any non-Android-16 runtime value is
-rejected.
-
-The host adapter staging contract is implemented by
-[`prepare_host_runtime.sh`](/home/pepe/Documents/sober/third_party/aosp_android16/prepare_host_runtime.sh).
+That is enough for `./build/nuah config` / `native-run` on a machine that
+already has API-36 ART, hybris, and the NDK helper `.so` files installed.
+Rebuilding the Android-ELF helpers requires the NDK command from
+`nuah-native.yml` (search for `x86_64-linux-android35-clang`).

@@ -4,6 +4,3 @@
 [submodule "third_party/android2gnulinux"]
 	path = third_party/android2gnulinux
 	url = https://github.com/glook9001/android2gnulinux.git
-[submodule "nuah/third_party/bhook"]
-	path = nuah/third_party/bhook
-	url = https://github.com/bytedance/bhook.git

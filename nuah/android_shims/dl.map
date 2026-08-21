@@ -1,3 +1,0 @@
-LIBC {
-  global: dladdr; dlclose; dlerror; dlopen; dlsym; dlvsym; dl_iterate_phdr;
-};
