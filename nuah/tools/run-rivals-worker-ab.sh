@@ -146,14 +146,14 @@ hybris_library_dir=""
 if [[ -n "${NUAH_HYBRIS_LIBRARY_DIR:-}" ]]; then
   hybris_library_dir="$NUAH_HYBRIS_LIBRARY_DIR"
 else
-  for cand in "$nuah_data/hybris/lib" "$repo_root/build/hybris/lib" \
-              "$repo_root/hybris/lib" /usr/local/lib64/hybris/lib; do
+  for cand in "$repo_root/build/hybris/lib" "$repo_root/hybris/lib" \
+              "$nuah_data/hybris/lib" /usr/local/lib64/hybris/lib; do
     if [[ -r "$cand/libhybris-common.so" ]]; then
       hybris_library_dir="$cand"
       break
     fi
   done
-  hybris_library_dir=${hybris_library_dir:-$nuah_data/hybris/lib}
+  hybris_library_dir=${hybris_library_dir:-$repo_root/build/hybris/lib}
 fi
 hybris_library=${NUAH_HYBRIS_LIBRARY:-$hybris_library_dir/libhybris-common.so}
 hybris_linker_dir=${HYBRIS_LINKER_DIR:-$hybris_library_dir/libhybris/linker}

@@ -174,7 +174,7 @@ target_compile_definitions(nuah_jvm_core PRIVATE _GNU_SOURCE)
 target_link_libraries(nuah_jvm_core PUBLIC dl pthread)
 
 add_library(nuah_core
-  nuah/src/atl_backend.cpp
+  nuah/src/native_backend.cpp
   nuah/src/jni_contract.cpp
   nuah/src/jni_manifest.cpp
   nuah/src/input_bridge.cpp
@@ -352,6 +352,3 @@ add_dependencies(nuah nuah_pthread_bio)
 add_executable(nuah-services nuah/src/services_main.cpp)
 target_link_libraries(nuah-services PRIVATE nuah_core PkgConfig::NUAH_UI)
 set_target_properties(nuah-services PROPERTIES BUILD_RPATH "$ORIGIN")
-
-configure_file(nuah/share/applications/org.nuah.Nuah.desktop
-               ${CMAKE_BINARY_DIR}/org.nuah.Nuah.desktop COPYONLY)

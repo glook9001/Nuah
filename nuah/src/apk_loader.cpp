@@ -47,6 +47,43 @@ void set_hybris_path_if_unset(const char* name, const std::string& value) {
   }
 }
 
+std::filesystem::path data_home_directory() {
+  if (const char* configured = std::getenv("XDG_DATA_HOME");
+      configured && *configured) {
+    return std::filesystem::path(configured) / "nuah";
+  }
+  if (const char* home = std::getenv("HOME"); home && *home) {
+    return std::filesystem::path(home) / ".local/share/nuah";
+  }
+  return {};
+}
+
+// Prefer hybris next to the binary (./build/hybris when running ./build/nuah).
+std::filesystem::path hybris_common_library() {
+  if (const char* configured = std::getenv("NUAH_HYBRIS_LIBRARY");
+      configured && *configured) {
+    return configured;
+  }
+  if (const char* configured = std::getenv("NUAH_HYBRIS_LIBRARY_DIR");
+      configured && *configured) {
+    const auto candidate =
+        std::filesystem::path(configured) / "libhybris-common.so";
+    if (std::filesystem::is_regular_file(candidate)) return candidate;
+  }
+  std::vector<std::filesystem::path> directories;
+  directories.push_back(runtime_directory() / "hybris" / "lib");
+  const auto data = data_home_directory();
+  if (!data.empty()) directories.push_back(data / "hybris" / "lib");
+  directories.emplace_back("/usr/local/lib64/hybris/lib");
+  for (const auto& directory : directories) {
+    const auto candidate = directory / "libhybris-common.so";
+    if (std::filesystem::is_regular_file(candidate) ||
+        std::filesystem::is_symlink(candidate))
+      return candidate;
+  }
+  return runtime_directory() / "hybris" / "lib" / "libhybris-common.so";
+}
+
 void configure_hybris_environment(const char* library) {
   // Only dependency placeholders belong on the Android linker's search path.
   // The real Nuah providers are opened by the host loader below; putting them
@@ -1766,10 +1803,7 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       fd = -1;
     }
     void* loader_library = nullptr;
-    const char* configured_library = ::getenv("NUAH_HYBRIS_LIBRARY");
-    const std::string library = configured_library && *configured_library
-        ? configured_library
-        : (runtime_directory() / "hybris" / "lib" / "libhybris-common.so").string();
+    const std::string library = hybris_common_library().string();
     configure_hybris_environment(library.c_str());
     loader_library = ::dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!loader_library) {
@@ -1936,4 +1970,79 @@ bool patch_loaded_module_property_import(const LoadedModule& module) {
 bool patch_loaded_module_texture_flag(const LoadedModule& module) {
   return patch_loaded_module_texture_flag_impl(module);
 }
+
+namespace {
+
+void set_if_unset(const char* name, const std::string& value) {
+  if (value.empty()) return;
+  const char* existing = std::getenv(name);
+  if (existing && *existing) return;
+  if (::setenv(name, value.c_str(), 1) != 0) {
+    throw std::runtime_error(std::string("cannot configure ") + name);
+  }
+}
+
+void prepend_path_env(const char* name, const std::filesystem::path& item) {
+  if (item.empty()) return;
+  std::error_code error;
+  if (!std::filesystem::exists(item, error) || error) return;
+  const std::string piece = item.string();
+  const char* existing = std::getenv(name);
+  if (existing && *existing &&
+      std::string(existing).find(piece) != std::string::npos)
+    return;
+  std::string value = piece;
+  if (existing && *existing) {
+    value.push_back(':');
+    value += existing;
+  }
+  if (::setenv(name, value.c_str(), 1) != 0) {
+    throw std::runtime_error(std::string("cannot configure ") + name);
+  }
+}
+
+}  // namespace
+
+void apply_native_host_environment() {
+  const auto hybris = hybris_common_library();
+  std::error_code hybris_error;
+  if (std::filesystem::exists(hybris, hybris_error) && !hybris_error) {
+    set_if_unset("NUAH_HYBRIS_LIBRARY", hybris.string());
+    configure_hybris_environment(hybris.c_str());
+    prepend_path_env("LD_LIBRARY_PATH", hybris.parent_path());
+  }
+
+  const auto root = runtime_directory();
+  prepend_path_env("LD_LIBRARY_PATH", root);
+
+  std::filesystem::path art_library = "/usr/local/lib64/art";
+  if (const char* configured = std::getenv("NUAH_ART_LIBRARY");
+      configured && *configured) {
+    art_library = std::filesystem::path(configured).parent_path();
+  } else if (const char* configured = std::getenv("NUAH_ART_LIBRARY_DIR");
+             configured && *configured) {
+    art_library = configured;
+  }
+  prepend_path_env("LD_LIBRARY_PATH", art_library);
+  prepend_path_env("LD_LIBRARY_PATH", art_library / "natives");
+  prepend_path_env("LD_PRELOAD", art_library / "libandroidfw.so");
+  for (const char* icu : {"libicudata.so.77", "libicuuc.so.77",
+                          "libicui18n.so.77"}) {
+    prepend_path_env("LD_PRELOAD", art_library / icu);
+  }
+
+  prepend_path_env("LD_PRELOAD", "/usr/lib64/libpng16.so.16");
+  prepend_path_env("LD_PRELOAD", "/usr/lib64/libjpeg.so.62");
+
+  constexpr const char* kArtHome =
+      "/usr/local/lib64/java/dex/android_translation_layer";
+  set_if_unset("NUAH_ART_HOME", kArtHome);
+  set_if_unset("NUAH_ATL_HOME", kArtHome);
+  set_if_unset("NUAH_GRAPHICS_BACKEND", "vulkan");
+  set_if_unset("NUAH_VULKAN_PRESENT_MODE", "fifo");
+  set_if_unset(
+      "NUAH_CLIENT_SETTINGS_JSON",
+      "{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true}}");
+}
+
 }  // namespace nuah

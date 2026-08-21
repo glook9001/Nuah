@@ -26,4 +26,8 @@ std::filesystem::path prepare_app_native_libraries(
 // Loads the x86_64 Roblox image through Nuah's native Sober-style boundary.
 int run_native(const NativeLaunchOptions& options);
 
+// Discover hybris/ART and host preloads so `nuah config` Play matches the
+// worker without a wrapper script. Safe to call more than once.
+void apply_native_host_environment();
+
 }  // namespace nuah

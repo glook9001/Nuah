@@ -1,4 +1,4 @@
-#include "nuah/atl_backend.hpp"
+#include "nuah/native_backend.hpp"
 #include "nuah/launch_uri.hpp"
 #include "nuah/protocol.hpp"
 #include "nuah/sober_cache.hpp"
@@ -205,6 +205,8 @@ int start_services(const char* argv0) {
       const auto apk = cache.base_apk.string();
       const auto split = cache.split_apk.string();
       const auto data = supervisor_data_directory();
+      nuah::apply_native_host_environment();
+      (void)::setenv("NUAH_HOST_ENV_READY", "1", 1);
       if (!pending_cookie_header.empty()) {
         const std::string token = roblox_security_token(pending_cookie_header);
         if (!token.empty()) {
@@ -451,6 +453,15 @@ int main(int argc, char** argv) {
             "usage: nuah native-run --apk <file.apk> [--activity <class>] "
             "[--split <config.apk>] [--uri <uri>] [--data <directory>] "
             "[--width <px>] [--height <px>]");
+      }
+      nuah::apply_native_host_environment();
+      if (const char* ready = std::getenv("NUAH_HOST_ENV_READY");
+          !ready || std::strcmp(ready, "1") != 0) {
+        if (::setenv("NUAH_HOST_ENV_READY", "1", 1) != 0) {
+          throw std::runtime_error("cannot mark native host environment ready");
+        }
+        ::execv(std::filesystem::canonical("/proc/self/exe").c_str(), argv);
+        throw std::runtime_error("cannot restart native-run with host libraries");
       }
       reexec_with_bundled_pthread_bridge(argv);
       return nuah::run_native(options);
