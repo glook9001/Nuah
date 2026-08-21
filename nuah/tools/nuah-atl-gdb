@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-exec gdb -q \
-  -x /home/pepe/Documents/sober/nuah/tools/nuah-launch.gdb \
-  --args /usr/local/bin/android-translation-layer "$@"

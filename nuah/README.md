@@ -366,7 +366,6 @@ JavaVM passed to `JNI_OnLoad`. `NUAH_FAST_MVP=1` is the default direct
 NativeGLInterface bootstrap that reaches the first frame. Set
 `NUAH_FAST_MVP=0` only to compare the older parameter-setter ABI while
 diagnosing the boundary; it is not the normal launch path.
-`NUAH_NATIVE_BIONIC_SMOKE=1` retains the separate API-36 Bionic-loader probe.
 `atl-run` is outside the Nuah native MVP and is never selected by the Services
 supervisor.
 
@@ -385,25 +384,6 @@ temporary file on every launch.  The `.native-tmp/nuah-module-*` directory is
 only a fallback for callers without an app-private extraction root; stale
 fallback files are reaped at the next launch because the isolated child exits
 without running C++ destructors.
-
-For the guarded texture-generator experiment, create a sidecar from the exact
-APK image with `nuah/tools/patch_libroblox_texture.py`, then opt into it for a
-single run:
-
-```sh
-python3 nuah/tools/patch_libroblox_texture.py \
-  --input "$HOME/.local/share/nuah/base.apk_/lib/libroblox.so" \
-  --output "$HOME/.local/share/nuah/base.apk_/lib/libroblox.patched.so" \
-  --manifest "$HOME/.local/share/nuah/base.apk_/lib/libroblox.patched.so.json"
-NUAH_LIBROBLOX_PATCH="$HOME/.local/share/nuah/base.apk_/lib/libroblox.patched.so" \
-  ./build/nuah native-run ...
-```
-
-The patcher is build-ID and SHA-256 locked, changes one two-byte default flag
-write (`TexturePackGeneratorUseOriginal`), and never overwrites the APK image.
-Nuah validates the sidecar manifest, hashes, ELF build ID, and replacement bytes
-before loading it.  Unset `NUAH_LIBROBLOX_PATCH` to return to the unmodified
-image immediately.
 
 For a no-copy A/B, apply the same two-byte change to the mapped image after
 `dlopen` and before ART can call `JNI_OnLoad`:
@@ -576,32 +556,6 @@ The documented RIVALS launch disables Mesa ANV's dedicated submit thread for
 the current diagnostic profile. This is not a general FPS recommendation: use
 `NUAH_VULKAN_SUBMIT_THREAD=1`, `0`, or `auto` only for an A/B test on the same
 room and camera route.
-
-### Optional Mesa Gen9 surface-state experiment
-
-The measured Gen9 hitch path includes repeated
-`isl_gfx9_buffer_fill_state_s` packing from dynamic buffer descriptors. The
-repository carries an optional Mesa 26.1.6 patch at
-`nuah/patches/mesa-26.1.6-gen9-buffer-state-cache.patch`. It caches only an
-identical per-thread surface-state byte result; it does not alias descriptor
-handles, skip draws/barriers/copies, or change Vulkan ownership rules.
-
-Build Mesa in a separate prefix and select its ICD for one process only. For
-example, after applying the patch to a clean Mesa 26.1.6 tree and building the
-Intel Vulkan driver:
-
-```sh
-export VK_ICD_FILENAMES=/path/to/mesa-build/src/intel/vulkan/intel_devenv_icd.x86_64.json
-NUAH_NO_SWAP=1 NUAH_DESCRIPTOR_ALLOC_BATCH=4 \
-  nuah/tools/run-rivals-worker-ab.sh 0 1280 720
-```
-
-The JSON must point to the rebuilt `libvulkan_intel.so`; verify the running
-child with `grep libvulkan_intel.so /proc/$PID/maps`. The normal system Mesa
-driver is unchanged. Keep this opt-in until a same-route `bpftrace` capture
-shows fewer long gaps and visual correctness. A current 1920x1080 A/B loaded
-the rebuilt driver successfully but did not yet show a validated reduction in
-the duration histograms, so it is not part of the normal profile.
 
 On the measured four-thread/Intel iGPU profile, Nuah clears the packaged
 `FFlagSimRuntimeContentTranscodeBlockingCall` flag by default. This only asks

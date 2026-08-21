@@ -64,27 +64,6 @@ target_compile_definitions(nuah_pthread_bio PRIVATE _GNU_SOURCE)
 target_compile_options(nuah_pthread_bio PRIVATE -O3 -fPIC)
 target_link_libraries(nuah_pthread_bio PRIVATE pthread dl)
 
-# Optional Android-ELF smoke helpers (NDK clang) and libhybris probes.
-# They are not host libraries and are not required for a normal local
-# native-run. Keep the sources so a tree cull cannot drop them. See CI_BUILD.md.
-set(NUAH_NDK_BIONIC_HELPER_SOURCES
-  nuah/helper/bionic_loader_main.c
-  nuah/helper/jni_facade.c
-  nuah/helper/jni_facade.h
-  nuah/helper/graphics_proxy.c
-  nuah/helper/platform_proxy.c)
-set(NUAH_HYBRIS_PROBE_SOURCES
-  nuah/tests/hybris_probe_module.c
-  nuah/tests/hybris_host_dependency_probe.c
-  nuah/tests/hybris_loader_probe.c)
-foreach(source IN LISTS NUAH_NDK_BIONIC_HELPER_SOURCES NUAH_HYBRIS_PROBE_SOURCES)
-  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${source}")
-    message(FATAL_ERROR
-      "Missing CI-compiled source ${source} (see CI_BUILD.md)")
-  endif()
-endforeach()
-add_custom_target(nuah_ci_android_elf_sources
-  SOURCES ${NUAH_NDK_BIONIC_HELPER_SOURCES} ${NUAH_HYBRIS_PROBE_SOURCES})
 set(NUAH_SDL3_ROOT "" CACHE PATH
     "Private prefix containing a prebuilt SDL3 development package")
 if(NUAH_SDL3_ROOT)

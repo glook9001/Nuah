@@ -1,6 +1,0 @@
-# Curated Nuah native profile format (v1)
-id=nuah-fixture
-backend=native
-apk=fixture.apk
-entry=lib/x86_64/libnuah_fixture.so
-allow=Game.launch

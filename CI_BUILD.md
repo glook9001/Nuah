@@ -53,6 +53,3 @@ libhybris is **not** a CI artifact. Use the local install
 (`~/.local/share/nuah/hybris`) built from `third_party/libhybris.lock` and
 `nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch`.
 Host ART is `/usr/local/lib64/art`.
-
-`nuah/helper/` is only for `NUAH_NATIVE_BIONIC_SMOKE=1` (NDK + linker64).
-A normal game launch does not use it.
