@@ -8,6 +8,8 @@
 static char nuah_content_path[4096];
 static char nuah_launch_access_code[4096];
 static char nuah_launch_reserved_server_access_code[4096];
+static char nuah_launch_join_attempt_id[80];
+static char nuah_launch_join_attempt_origin[64];
 static jlong nuah_launch_place_id;
 static jlong nuah_launch_user_id;
 static jint nuah_launch_join_request_type;
@@ -40,6 +42,15 @@ void nuah_roblox_java_facade_set_start_game_params(
 
 void nuah_roblox_java_facade_set_launch_surface(jobject surface) {
   nuah_launch_surface = surface;
+}
+
+void nuah_roblox_java_facade_set_join_attempt(const char* id,
+                                              const char* origin) {
+  snprintf(nuah_launch_join_attempt_id, sizeof(nuah_launch_join_attempt_id),
+           "%s", id ? id : "");
+  snprintf(nuah_launch_join_attempt_origin,
+           sizeof(nuah_launch_join_attempt_origin), "%s",
+           origin ? origin : "");
 }
 
 /*
@@ -527,8 +538,8 @@ START_GAME_STRING(gameIdToExclude, "")
 START_GAME_STRING(gameJoinContext, "")
 START_GAME_BOOLEAN(isUnder13, JNI_FALSE)
 START_GAME_STRING(isoContext, "")
-START_GAME_STRING(joinAttemptId, "00000000-0000-0000-0000-000000000000")
-START_GAME_STRING(joinAttemptOrigin, "")
+START_GAME_STRING(joinAttemptId, nuah_launch_join_attempt_id)
+START_GAME_STRING(joinAttemptOrigin, nuah_launch_join_attempt_origin)
 /* vi.j0.a(placeId, null, ...) uses request type 2 for a WebView launch. */
 START_GAME_INT(joinRequestType, nuah_launch_join_request_type)
 START_GAME_STRING(launchData, "")

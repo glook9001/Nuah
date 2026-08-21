@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
@@ -48,6 +49,24 @@ extern "C" void nuah_roblox_java_facade_set_start_game_params(
     const char* access_code, const char* reserved_server_access_code,
     jlong user_id, jint join_request_type);
 extern "C" void nuah_roblox_java_facade_set_launch_surface(jobject surface);
+extern "C" void nuah_roblox_java_facade_set_join_attempt(const char* id,
+                                                         const char* origin);
+
+std::string new_join_attempt_id() {
+  std::ifstream in("/proc/sys/kernel/random/uuid");
+  std::string id;
+  if (std::getline(in, id)) {
+    while (!id.empty() && (id.back() == '\n' || id.back() == '\r'))
+      id.pop_back();
+    if (id.size() >= 36) return id;
+  }
+  const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+  char fallback[40];
+  std::snprintf(fallback, sizeof(fallback),
+                "00000000-0000-4000-8000-%012llx",
+                static_cast<unsigned long long>(now) & 0xffffffffffffULL);
+  return fallback;
+}
 
 using RobloxSetMultipleCookies = void (*)(JNIEnv*, jclass, jstring, jstring);
 using RobloxGetCookiesForDomain = jstring (*)(JNIEnv*, jclass, jstring);
@@ -1249,6 +1268,8 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
   const jint join_request_type =
       nuah_roblox_user_id() > 0 && access_code.empty() ? 1 : 2;
   const jlong place_id = static_cast<jlong>(std::stoll(request.place_id));
+  const std::string join_attempt_id = new_join_attempt_id();
+  nuah_roblox_java_facade_set_join_attempt(join_attempt_id.c_str(), "WebView");
   const bool fields_ok =
       call_object("setSurface", "(Landroid/view/Surface;)"
                                "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;",
@@ -1272,8 +1293,8 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       call_string("setGameJoinContext", empty) &&
       call_bool("setIsUnder13", JNI_FALSE) &&
       call_string("setIsoContext", empty) &&
-      call_string("setJoinAttemptId", "00000000-0000-0000-0000-000000000000") &&
-      call_string("setJoinAttemptOrigin", empty) &&
+      call_string("setJoinAttemptId", join_attempt_id.c_str()) &&
+      call_string("setJoinAttemptOrigin", "WebView") &&
       call_int("setJoinRequestType", join_request_type) &&
       call_string("setLaunchData", launch_data.c_str()) &&
       call_string("setLinkCode", empty) &&
@@ -2629,7 +2650,8 @@ int run_nuah_jni(const NativeLaunchOptions& options,
        << "\"FIntTaskSchedulerAsyncTasksMinimumThreadCount\":\"1\","
         << "\"FIntTaskSchedulerThreadMin\":\"0\","
         << "\"DFIntTaskSchedulerTargetFps\":\""
-        << target_fps << "\"}}";
+        << target_fps << "\","
+        << "\"DFFlagDebugDisableRbxTransportDummyClient\":true}}";
     default_settings_storage = generated_settings.str();
     settings_storage = packaged_client_settings(app_data_directory);
     if (!settings_storage.empty()) {
@@ -2750,6 +2772,8 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         set_client_setting(settings_storage,
                            "DFFlagPopulateUserInformationForPlayers", "false");
       }
+      set_client_setting(settings_storage,
+                         "DFFlagDebugDisableRbxTransportDummyClient", "true");
       settings_json = settings_storage.c_str();
       if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
           trace && *trace) {
@@ -2956,6 +2980,14 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         trace && *trace) {
       std::cerr << "nuah graphics: MSAA disabled via client settings\n";
     }
+  }
+  /* DummyClient is a parallel fake transport. If it connects, RCC returns
+   * 257. This flag stops that connect; it does not select DummyClient. */
+  if (settings_json && *settings_json) {
+    if (settings_storage.empty()) settings_storage = settings_json;
+    set_client_setting(settings_storage,
+                       "DFFlagDebugDisableRbxTransportDummyClient", "true");
+    settings_json = settings_storage.c_str();
   }
   const jstring settings = env->NewStringUTF(settings_json);
   const jstring settings_signature = env->NewStringUTF("");
