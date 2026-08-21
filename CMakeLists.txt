@@ -64,10 +64,9 @@ target_compile_definitions(nuah_pthread_bio PRIVATE _GNU_SOURCE)
 target_compile_options(nuah_pthread_bio PRIVATE -O3 -fPIC)
 target_link_libraries(nuah_pthread_bio PRIVATE pthread dl)
 
-# Android-ELF helpers and libhybris probes are compiled by
-# .github/workflows/nuah-native.yml (NDK clang / host cc), not as host
-# libraries below. Keep the sources in this graph so a tree cull cannot drop
-# the .so inputs CI publishes into the bionic bundle. See CI_BUILD.md.
+# Optional Android-ELF smoke helpers (NDK clang) and libhybris probes.
+# They are not host libraries and are not required for a normal local
+# native-run. Keep the sources so a tree cull cannot drop them. See CI_BUILD.md.
 set(NUAH_NDK_BIONIC_HELPER_SOURCES
   nuah/helper/bionic_loader_main.c
   nuah/helper/jni_facade.c

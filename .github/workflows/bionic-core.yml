@@ -1,5 +1,8 @@
 name: Extract API-36 bionic core
 
+# This is the only cloud job: pull Google's API-36 x86_64 image and publish
+# linker64 + bionic libc/libdl/libm. Nuah itself is compiled locally.
+
 on:
   workflow_dispatch:
 
