@@ -181,7 +181,8 @@ void ALooper_wake(void* opaque) {
   auto* looper = static_cast<Looper*>(opaque);
   if (!looper || looper->wake_fd < 0) return;
   const uint64_t value = 1;
-  (void)::write(looper->wake_fd, &value, sizeof(value));
+  const ssize_t written = ::write(looper->wake_fd, &value, sizeof(value));
+  (void)written;
 }
 
 bool ALooper_isPolling(void* opaque) {

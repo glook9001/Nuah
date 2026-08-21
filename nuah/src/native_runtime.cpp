@@ -1631,8 +1631,13 @@ class RuntimeDataLock {
                                std::string(std::strerror(saved_errno)));
     }
     const std::string owner = std::to_string(static_cast<long long>(::getpid())) + "\n";
-    (void)::ftruncate(fd_, 0);
-    (void)::write(fd_, owner.data(), owner.size());
+    if (::ftruncate(fd_, 0) != 0) {
+      throw std::runtime_error("cannot reset Nuah runtime lock");
+    }
+    if (::write(fd_, owner.data(), owner.size()) !=
+        static_cast<ssize_t>(owner.size())) {
+      throw std::runtime_error("cannot write Nuah runtime lock");
+    }
   }
 
   RuntimeDataLock(const RuntimeDataLock&) = delete;

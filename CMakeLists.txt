@@ -88,6 +88,10 @@ add_custom_target(nuah_ci_android_elf_sources
   SOURCES ${NUAH_NDK_BIONIC_HELPER_SOURCES} ${NUAH_HYBRIS_PROBE_SOURCES})
 set(NUAH_SDL3_ROOT "" CACHE PATH
     "Private prefix containing a prebuilt SDL3 development package")
+if(NUAH_SDL3_ROOT)
+  include_directories("${NUAH_SDL3_ROOT}/usr/include")
+  link_directories("${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
+endif()
 
 add_library(nuah_host_bridge SHARED nuah/src/native_window_bridge.cpp)
 target_include_directories(nuah_host_bridge PUBLIC nuah/include)
@@ -258,6 +262,10 @@ set_target_properties(nuah_android_platform PROPERTIES OUTPUT_NAME android LIBRA
 target_compile_options(nuah_android_platform PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_compile_definitions(nuah_android_platform PRIVATE _LARGEFILE64_SOURCE)
 target_include_directories(nuah_android_platform PRIVATE nuah/include)
+if(NUAH_SDL3_ROOT)
+  target_include_directories(nuah_android_platform PRIVATE
+    "${NUAH_SDL3_ROOT}/usr/include")
+endif()
 target_link_libraries(nuah_android_platform PRIVATE
   nuah_host_bridge nuah_android_registry PkgConfig::NUAH_ARCHIVE
   PkgConfig::NUAH_PLATFORM dl)
