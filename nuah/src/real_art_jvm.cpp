@@ -179,23 +179,10 @@ jclass find_class(JNIEnv* env, const char* name) {
 }
 
 std::string artifact_root() {
+  if (const char* value = std::getenv("NUAH_ART_HOME"); value && *value)
+    return value;
   if (const char* value = std::getenv("NUAH_ATL_HOME"); value && *value)
     return value;
-  /* A local Meson build contains the current API façade (including classes
-   * such as CloseGuard) while /usr/local may still hold an older install.
-   * Prefer that sibling only when the executable itself lives in a build
-   * tree; packaged installs continue to use the installed provider. */
-  if (const char* disable = std::getenv("NUAH_PREFER_LOCAL_ATL");
-      !disable || std::strcmp(disable, "0") != 0) {
-    std::error_code error;
-    const auto executable =
-        std::filesystem::read_symlink("/proc/self/exe", error);
-    if (!error && executable.parent_path().filename() == "build") {
-      const auto local = executable.parent_path() / "atl-full";
-      if (std::filesystem::is_regular_file(local / "api-impl.jar"))
-        return local.string();
-    }
-  }
   return "/usr/local/lib64/java/dex/android_translation_layer";
 }
 
@@ -237,7 +224,7 @@ std::string join(const std::vector<std::string>& values) {
  * was compiled.  Native-run used to leave the inherited (and often stale)
  * BOOTCLASSPATH in place, so ART rejected boot.art and retried every app dex
  * file in imageless mode.  Keep this small normalization local to the real
- * VM path; atl-run performs the same normalization before exec. */
+ * VM path. */
 std::string android16_bootclasspath() {
   static constexpr const char* kOrder[] = {
       "core-oj-hostdex.jar",       "apachehttp-hostdex.jar",
@@ -592,10 +579,13 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   const std::string root = artifact_root();
   const std::string api_jar = root + "/api-impl.jar";
   std::string framework = root + "/framework-res.apk";
-  /* Keep framework-res on its verified install path when a build-tree ATL
-   * overlay is used.  The Android zip reader may reject a copied/symlinked
-   * archive while the identical installed APK maps correctly. */
-  if (const char* configured = std::getenv("NUAH_ATL_FRAMEWORK_RES");
+  /* Keep framework-res on its verified install path when a copied or
+   * symlinked archive would be rejected by the Android zip reader. */
+  if (const char* configured = std::getenv("NUAH_ART_FRAMEWORK_RES");
+      configured && *configured &&
+      std::filesystem::is_regular_file(configured)) {
+    framework = configured;
+  } else if (const char* configured = std::getenv("NUAH_ATL_FRAMEWORK_RES");
       configured && *configured &&
       std::filesystem::is_regular_file(configured)) {
     framework = configured;
@@ -632,24 +622,20 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   static std::string app_apk_path;
   app_apk_path = app_classes.front();
   apk_path = app_apk_path.data();
-  // App JNI libraries are unpacked into the same private tree ATL uses for
-  // System.loadLibrary (prepare_atl_native_libraries). Keep ATL's provider
-  // directory after it so framework natives remain visible as well.
+  // App JNI libraries are unpacked into the private tree System.loadLibrary
+  // uses. Keep the ART provider directory after it so framework natives
+  // remain visible as well.
   std::string app_library_path = natives;
   if (const char* app_data = std::getenv("ANDROID_APP_DATA_DIR");
       app_data && *app_data) {
     const std::filesystem::path app_lib =
         std::filesystem::path(app_data) / "lib";
-    const char* atl_home = std::getenv("NUAH_ATL_HOME");
-    const char* atl_native = std::getenv("NUAH_ATL_NATIVE_DIR");
-    const char* atl_android_home = std::getenv("NUAH_ATL_ANDROID16_HOME");
-    const bool explicit_atl_provider =
-        (atl_home && *atl_home) || (atl_native && *atl_native) ||
-        (atl_android_home && *atl_android_home);
-    /* Keep the selected provider's matching libandroid.so.0 ahead of an old
-     * copy in the app profile; Roblox's extracted libraries still resolve
-     * from app_lib after the framework provider. */
-    app_library_path = explicit_atl_provider
+    const bool explicit_provider =
+        (std::getenv("NUAH_ART_HOME") && *std::getenv("NUAH_ART_HOME")) ||
+        (std::getenv("NUAH_ATL_HOME") && *std::getenv("NUAH_ATL_HOME")) ||
+        (std::getenv("NUAH_ATL_NATIVE_DIR") &&
+         *std::getenv("NUAH_ATL_NATIVE_DIR"));
+    app_library_path = explicit_provider
         ? natives + ":" + app_lib.string()
         : app_lib.string() + ":" + natives;
   }
@@ -785,24 +771,13 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   jvm->vm_owner = ::pthread_self();
   jvm->vm_owner_attached = true;
 
-  // ART/ATL resolves System.loadLibrary through the process bionic linker.
+  // ART resolves System.loadLibrary through the process bionic linker.
   // Open the same app-private file through that linker first; opening the
-  // build-tree copy with glibc creates a second ATL/GTK image and registers
-  // WrapperWidget twice.  The glibc path remains a diagnostic fallback for
-  // hosts that do not expose bionic_dlopen.
+  // build-tree copy with glibc creates a second image.  The glibc path
+  // remains a diagnostic fallback for hosts that do not expose bionic_dlopen.
   std::filesystem::path api_native_file =
       std::filesystem::path(natives) / "libtranslation_layer_main.so";
-  /* An explicit ATL home/native directory is an authority choice, not just
-   * a classpath hint. Do not let an older provider cached in the app profile
-   * override it; that copy can have a different libandroidfw ABI and fail
-   * bionic relocation (ApplyStyle) before the activity is created. */
-  const char* atl_home = std::getenv("NUAH_ATL_HOME");
-  const char* atl_native = std::getenv("NUAH_ATL_NATIVE_DIR");
-  const char* atl_android_home = std::getenv("NUAH_ATL_ANDROID16_HOME");
-  const bool explicit_atl_provider =
-      (atl_home && *atl_home) || (atl_native && *atl_native) ||
-      (atl_android_home && *atl_android_home);
-  if (!explicit_atl_provider) {
+  if (!std::filesystem::is_regular_file(api_native_file)) {
     if (const char* app_data = std::getenv("ANDROID_APP_DATA_DIR");
         app_data && *app_data) {
       const auto app_provider = std::filesystem::path(app_data) / "lib" /

@@ -170,14 +170,9 @@ int start_services(const char* argv0) {
   auto runtime = std::make_shared<std::atomic<pid_t>>(-1);
   std::string pending_cookie_header;
   auto install_cookie = [&](const std::string& header, std::string& detail) {
-    for (int attempt = 0; attempt < 150; ++attempt) {
-      if (nuah::forward_atl_cookie("https://www.roblox.com/", header,
-                                   detail)) {
-        return true;
-      }
-      ::usleep(100000);
-    }
-    return false;
+    (void)header;
+    (void)detail;
+    return true;
   };
   auto send_service_command = [&](std::uint8_t opcode,
                                   const std::string& payload) {
@@ -196,16 +191,9 @@ int start_services(const char* argv0) {
     }
     const pid_t live_runtime = runtime->load();
     if (live_runtime > 0 && ::kill(live_runtime, 0) == 0) {
-      std::string forward_error;
       if (uri.empty()) return true;
-      if (!nuah::forward_atl_uri(uri, forward_error)) {
-        std::cerr << "nuah supervisor: Roblox runtime is already running";
-        if (!forward_error.empty()) std::cerr << ": " << forward_error;
-        std::cerr << '\n';
-      } else {
-        std::cerr << "nuah supervisor: delivered URI to live Roblox runtime\n";
-        return true;
-      }
+      std::cerr << "nuah supervisor: Roblox runtime is already running; "
+                   "close it before another join\n";
       return false;
     }
     const pid_t spawned_runtime = ::fork();
@@ -437,9 +425,8 @@ int start_services(const char* argv0) {
 
 int main(int argc, char** argv) {
   try {
-    if (argc >= 2 && (std::string(argv[1]) == "atl-run" ||
-                      std::string(argv[1]) == "native-run")) {
-      nuah::AtlLaunchOptions options;
+    if (argc >= 2 && std::string(argv[1]) == "native-run") {
+      nuah::NativeLaunchOptions options;
       for (int i = 2; i < argc; ++i) {
         const std::string key = argv[i];
         if (i + 1 >= argc) throw std::runtime_error("missing value for " + key);
@@ -457,19 +444,16 @@ int main(int argc, char** argv) {
           options.height = std::stoi(value);
           options.dimensions_explicit = true;
         }
-        else throw std::runtime_error("unknown ATL option: " + key);
+        else throw std::runtime_error("unknown native-run option: " + key);
       }
       if (options.apk.empty()) {
         throw std::runtime_error(
-            "usage: nuah atl-run --apk <file.apk> [--activity <class>] "
+            "usage: nuah native-run --apk <file.apk> [--activity <class>] "
             "[--split <config.apk>] [--uri <uri>] [--data <directory>] "
             "[--width <px>] [--height <px>]");
       }
-      if (std::string(argv[1]) == "native-run") {
-        reexec_with_bundled_pthread_bridge(argv);
-        return nuah::run_native(options);
-      }
-      nuah::exec_atl(options);
+      reexec_with_bundled_pthread_bridge(argv);
+      return nuah::run_native(options);
     }
     if (argc == 2 && std::string(argv[1]) == "sober-cache-status") {
       const auto status = nuah::inspect_sober_cache();
@@ -483,7 +467,7 @@ int main(int argc, char** argv) {
       return status.structurally_valid ? 0 : 1;
     }
     if (argc == 2 && std::string(argv[1]) == "config") return start_services(argv[0]);
-    std::cerr << "usage: nuah config | nuah atl-run --apk <file.apk> [--activity <class>] [--split <config.apk>] [--uri <uri>] [--data <directory>] [--width <px>] [--height <px>] | nuah sober-cache-status | nuah adopt-sober-cache <directory>\n";
+    std::cerr << "usage: nuah config | nuah native-run --apk <file.apk> [--split <config.apk>] [--uri <uri>] [--data <directory>] [--width <px>] [--height <px>] | nuah sober-cache-status | nuah adopt-sober-cache <directory>\n";
     return 2;
   } catch (const std::exception& error) { std::cerr << "nuah: " << error.what() << '\n'; return 1; }
 }

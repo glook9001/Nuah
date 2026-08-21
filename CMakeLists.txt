@@ -46,7 +46,7 @@ find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(NUAH_UI REQUIRED IMPORTED_TARGET gtk4 libadwaita-1 webkitgtk-6.0)
 pkg_check_modules(NUAH_PLATFORM REQUIRED IMPORTED_TARGET sdl3 libffi)
-pkg_check_modules(NUAH_GIO REQUIRED IMPORTED_TARGET gio-2.0)
+pkg_check_modules(NUAH_GLIB REQUIRED IMPORTED_TARGET glib-2.0)
 pkg_check_modules(NUAH_ARCHIVE REQUIRED IMPORTED_TARGET libarchive)
 
 # Keep the hot Android pthread bridge beside Nuah instead of silently using
@@ -159,12 +159,6 @@ target_include_directories(nuah_android_bionic_linker_helpers PRIVATE nuah/inclu
 target_link_options(nuah_android_bionic_linker_helpers PRIVATE
   "-Wl,--version-script=${CMAKE_SOURCE_DIR}/nuah/android_shims/bionic-linker-helpers.map")
 
-add_library(nuah_atl_overlay SHARED nuah/atl_overlay/compat.cpp)
-target_compile_options(nuah_atl_overlay PRIVATE -Wall -Wextra -Wpedantic -Werror)
-set_target_properties(
-  nuah_atl_overlay PROPERTIES
-  OUTPUT_NAME nuah_atl_overlay)
-
 # The Nuah JVM is a narrow adapter around the licensed android2gnulinux JNI
 # core.  Its old linker/platform layers are deliberately not compiled.
 add_library(nuah_jvm_core STATIC
@@ -195,9 +189,6 @@ add_library(nuah_core
   nuah/src/protocol.cpp)
 target_include_directories(nuah_core PUBLIC nuah/include)
 target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
-target_compile_definitions(
-  nuah_core PRIVATE
-  NUAH_ATL_OVERLAY_PATH="$<TARGET_FILE:nuah_atl_overlay>")
 target_compile_options(nuah_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 if(NUAH_SDL3_ROOT)
   target_include_directories(nuah_core PRIVATE "${NUAH_SDL3_ROOT}/usr/include")
@@ -205,9 +196,8 @@ if(NUAH_SDL3_ROOT)
     "${NUAH_SDL3_ROOT}/usr/lib/x86_64-linux-gnu")
 endif()
 target_link_libraries(
-  nuah_core PUBLIC nuah_host_bridge nuah_bootstrap_diagnostics nuah_libnativehelper_jni nuah_jvm_core dl ZLIB::ZLIB PkgConfig::NUAH_GIO
-  PkgConfig::NUAH_PLATFORM)
-add_dependencies(nuah_core nuah_atl_overlay)
+  nuah_core PUBLIC nuah_host_bridge nuah_bootstrap_diagnostics nuah_libnativehelper_jni nuah_jvm_core dl ZLIB::ZLIB
+  PkgConfig::NUAH_PLATFORM PkgConfig::NUAH_GLIB)
 add_dependencies(nuah_core nuah_android_bionic)
 add_dependencies(nuah_core nuah_android_bionic_linker_helpers)
 add_dependencies(nuah_core nuah_android_math)

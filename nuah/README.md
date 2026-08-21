@@ -20,14 +20,13 @@ Services/WebKit -> framed IPC -> supervisor -> native game runtime -> Roblox
 
 The current local MVP reaches a rendered Roblox place and accepts the
 keyboard/mouse path: W/A/S/D movement, arrow-key camera input, number keys,
-relative mouse movement, buttons, and wheel events. The ATL build remains
-disabled by default (`NUAH_BUILD_ATL=OFF`); the playable path uses the
-libhybris loader with the installed API-36 ART provider.
+relative mouse movement, buttons, and wheel events. The playable path uses
+the libhybris loader with the installed API-36 ART provider.
 
 ## Build and run
 
 ```sh
-cmake -S . -B build -G Ninja -DNUAH_BUILD_ATL=OFF
+cmake -S . -B build -G Ninja
 cmake --build build --target nuah nuah-services
 ./build/nuah config
 ```
@@ -35,9 +34,8 @@ cmake --build build --target nuah nuah-services
 ### Launch RIVALS with the current Sober APK
 
 The recommended launch path is the worker script. It discovers the current
-Sober APK and split, adopts Sober's active login cookie, selects the rebuilt
-ATL/libhybris runtime, and supplies the join parameters required by current
-Roblox APKs (including a non-empty `joinAttemptId`):
+Sober APK and split, adopts Sober's active login cookie, and supplies the
+join parameters required by current Roblox APKs:
 
 ```sh
 cd ~/Documents/nuah
@@ -83,7 +81,6 @@ ROBLOX_COOKIE="$(sed -n 's/.*\.ROBLOSECURITY=\([^;[:space:]]*\).*/\1/p' \
   "$SOBER_DATA/cookies" | head -1)"
 export NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$ROBLOX_COOKIE"
 export NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$ROBLOX_COOKIE"
-export NUAH_ATL_NATIVE_DIR="$HOME/.local/share/nuah/base.apk_/lib"
 export NUAH_HYBRIS_LIBRARY="$HOME/.local/share/nuah/hybris/lib/libhybris-common.so"
 export HYBRIS_LINKER_DIR="$HOME/.local/share/nuah/hybris/lib/libhybris/linker"
 export LD_LIBRARY_PATH=/usr/local/lib64/art:"$HOME/.local/share/nuah/hybris/lib"
@@ -138,7 +135,7 @@ The launch flags above are the tested play profile. `NUAH_GRAPHICS_BACKEND`,
 `NUAH_FAST_RENDER`, `NUAH_ASSET_BACKGROUND`, `NUAH_TASK_THREADS`,
 `NUAH_RENDER_TEXTURE_BUDGET_MS`, `NUAH_TARGET_FPS`, and
 `NUAH_SHADER_CACHE_DIR` control rendering, scheduling,
-input, and caching. `NUAH_ATL_NATIVE_DIR`, `NUAH_HYBRIS_LIBRARY`,
+input, and caching. `NUAH_HYBRIS_LIBRARY`,
 `HYBRIS_LINKER_DIR`, `LD_LIBRARY_PATH`, and `LD_PRELOAD` select the Android
 runtime boundary. `NUAH_ROBLOX_COOKIES` and `NUAH_ROBLOX_COOKIE_HEADER` pass
 the Sober session to Roblox. An explicit `NUAH_CLIENT_SETTINGS_JSON` still
@@ -354,8 +351,6 @@ JavaVM passed to `JNI_OnLoad`. `NUAH_FAST_MVP=1` is the default direct
 NativeGLInterface bootstrap that reaches the first frame. Set
 `NUAH_FAST_MVP=0` only to compare the older parameter-setter ABI while
 diagnosing the boundary; it is not the normal launch path.
-`atl-run` is outside the Nuah native MVP and is never selected by the Services
-supervisor.
 
 Nuah vendors Android 16's `libnativehelper` JNI headers as a pinned source
 dependency. This supplies the official Android JNI ABI declarations only;

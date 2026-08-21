@@ -49,24 +49,6 @@ extern "C" void nuah_roblox_java_facade_set_start_game_params(
     const char* access_code, const char* reserved_server_access_code,
     jlong user_id, jint join_request_type);
 extern "C" void nuah_roblox_java_facade_set_launch_surface(jobject surface);
-extern "C" void nuah_roblox_java_facade_set_join_attempt(const char* id,
-                                                         const char* origin);
-
-std::string new_join_attempt_id() {
-  std::ifstream in("/proc/sys/kernel/random/uuid");
-  std::string id;
-  if (std::getline(in, id)) {
-    while (!id.empty() && (id.back() == '\n' || id.back() == '\r'))
-      id.pop_back();
-    if (id.size() >= 36) return id;
-  }
-  const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-  char fallback[40];
-  std::snprintf(fallback, sizeof(fallback),
-                "00000000-0000-4000-8000-%012llx",
-                static_cast<unsigned long long>(now) & 0xffffffffffffULL);
-  return fallback;
-}
 
 using RobloxSetMultipleCookies = void (*)(JNIEnv*, jclass, jstring, jstring);
 using RobloxGetCookiesForDomain = jstring (*)(JNIEnv*, jclass, jstring);
@@ -1268,8 +1250,6 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
   const jint join_request_type =
       nuah_roblox_user_id() > 0 && access_code.empty() ? 1 : 2;
   const jlong place_id = static_cast<jlong>(std::stoll(request.place_id));
-  const std::string join_attempt_id = new_join_attempt_id();
-  nuah_roblox_java_facade_set_join_attempt(join_attempt_id.c_str(), "WebView");
   const bool fields_ok =
       call_object("setSurface", "(Landroid/view/Surface;)"
                                "Lcom/roblox/engine/jni/autovalue/StartGameParams$Builder;",
@@ -1293,8 +1273,8 @@ jobject make_real_start_game_params(JNIEnv* env, jobject surface,
       call_string("setGameJoinContext", empty) &&
       call_bool("setIsUnder13", JNI_FALSE) &&
       call_string("setIsoContext", empty) &&
-      call_string("setJoinAttemptId", join_attempt_id.c_str()) &&
-      call_string("setJoinAttemptOrigin", "WebView") &&
+      call_string("setJoinAttemptId", "00000000-0000-0000-0000-000000000000") &&
+      call_string("setJoinAttemptOrigin", empty) &&
       call_int("setJoinRequestType", join_request_type) &&
       call_string("setLaunchData", launch_data.c_str()) &&
       call_string("setLinkCode", empty) &&
@@ -1800,73 +1780,6 @@ void trace_start_game_params(JNIEnv* env, jobject params) {
   env->DeleteLocalRef(klass);
 }
 
-/* ART's bionic linker resolves libroblox's `libandroid.so` dependency through
- * the ATL companion soname.  A profile created by native-run contains the APK
- * libraries, but not that framework companion; in that state the first
- * bionic_dlopen fails on AAssetManager_fromJava and Android caches the failed
- * libroblox load.  Keep the explicit ATL provider and the app namespace in
- * sync by staging the selected companion into the profile on every launch.
- * It is only ~90 KiB, so an atomic refresh is cheaper and safer than allowing
- * a stale ABI to survive across ATL upgrades. */
-void stage_atl_android_companion(const std::filesystem::path& app_directory) {
-  std::vector<std::filesystem::path> candidates;
-  if (const char* configured = std::getenv("NUAH_ATL_NATIVE_DIR");
-      configured && *configured) {
-    candidates.emplace_back(std::filesystem::path(configured) /
-                            "libandroid.so.0");
-  }
-  if (const char* configured = std::getenv("NUAH_ATL_HOME");
-      configured && *configured) {
-    candidates.emplace_back(std::filesystem::path(configured) / "natives" /
-                            "libandroid.so.0");
-  }
-  for (const auto& source : candidates) {
-    std::error_code source_error;
-    if (!std::filesystem::is_regular_file(source, source_error) ||
-        source_error)
-      continue;
-    const auto target_directory = app_directory / "lib";
-    std::error_code directory_error;
-    std::filesystem::create_directories(target_directory, directory_error);
-    if (directory_error) return;
-    const auto target = target_directory / "libandroid.so.0";
-    const auto temporary = target_directory /
-                           ("libandroid.so.0.nuah-new-" +
-                            std::to_string(static_cast<long long>(::getpid())));
-    std::error_code copy_error;
-    std::filesystem::copy_file(
-        source, temporary, std::filesystem::copy_options::overwrite_existing,
-        copy_error);
-    if (copy_error) return;
-    std::error_code rename_error;
-    std::filesystem::rename(temporary, target, rename_error);
-    if (rename_error) {
-      std::error_code ignored;
-      std::filesystem::copy_file(
-          source, target, std::filesystem::copy_options::overwrite_existing,
-          ignored);
-      std::filesystem::remove(temporary, ignored);
-    }
-    std::error_code permission_error;
-    std::filesystem::permissions(
-        target,
-        std::filesystem::perms::owner_read |
-            std::filesystem::perms::owner_write |
-            std::filesystem::perms::owner_exec |
-            std::filesystem::perms::group_read |
-            std::filesystem::perms::group_exec |
-            std::filesystem::perms::others_read |
-            std::filesystem::perms::others_exec,
-        std::filesystem::perm_options::replace, permission_error);
-    if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
-        trace && *trace) {
-      std::cerr << "nuah ATL: staged companion " << source << " -> " << target
-                << '\n';
-    }
-    return;
-  }
-}
-
 int run_nuah_jni(const NativeLaunchOptions& options,
                  const std::filesystem::path& apk) {
   const bool fast_mvp = fast_mvp_enabled();
@@ -1883,12 +1796,9 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   if (asset_apks.empty() || ::setenv("NUAH_APK_PATHS", asset_apks.c_str(), 1) != 0) {
     throw std::runtime_error("cannot configure Android asset APK paths");
   }
-  // ATL's Android API provider expects the same per-APK app-private root that
-  // its normal launcher creates (<data>/<apk-name>_/).  Set it before ART is
-  // created so Environment/AssetManager native initialization sees a real
-  // directory.  Passing the parent data directory here makes the provider
-  // fall back to /tmp/nuah and its AssetManager then dereferences an empty
-  // ApkAssets list.
+  // The Android API provider expects the same per-APK app-private root that
+  // the launcher creates (<data>/<apk-name>_/).  Set it before ART is created
+  // so Environment/AssetManager native initialization sees a real directory.
   const auto app_data_directory =
       std::filesystem::absolute(options.data_directory.value_or(
           std::filesystem::temp_directory_path() / "nuah-data")) /
@@ -1899,53 +1809,27 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       ::setenv("ANDROID_APP_DATA_DIR", app_data_directory.c_str(), 1) != 0) {
     throw std::runtime_error("cannot configure Android app-private data directory");
   }
-  stage_atl_android_companion(app_data_directory);
   configure_mesa_shader_cache(app_data_directory);
   configure_mesa_submit_thread();
-  // Reuse ATL's APK-native extraction routine. This is the Android contract
-  // System.loadLibrary expects; do not fabricate host substitutes for app
-  // libraries such as libzstd-jni.
-  (void)prepare_atl_native_libraries(options);
+  // Extract APK natives into the app-private lib dir System.loadLibrary
+  // expects; do not fabricate host substitutes for app libraries such as
+  // libzstd-jni.
+  (void)prepare_app_native_libraries(options);
   const auto app_library_directory = app_data_directory / "lib";
-  // The installed ATL linker owns the process's one libc/TLS domain. Keep
-  // this path limited to extracted app libraries; accepting an inherited
+  // Keep this path limited to extracted app libraries; accepting an inherited
   // private libc path would load a second Bionic provider and corrupt ART.
   std::string bionic_library_path;
-  /* When the caller selects an installed ATL bundle, its matching
-   * libandroid.so.0 must precede any framework DSO cached in an older app
-   * profile.  Otherwise the provider's ApplyStyle relocation can bind to a
-   * mismatched ABI.  App libraries are still included immediately after the
-   * selected framework directory. */
-  const char* atl_home = std::getenv("NUAH_ATL_HOME");
-  const char* atl_native = std::getenv("NUAH_ATL_NATIVE_DIR");
-  std::filesystem::path atl_native_directory;
-  if (atl_native && *atl_native) {
-    atl_native_directory = atl_native;
-  } else if (atl_home && *atl_home) {
-    atl_native_directory = std::filesystem::path(atl_home) / "natives";
-  }
-  if (!atl_native_directory.empty() &&
-      std::filesystem::is_regular_file(
-          atl_native_directory / "libandroid.so.0")) {
-    bionic_library_path = atl_native_directory.string() + ":";
-  }
   /* libroblox.so has direct NDK dependencies (libandroid.so, libvulkan.so,
    * and libmediandk.so).  They are host-side Nuah providers, not Android
-   * linker images: their glibc relocations (including IFUNC/TLS forms) are
-   * intentionally outside ATL's Android relocation parser.  libhybris has
-   * already opened them and bionic_translation's try_glibc path can reuse
-   * those handles by soname.  Do not put the host provider directory in
-   * BIONIC_LD_LIBRARY_PATH; doing so makes the linker mmap the host DSO as an
-   * Android image, cache its relocation failure, and poison System.loadLibrary.
-   * The dependency placeholder directory remains owned by HYBRIS_LD_LIBRARY_PATH
-   * for the libhybris side only. */
+   * linker images.  libhybris has already opened them.  Do not put the host
+   * provider directory in BIONIC_LD_LIBRARY_PATH; doing so makes the linker
+   * mmap the host DSO as an Android image, cache its relocation failure, and
+   * poison System.loadLibrary.  The dependency placeholder directory remains
+   * owned by HYBRIS_LD_LIBRARY_PATH for the libhybris side only. */
   /* The Nuah framework provider is a host DSO with two deliberately small
    * companion objects (libnuah_host_bridge.so and libnuah_android_registry.so).
-   * ATL's bionic linker does not apply the CMake RUNPATH when it resolves a
-   * DT_NEEDED entry, so expose the build root explicitly.  Without this the
-   * provider file is opened but its export table is never linked into the
-   * Android namespace, which looks like a missing AAssetManager symbol.
-   */
+   * The bionic linker does not apply the CMake RUNPATH when it resolves a
+   * DT_NEEDED entry, so expose the build root explicitly. */
   const auto nuah_runtime_directory = runtime_directory();
   if (std::filesystem::is_regular_file(
           nuah_runtime_directory / "libnuah_host_bridge.so"))
@@ -1988,7 +1872,7 @@ int run_nuah_jni(const NativeLaunchOptions& options,
   }
   report_bootstrap_stage("ANDROID_DLOPEN_CONSTRUCTORS");
   auto image = load_apk_library(apk, "lib/x86_64/libroblox.so");
-  // Do not invoke JNI_OnLoad here.  The same app image is opened by ATL's
+  // Do not invoke JNI_OnLoad here.  The same app image is opened by
   // System.loadLibrary from GameActivity; ART invokes JNI_OnLoad as part of
   // that call.  Calling it manually first initializes Roblox/WebRTC twice
   // (the second pass aborts on its global JavaVM guard).  The small settings
@@ -1998,9 +1882,9 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       session(nullptr, nuah_native_session_destroy);
   session.reset(nuah_native_session_create());
   if (!session) throw std::runtime_error("cannot create Nuah native session");
-  // Keep the installed libdl_bio/libc_bio pair untouched.  Redirect only
-  // Roblox's already-relocated property slot so the Java façade and native
-  // feature gates observe the same API level without a second TLS domain.
+  // Redirect only Roblox's already-relocated property slot so the Java façade
+  // and native feature gates observe the same API level without a second TLS
+  // domain.
   // The relocation is optional: some libhybris builds return a resolver
   // trampoline for bionic_dladdr until the first Java callback.  Never let
   // that diagnostic normalization crash the real bootstrap.
@@ -2981,8 +2865,8 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       std::cerr << "nuah graphics: MSAA disabled via client settings\n";
     }
   }
-  /* DummyClient is a parallel fake transport. If it connects, RCC returns
-   * 257. This flag stops that connect; it does not select DummyClient. */
+  /* Working RIVALS joins skip DummyClient connect. If it connects, RCC
+   * 257s. This does not select DummyClient; it stops that extra handshake. */
   if (settings_json && *settings_json) {
     if (settings_storage.empty()) settings_storage = settings_json;
     set_client_setting(settings_storage,
@@ -3732,7 +3616,7 @@ int run_native(const NativeLaunchOptions& options) {
                                      "nuah-data"));
   /* TMPDIR is redirected to the profile below.  Pin the resolved profile in
    * the launch options before that change so run_nuah_jni and
-   * prepare_atl_native_libraries cannot accidentally nest it under TMPDIR. */
+   * prepare_app_native_libraries cannot accidentally nest it under TMPDIR. */
   if (!launch.data_directory) launch.data_directory = runtime_data_directory;
   RuntimeDataLock runtime_data_lock(runtime_data_directory);
   /* Recover a stale AssetProvider WAL while the profile lock is held, before

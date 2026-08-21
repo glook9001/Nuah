@@ -988,45 +988,13 @@ void configure_host_provider_hooks(void* hybris) {
   for (const auto* name : providers) {
     load_host_provider(android / name);
   }
-  // ATL's generated native library is linked against its companion
-  // libandroid.so.0, whose bionic_egl* exports are part of ATL's real ABI.
-  // Register that existing provider with libhybris before ART attempts
-  // Runtime.loadLibrary; otherwise relocation stops at bionic_eglSwapBuffers
-  // and Nuah falls back to an unassociated glibc dlopen.
-  std::vector<std::filesystem::path> atl_android_candidates;
-  if (const char* app_data = ::getenv("ANDROID_APP_DATA_DIR");
-      app_data && *app_data) {
-    atl_android_candidates.emplace_back(
-        std::filesystem::path(app_data) / "lib" / "libandroid.so.0");
-  }
-  if (const char* atl_home = ::getenv("NUAH_ATL_HOME");
-      atl_home && *atl_home) {
-    atl_android_candidates.emplace_back(
-        std::filesystem::path(atl_home) / "natives" / "libandroid.so.0");
-  }
-  for (const auto& candidate : atl_android_candidates) {
-    if (!std::filesystem::is_regular_file(candidate)) continue;
-    // libandroid.so.0 and libtranslation_layer_main.so form a deliberate
-    // ATL pair: libandroid references main_thread_id, while the translation
-    // layer needs libandroid's bionic_egl* exports.  Lazy binding lets both
-    // real libraries finish loading without inventing a Nuah definition.
-    void* handle = ::dlopen(candidate.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-    if (!handle) {
-      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
-        std::fprintf(stderr, "nuah: optional ATL libandroid load failed: %s\n",
-                     ::dlerror());
-      continue;
-    }
-    host_provider_handles.push_back(handle);
-    break;
-  }
   if (!use_nuah_compat_runtime()) {
-    /* The Android linker used by ATL resolves a small set of legacy helper
-     * imports through RTLD_DEFAULT (not through libhybris's callback).  Keep
-     * this existing helper DSO visible so imports such as __sendto_chk can be
-     * resolved before the app image is entered.  It does not replace libc:
-     * ordinary libc/pthread/TLS lookups still resolve to the host/libhybris
-     * domain through resolve_host_provider_symbol(). */
+    /* The Android linker resolves a small set of legacy helper imports
+     * through RTLD_DEFAULT (not through libhybris's callback).  Keep this
+     * helper DSO visible so imports such as __sendto_chk can be resolved
+     * before the app image is entered.  It does not replace libc: ordinary
+     * libc/pthread/TLS lookups still resolve to the host/libhybris domain
+     * through resolve_host_provider_symbol(). */
     const auto linker_helpers = android / "libbionic-linker-helpers.so";
     void* helper_handle = ::dlopen(linker_helpers.c_str(),
                                    RTLD_NOW | RTLD_GLOBAL);
@@ -1552,14 +1520,12 @@ std::vector<std::string> elf_needed_libraries(
 void configure_android_library_path(
     const std::filesystem::path& app_directory) {
   const std::string app_library = (app_directory / "lib").string();
-  // Match ATL's main executable: the explicit lib directory handles
-  // System.loadLibrary("name"), while the app-root wildcard covers Android
-  // libraries extracted by app code into its private data tree.  The linker
-  // parses this list after it has already been initialized, so include the
-  // provider list that native_runtime published in BIONIC_LD_LIBRARY_PATH;
-  // merely setting that environment variable is too late for this parser.
-  // This keeps one linker/TLS provider while making Nuah's libandroid and
-  // companion DSOs visible to the later System.loadLibrary call.
+  // The explicit lib directory handles System.loadLibrary("name"), while the
+  // app-root wildcard covers Android libraries extracted by app code into
+  // its private data tree.  The linker parses this list after it has already
+  // been initialized, so include the provider list that native_runtime
+  // published in BIONIC_LD_LIBRARY_PATH; merely setting that environment
+  // variable is too late for this parser.
   std::string path = app_library;
   if (const char* configured = ::getenv("BIONIC_LD_LIBRARY_PATH");
       configured && *configured) {
@@ -1580,9 +1546,9 @@ void configure_android_library_path(
         ::dlsym(RTLD_DEFAULT, "dl_parse_library_path"));
   }
   if (!parse) {
-    // Fedora's ATL install keeps the bionic linker as a system soname. Keep
-    // that known-good linker first: replacing it with a separately rebuilt
-    // linker changes ATL's loader ABI and can corrupt ART's startup mutexes.
+    /* Fedora ships the bionic linker as libdl_bio.so.0. Nuah never puts that
+     * DSO on LD_PRELOAD; this is a last-chance lookup for the path parser
+     * and r_debug hook the Android linker expects after init. */
     static const char* candidates[] = {
         "/lib64/libdl_bio.so.0", "/usr/lib64/libdl_bio.so.0",
         "/lib/libdl_bio.so.0", "/usr/lib/libdl_bio.so.0"};
@@ -1598,15 +1564,12 @@ void configure_android_library_path(
   }
   if (!parse) {
     throw std::runtime_error(
-        "ATL bionic linker lacks dl_parse_library_path");
+        "bionic linker lacks dl_parse_library_path");
   }
 
-  // The standalone ATL linker normally receives this from its executable's
-  // bionic_compat constructor.  Nuah loads the same linker as a provider, so
-  // that constructor is not present; without the host r_debug pointer the
-  // first later dlopen reaches apkenv_find_library and writes through null.
-  // Give ATL the glibc loader's real debug object instead of emulating its
-  // link-map protocol in Nuah.
+  // Without a host r_debug pointer the first later dlopen can reach
+  // apkenv_find_library and write through null. Give the linker the glibc
+  // loader's real debug object instead of emulating its link-map protocol.
   struct r_debug** linker_debug = nullptr;
   if (linker_handle) {
     linker_debug = reinterpret_cast<struct r_debug**>(
@@ -1622,11 +1585,11 @@ void configure_android_library_path(
     if (host_debug) *linker_debug = host_debug;
   }
   if (linker_debug && !*linker_debug) {
-    throw std::runtime_error("ATL bionic linker lacks host r_debug state");
+    throw std::runtime_error("bionic linker lacks host r_debug state");
   }
   char delimiter[] = ":";
-  // dl_parse_library_path tokenizes the path in place (ATL passes a
-  // g_strdup_printf buffer), so do not hand it std::string::c_str().
+  // dl_parse_library_path tokenizes the path in place, so do not hand it
+  // std::string::c_str().
   parse(path.data(), delimiter);
 }
 

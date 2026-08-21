@@ -140,6 +140,8 @@ else
   art_library_dir=${art_library_dir:-/usr/local/lib64/art}
 fi
 
+atl_home=${NUAH_ART_HOME:-${NUAH_ATL_HOME:-/usr/local/lib64/java/dex/android_translation_layer}}
+
 hybris_library_dir=""
 if [[ -n "${NUAH_HYBRIS_LIBRARY_DIR:-}" ]]; then
   hybris_library_dir="$NUAH_HYBRIS_LIBRARY_DIR"
@@ -170,36 +172,6 @@ else
 fi
 vulkan_library_dir=${NUAH_VULKAN_LIBRARY_DIR:-}
 
-atl_library_dir=""
-if [[ -n "${NUAH_ATL_LIBRARY_DIR:-}" ]]; then
-  atl_library_dir="$NUAH_ATL_LIBRARY_DIR"
-else
-  for cand in "$repo_root/build/atl-bionic" "$repo_root/atl-bionic" \
-              "$nuah_data/atl-bionic" /usr/lib64 /lib64 /usr/lib; do
-    if [[ -r "$cand/libdl_bio.so.0" ]]; then
-      atl_library_dir="$cand"
-      break
-    fi
-  done
-  atl_library_dir=${atl_library_dir:-/usr/lib64}
-fi
-atl_native_dir=${NUAH_ATL_NATIVE_DIR:-$nuah_data/base.apk_/lib}
-atl_home=${NUAH_ATL_HOME:-}
-if [[ -z "$atl_home" && -r "$repo_root/build/atl-full/api-impl.jar" ]]; then
-  atl_home="$repo_root/build/atl-full"
-fi
-atl_framework_res=${NUAH_ATL_FRAMEWORK_RES:-}
-if [[ -z "$atl_framework_res" ]]; then
-  for cand in "$repo_root/build/atl-full/framework-res.apk" \
-              "$repo_root/build/atl-full/res/framework-res/framework-res.apk" \
-              /usr/local/lib64/java/dex/android_translation_layer/framework-res.apk; do
-    if [[ -r "$cand" ]]; then
-      atl_framework_res="$cand"
-      break
-    fi
-  done
-fi
-
 [[ -x "$nuah_binary" ]] || {
   echo "build/nuah is missing; build Nuah first" >&2
   exit 2
@@ -222,10 +194,6 @@ if [[ -n "$vulkan_library_dir" ]]; then
     exit 2
   }
 fi
-[[ -r "$atl_library_dir/libdl_bio.so.0" ]] || {
-  echo "ATL bionic linker is missing: $atl_library_dir/libdl_bio.so.0" >&2
-  exit 2
-}
 if [[ -e $lock_file ]] && lsof "$lock_file" >/dev/null 2>&1; then
   echo "Nuah already owns $lock_file; close that session before an A/B run" >&2
   exit 1
@@ -382,26 +350,18 @@ for icu_lib in "$art_library_dir/libicudata.so.77" "$art_library_dir/libicuuc.so
   fi
 done
 
-client_settings_json=()
-if (( mip_bias != 0 )); then
-  client_settings_json+=(
-    "NUAH_CLIENT_SETTINGS_JSON={\"applicationSettings\":{\"FIntRenderTextureMipBias\":\"$mip_bias\"}}"
-  )
-fi
-
 "${launch_prefix[@]}" env \
   ROBLOX_COOKIE="$cookie" \
   NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$cookie" \
   NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$cookie" \
   ${NUAH_ROBLOX_USER_ID:+NUAH_ROBLOX_USER_ID="$NUAH_ROBLOX_USER_ID"} \
-  "${client_settings_json[@]}" \
-  NUAH_ATL_NATIVE_DIR="$atl_native_dir" \
+  ${NUAH_FRM_QUALITY:+NUAH_FRM_QUALITY="$NUAH_FRM_QUALITY"} \
+  NUAH_CLIENT_SETTINGS_JSON="{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true,\"FIntRenderTextureMipBias\":\"$mip_bias\"}}" \
+  NUAH_ART_HOME="$atl_home" \
   NUAH_ATL_HOME="$atl_home" \
-  NUAH_ATL_FRAMEWORK_RES="$atl_framework_res" \
   NUAH_HYBRIS_LIBRARY="$hybris_library" \
   HYBRIS_LINKER_DIR="$hybris_linker_dir" \
-  LD_LIBRARY_PATH="$repo_root/build:$art_library_dir:$art_library_dir/natives:$hybris_library_dir:$ispc_library_dir:$atl_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" \
-  NUAH_ATL_LIBRARY_DIR="$atl_library_dir" \
+  LD_LIBRARY_PATH="$repo_root/build:$art_library_dir:$art_library_dir/natives:$hybris_library_dir:$ispc_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" \
   LD_PRELOAD="${icu_preload:+$icu_preload:}${android_preload:+$android_preload:}/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:$art_library_dir/libandroidfw.so" \
   NUAH_GRAPHICS_BACKEND=vulkan \
   INTEL_DEBUG="$intel_debug" \
