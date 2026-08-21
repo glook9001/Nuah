@@ -122,8 +122,7 @@ onGameLoaded: placeId:17625359962
 ```
 
 RakNet plus `onGameLoaded` is the success criterion, not merely that a Roblox
-window appeared. Nuah always disables the DummyClient transport; launchers do
-not pass a client-settings JSON for that.
+window appeared.
 
 If Roblox reports **error 257**, first start Sober and confirm that its current
 session is valid. Do not add protocol or unrelated client-setting overrides.
@@ -144,7 +143,7 @@ input, and caching. `NUAH_ATL_NATIVE_DIR`, `NUAH_HYBRIS_LIBRARY`,
 runtime boundary. `NUAH_ROBLOX_COOKIES` and `NUAH_ROBLOX_COOKIE_HEADER` pass
 the Sober session to Roblox. An explicit `NUAH_CLIENT_SETTINGS_JSON` still
 overrides generated scheduler/graphics keys, so keep it unset unless you are
-A/B testing a specific flag. DummyClient is forced off either way.
+A/B testing a specific flag.
 
 For a controlled input-causality A/B, set `NUAH_DROP_MOUSE_MOTION=1` for one
 run. Nuah will continue processing pointer-lock state and button/wheel events,

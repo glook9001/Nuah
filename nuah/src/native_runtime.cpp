@@ -2957,14 +2957,6 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       std::cerr << "nuah graphics: MSAA disabled via client settings\n";
     }
   }
-  /* DummyClient is a dead RbxTransport path. It produces error 257 on current
-   * joins. Always force it off; launchers must not have to pass a JSON flag. */
-  if (settings_json && *settings_json) {
-    if (settings_storage.empty()) settings_storage = settings_json;
-    set_client_setting(settings_storage,
-                       "DFFlagDebugDisableRbxTransportDummyClient", "true");
-    settings_json = settings_storage.c_str();
-  }
   const jstring settings = env->NewStringUTF(settings_json);
   const jstring settings_signature = env->NewStringUTF("");
   const jstring settings_application = env->NewStringUTF("GoogleAndroidApp");
