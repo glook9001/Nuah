@@ -197,11 +197,28 @@ extern "C" NuahWindowSession* nuah_window_session_create(
   const char* lock_surface = std::getenv("NUAH_LOCK_SURFACE_SIZE");
   session->surface_size_locked =
       lock_surface && std::strcmp(lock_surface, "0") != 0;
+  SDL_WindowFlags window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
+                                 SDL_WINDOW_HIGH_PIXEL_DENSITY;
+  /* Stay a framed floating window.  A client size that fills the output or
+   * the work area is what KDE promotes to maximize/fullscreen. */
+  const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+  SDL_Rect usable{};
+  if (display && SDL_GetDisplayUsableBounds(display, &usable) &&
+      usable.w > 0 && usable.h > 0) {
+    constexpr int kMargin = 64;
+    int fit_w = usable.w;
+    int fit_h = usable.h;
+    if (width >= usable.w || height >= usable.h) {
+      fit_w = std::max(320, usable.w - kMargin);
+      fit_h = std::max(200, usable.h - kMargin);
+    }
+    if (width > fit_w) width = fit_w;
+    if (height > fit_h) height = fit_h;
+  }
   session->locked_surface_width = width;
   session->locked_surface_height = height;
-  session->host = SDL_CreateWindow(
-      title ? title : "Nuah", width, height,
-      SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+  session->host = SDL_CreateWindow(title ? title : "Nuah", width, height,
+                                   window_flags);
   if (trace)
     std::fprintf(stderr, "nuah window: SDL_CreateWindow -> %p\n",
                  static_cast<void*>(session->host));
@@ -227,6 +244,8 @@ extern "C" NuahWindowSession* nuah_window_session_create(
   // browser that launched it.  Explicitly map and raise the game window so
   // the first frame and keyboard focus are delivered to Roblox.
   SDL_ShowWindow(session->host);
+  (void)SDL_SetWindowFullscreen(session->host, false);
+  (void)SDL_RestoreWindow(session->host);
   SDL_RaiseWindow(session->host);
   /* SDL queues the initial Wayland xdg_toplevel commit.  Synchronize it
    * before ART starts the synchronous Android surface bootstrap; otherwise

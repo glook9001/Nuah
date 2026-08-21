@@ -44,19 +44,15 @@ bool focus_loss_pending = false;
 SDL_Window* focus_loss_window = nullptr;
 Uint64 focus_loss_deadline_ns = 0;
 
-/* Pointer-constraint handoff can be longer than a normal compositor focus
- * blip on a busy Wayland session.  Keep the shipping behavior conservative,
- * but make the grace period tunable for diagnosing Roblox surface stalls. */
-Uint64 focus_loss_grace_ns() {
-  constexpr Uint64 kDefaultGraceNs = 750000000ULL;
-  const char* value = std::getenv("NUAH_FOCUS_LOSS_GRACE_MS");
-  if (!value || !*value) return kDefaultGraceNs;
-  char* end = nullptr;
-  const unsigned long long parsed = std::strtoull(value, &end, 10);
-  if (end == value || *end != '\0' || parsed > 60000ULL) {
-    return kDefaultGraceNs;
-  }
-  return static_cast<Uint64>(parsed) * 1000000ULL;
+/* Keyboard/pointer FOCUS_LOST is not an Android activity pause.  KDE and
+ * zwp_pointer_constraints emit that SDL event for seconds while the toplevel
+ * stays mapped; forwarding it as onWindowFocusChanged(false) pauses Roblox
+ * and then re-acquiring relative mouse restarts the same cycle.  Only a
+ * hidden or minimized host window is a real activity loss. */
+bool window_mapped_for_android(SDL_Window* window) {
+  if (!window) return false;
+  const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+  return (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) == 0;
 }
 
 bool mouse_capture_enabled() {
@@ -310,7 +306,7 @@ void reconcile_mouse_buttons(SDL_Window* window, unsigned long long timestamp) {
 
 void service_focus_loss() {
   if (!focus_loss_pending || !focus_loss_window) return;
-  if (SDL_GetWindowFlags(focus_loss_window) & SDL_WINDOW_INPUT_FOCUS) {
+  if (window_mapped_for_android(focus_loss_window)) {
     focus_loss_pending = false;
     focus_loss_window = nullptr;
     return;
@@ -578,34 +574,39 @@ extern "C" int nuah_input_pump(void) {
     switch (event.type) {
       case SDL_EVENT_QUIT:
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        std::fprintf(stderr, "nuah input: %s window=%u\n",
+                     event.type == SDL_EVENT_QUIT ? "SDL_EVENT_QUIT"
+                                                  : "window close requested",
+                     event.window.windowID);
         release_pressed_buttons(
             SDL_GetWindowFromID(event.window.windowID), event.common.timestamp);
         quit_requested.store(true, std::memory_order_release);
         break;
+      case SDL_EVENT_WINDOW_HIDDEN:
+      case SDL_EVENT_WINDOW_MINIMIZED: {
+        SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
+        host_window_focused = false;
+        focus_loss_pending = true;
+        focus_loss_window = window;
+        focus_loss_deadline_ns = SDL_GetTicksNS();
+        if (input_trace_enabled())
+          std::fprintf(stderr, "nuah input: host window unmapped\n");
+        break;
+      }
       case SDL_EVENT_WINDOW_FOCUS_LOST: {
         host_window_focused = false;
-        set_host_cursor_hidden(false);
-        /* Do not notify Roblox yet.  If the compositor gives the window back
-         * before the grace period expires, this was only a transient pointer
-         * or resize transition and Android would not have delivered a real
-         * Activity focus loss either. */
-        focus_loss_pending = true;
-        focus_loss_window = SDL_GetWindowFromID(event.window.windowID);
-        /* Pointer constraints can produce a transient SDL focus pair while
-         * Wayland hands the relative stream to the surface.  Keep the
-         * existing relative request alive during that pair; tearing it down
-         * here is what lets the pointer escape and also makes Roblox receive
-         * an artificial focus loss in the middle of a shot.  A real loss is
-         * handled after the grace period below. */
-        focus_loss_deadline_ns = SDL_GetTicksNS() + focus_loss_grace_ns();
-        if (input_trace_enabled()) {
-          std::fprintf(stderr,
-                       "nuah input: focus loss pending, grace=%llums\n",
-                       static_cast<unsigned long long>(
-                           focus_loss_grace_ns() / 1000000ULL));
+        SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
+        /* Keep relative-mouse and the Android-hidden cursor.  A mapped
+         * toplevel that lost keyboard focus is still the game surface. */
+        if (!window_mapped_for_android(window)) {
+          focus_loss_pending = true;
+          focus_loss_window = window;
+          focus_loss_deadline_ns = SDL_GetTicksNS();
         }
         break;
       }
+      case SDL_EVENT_WINDOW_SHOWN:
+      case SDL_EVENT_WINDOW_RESTORED:
       case SDL_EVENT_WINDOW_FOCUS_GAINED: {
         host_window_focused = true;
         /* Roblox's Android surface owns the visible cursor; the desktop
