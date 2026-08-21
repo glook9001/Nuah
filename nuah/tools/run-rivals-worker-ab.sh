@@ -382,12 +382,19 @@ for icu_lib in "$art_library_dir/libicudata.so.77" "$art_library_dir/libicuuc.so
   fi
 done
 
+client_settings_json=()
+if (( mip_bias != 0 )); then
+  client_settings_json+=(
+    "NUAH_CLIENT_SETTINGS_JSON={\"applicationSettings\":{\"FIntRenderTextureMipBias\":\"$mip_bias\"}}"
+  )
+fi
+
 "${launch_prefix[@]}" env \
   ROBLOX_COOKIE="$cookie" \
   NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$cookie" \
   NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$cookie" \
   ${NUAH_ROBLOX_USER_ID:+NUAH_ROBLOX_USER_ID="$NUAH_ROBLOX_USER_ID"} \
-  NUAH_CLIENT_SETTINGS_JSON="{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true,\"FIntRenderTextureMipBias\":\"$mip_bias\"}}" \
+  "${client_settings_json[@]}" \
   NUAH_ATL_NATIVE_DIR="$atl_native_dir" \
   NUAH_ATL_HOME="$atl_home" \
   NUAH_ATL_FRAMEWORK_RES="$atl_framework_res" \

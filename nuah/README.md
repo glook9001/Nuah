@@ -83,9 +83,6 @@ ROBLOX_COOKIE="$(sed -n 's/.*\.ROBLOSECURITY=\([^;[:space:]]*\).*/\1/p' \
   "$SOBER_DATA/cookies" | head -1)"
 export NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$ROBLOX_COOKIE"
 export NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$ROBLOX_COOKIE"
-# Required for the current RIVALS server handshake: use Roblox's real
-# transport instead of the RbxTransport DummyClient.
-export NUAH_CLIENT_SETTINGS_JSON='{"applicationSettings":{"DFFlagDebugDisableRbxTransportDummyClient":true}}'
 export NUAH_ATL_NATIVE_DIR="$HOME/.local/share/nuah/base.apk_/lib"
 export NUAH_HYBRIS_LIBRARY="$HOME/.local/share/nuah/hybris/lib/libhybris-common.so"
 export HYBRIS_LINKER_DIR="$HOME/.local/share/nuah/hybris/lib/libhybris/linker"
@@ -121,20 +118,15 @@ The launcher log should contain all of the following after startup:
 
 ```text
 Transport selection: useRbxTransportEnabled=false, selectedTransport=RakNet
-RbxTransport DummyClient is disabled by DebugDisableRbxTransportDummyClient flag.
 onGameLoaded: placeId:17625359962
 ```
 
-The first two lines confirm that the minimal client setting selected the real
-RakNet join transport rather than the DummyClient path. The last line confirms
-that RIVALS finished loading; it is the success criterion, not merely that a
-Roblox window appeared.
+RakNet plus `onGameLoaded` is the success criterion, not merely that a Roblox
+window appeared. Nuah always disables the DummyClient transport; launchers do
+not pass a client-settings JSON for that.
 
-If Roblox reports **error 257**, first start Sober, confirm that its current
-session is valid, and launch Nuah with the exact minimal
-`NUAH_CLIENT_SETTINGS_JSON` shown above. Do not add protocol or unrelated
-client-setting overrides, and do not set the retired
-`NUAH_DISABLE_RBX_TRANSPORT_DUMMY` variable.
+If Roblox reports **error 257**, first start Sober and confirm that its current
+session is valid. Do not add protocol or unrelated client-setting overrides.
 
 An `AssetDelivery403IncorrectAssetType` or `Asset type does not match requested
 type` entry can be a remote game-asset failure after `onGameLoaded`. It is not
@@ -150,12 +142,9 @@ The launch flags above are the tested play profile. `NUAH_GRAPHICS_BACKEND`,
 input, and caching. `NUAH_ATL_NATIVE_DIR`, `NUAH_HYBRIS_LIBRARY`,
 `HYBRIS_LINKER_DIR`, `LD_LIBRARY_PATH`, and `LD_PRELOAD` select the Android
 runtime boundary. `NUAH_ROBLOX_COOKIES` and `NUAH_ROBLOX_COOKIE_HEADER` pass
-the Sober session to Roblox. `NUAH_CLIENT_SETTINGS_JSON` is intentional: it
-disables `RbxTransport DummyClient`, which is required for the current RIVALS
-join path. Do not use the retired `NUAH_DISABLE_RBX_TRANSPORT_DUMMY` variable;
-it is not the same mechanism and must stay unset. Keep this JSON minimal:
-explicit client-settings JSON takes precedence over Nuah's generated Roblox
-settings, so adding unrelated keys can change the server handshake.
+the Sober session to Roblox. An explicit `NUAH_CLIENT_SETTINGS_JSON` still
+overrides generated scheduler/graphics keys, so keep it unset unless you are
+A/B testing a specific flag. DummyClient is forced off either way.
 
 For a controlled input-causality A/B, set `NUAH_DROP_MOUSE_MOTION=1` for one
 run. Nuah will continue processing pointer-lock state and button/wheel events,
@@ -496,11 +485,7 @@ the corresponding `=1` values force the desktop policy on non-turbo modes.
 These settings cannot remove stalls caused by Roblox's remote asset requests or
 the host's refresh rate.
 
-For RIVALS, the launch command above deliberately sets only
-`DFFlagDebugDisableRbxTransportDummyClient=true`; it selects the real Roblox
-transport and avoids the DummyClient path associated with error 257. Do not add
-the retired `NUAH_DISABLE_RBX_TRANSPORT_DUMMY` variable or old protocol/minor-
-version overrides. `NUAH_FRM_QUALITY=1..21` is an opt-in engine-owned
+`NUAH_FRM_QUALITY=1..21` is an opt-in engine-owned
 quality/LOD A/B control for scenes that remain CPU/GPU bound.
 
 The turbo local profile targets the host's 60-Hz compositor by default and

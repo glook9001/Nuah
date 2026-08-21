@@ -225,12 +225,6 @@ int start_services(const char* argv0) {
           (void)::setenv("NUAH_ROBLOX_COOKIE_HEADER", cookie.c_str(), 1);
         }
       }
-      if (!::getenv("NUAH_CLIENT_SETTINGS_JSON")) {
-        (void)::setenv(
-            "NUAH_CLIENT_SETTINGS_JSON",
-            "{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true}}",
-            1);
-      }
       if (uri.empty()) {
         ::execl(executable.c_str(), executable.c_str(), "native-run", "--apk",
                 apk.c_str(), "--split", split.c_str(), "--data", data.c_str(),
