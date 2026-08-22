@@ -2,7 +2,10 @@
 /build/
 /build-*/
 /.ci/
+/dist/
 *.tar.gz
+name
+sneed
 
 # Local reverse-engineering payloads and generated runtime state; these are
 # not inputs to the Android 16 CI build.

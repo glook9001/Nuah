@@ -2538,325 +2538,185 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         << "\"DFFlagDebugDisableRbxTransportDummyClient\":true}}";
     default_settings_storage = generated_settings.str();
     settings_storage = packaged_client_settings(app_data_directory);
-    if (!settings_storage.empty()) {
-      const std::string graphics_opengl = prefer_opengl ? "true" : "false";
-      const std::string graphics_vulkan = prefer_opengl ? "false" : "true";
-      const std::string graphics_disabled = prefer_opengl ? "true" : "false";
-      set_client_setting(settings_storage, "FFlagDebugGraphicsPreferOpenGL",
-                         graphics_opengl);
-      set_client_setting(settings_storage, "FFlagDebugGraphicsPreferVulkan",
-                         graphics_vulkan);
-      set_client_setting(settings_storage, "FFlagDebugGraphicsDisableVulkan",
-                         graphics_disabled);
-      set_client_setting(settings_storage, "FIntTaskSchedulerAutoThreadLimit",
-                         "\"" + std::to_string(scheduler_threads) + "\"");
+    std::string& target_settings =
+        !settings_storage.empty() ? settings_storage : default_settings_storage;
+
+    const std::string graphics_opengl = prefer_opengl ? "true" : "false";
+    const std::string graphics_vulkan = prefer_opengl ? "false" : "true";
+    const std::string graphics_disabled = prefer_opengl ? "true" : "false";
+    set_client_setting(target_settings, "FFlagDebugGraphicsPreferOpenGL",
+                       graphics_opengl);
+    set_client_setting(target_settings, "FFlagDebugGraphicsPreferVulkan",
+                       graphics_vulkan);
+    set_client_setting(target_settings, "FFlagDebugGraphicsDisableVulkan",
+                       graphics_disabled);
+    set_client_setting(target_settings, "FIntTaskSchedulerAutoThreadLimit",
+                       "\"" + std::to_string(scheduler_threads) + "\"");
+    set_client_setting(
+        target_settings, "DFIntTaskSchedulerJobInGameThreads",
+        "\"" + std::to_string(scheduler_threads) + "\"");
+    set_client_setting(
+        target_settings, "FIntTaskSchedulerAsyncTasksMinimumThreadCount",
+        "\"1\"");
+    set_client_setting(target_settings, "FIntTaskSchedulerThreadMin",
+                       "\"0\"");
+    set_client_setting(target_settings, "DFIntTaskSchedulerTargetFps",
+                       "\"" + std::to_string(target_fps) + "\"");
+    if (render_texture_budget_ms != 0) {
       set_client_setting(
-          settings_storage, "DFIntTaskSchedulerJobInGameThreads",
-          "\"" + std::to_string(scheduler_threads) + "\"");
+          target_settings, "FIntRenderTextureProcessingBudgetMilliseconds",
+          "\"" + std::to_string(render_texture_budget_ms) + "\"");
+    }
+    if (asset_provider_threads != 0) {
+      const std::string worker_count =
+          "\"" + std::to_string(asset_provider_threads) + "\"";
       set_client_setting(
-          settings_storage, "FIntTaskSchedulerAsyncTasksMinimumThreadCount",
-          "\"1\"");
-      set_client_setting(settings_storage, "FIntTaskSchedulerThreadMin",
+          target_settings, "DFIntAssetProviderAssetCacheReadThreadCount",
+          worker_count);
+      set_client_setting(
+          target_settings, "DFIntAssetProviderCallbackExecutorThreadCount",
+          worker_count);
+    }
+    set_client_setting(
+        target_settings,
+        "DFIntAssetProviderWorkflowExecutorSleepMicroSeconds",
+        "\"" + std::to_string(asset_workflow_sleep_us) + "\"");
+    if (disk_cache && *disk_cache) {
+      set_client_setting(target_settings, "DFFlagAlwaysSkipDiskCache",
+                         enable_disk_asset_cache ? "false" : "true");
+    }
+    if (disable_slow_rendering)
+      set_client_setting(target_settings, "FFlagSlowDownRendering", "false");
+    if (prioritize_render_over_assets) {
+      set_client_setting(
+          target_settings,
+          "FFlagAssetProviderDisablePrioAwareStdWorkerThreadTaskFactory",
+          "false");
+      set_client_setting(
+          target_settings,
+          "FFlagAssetProviderDisablePriorityAwareDeferredWritesTaskFactory",
+          "false");
+    }
+    if (allow_async_transcode)
+      set_client_setting(target_settings,
+                         "FFlagSimRuntimeContentTranscodeBlockingCall",
+                         "false");
+    if (disable_texture_pack_generator) {
+      set_client_setting(target_settings,
+                         "FFlagEnableTexturePackGeneratorOnClient2",
+                         "false");
+      set_client_setting(target_settings, "FFlagTexturePackGeneratorUseRaw",
+                         "false");
+      set_client_setting(target_settings,
+                         "DFFlagDisableRccTexturePackGenerator", "true");
+    }
+    if (disable_msaa || turbo_mode) {
+      set_client_setting(target_settings, "DebugForceMSAASamples", "\"0\"");
+      set_client_setting(target_settings,
+                         "DebugFRMOptionalMSAALevelOverride", "\"0\"");
+    }
+    if (frm_quality != 0)
+      set_client_setting(
+          target_settings, "DFIntDebugFRMQualityLevelOverride",
+          "\"" + std::to_string(frm_quality) + "\"");
+    if (turbo_mode) {
+      set_client_setting(target_settings, "FFlagDisablePostFx", "true");
+      set_client_setting(target_settings, "FFlagGlobalWind", "false");
+      set_client_setting(target_settings, "FFlagEnableGlobalWind", "false");
+      set_client_setting(target_settings, "FIntShadowMapBias", "\"0\"");
+    }
+    if (no_background_http_retry)
+      set_client_setting(
+          target_settings, "DFStringHttpRetryOverridesDsv2",
+          std::string("\"") + kDesktopHttpRetryOverrides + "\"");
+    if (no_background_http_retry)
+      set_client_setting(target_settings,
+                         "FStringHttpRetryOverridesDsv2Static",
+                         std::string("\"") + kDesktopHttpRetryOverrides +
+                             "\"");
+    if (no_background_http_retry)
+      set_client_setting(
+          target_settings, "DFStringHttpRetryOverridesDsv2_PlaceFilter",
+          std::string("\"") + kDesktopHttpRetryOverrides + "\"");
+    if (no_background_http_retry)
+      set_client_setting(
+          target_settings,
+          "FStringHttpRetryOverridesDsv2Static_PlaceFilter",
+          std::string("\"") + kDesktopHttpRetryOverrides + "\"");
+    if (no_background_http_retry)
+      set_client_setting(target_settings, "DFIntHttpRbxApiMaxRetryCount",
                          "\"0\"");
-      set_client_setting(settings_storage, "DFIntTaskSchedulerTargetFps",
-                         "\"" + std::to_string(target_fps) + "\"");
-      if (render_texture_budget_ms != 0) {
-        set_client_setting(
-            settings_storage, "FIntRenderTextureProcessingBudgetMilliseconds",
-            "\"" + std::to_string(render_texture_budget_ms) + "\"");
-      }
-      if (asset_provider_threads != 0) {
-        const std::string worker_count =
-            "\"" + std::to_string(asset_provider_threads) + "\"";
-        set_client_setting(
-            settings_storage, "DFIntAssetProviderAssetCacheReadThreadCount",
-            worker_count);
-        set_client_setting(
-            settings_storage, "DFIntAssetProviderCallbackExecutorThreadCount",
-            worker_count);
-      }
+    if (http_request_timeout_ms != 0) {
+      const std::string timeout =
+          "\"" + std::to_string(http_request_timeout_ms) + "\"";
+      set_client_setting(target_settings,
+                         "DFIntHttpServiceRequestTimeoutMs", timeout);
+      set_client_setting(target_settings,
+                         "DFIntHttpResponseDefaultTimeoutMillis", timeout);
+    }
+    if (disable_profile_configuration) {
+      set_client_setting(target_settings,
+                         "FFlagPlayersGetProfileConfigurationEnabled",
+                         "false");
       set_client_setting(
-          settings_storage,
-          "DFIntAssetProviderWorkflowExecutorSleepMicroSeconds",
-          "\"" + std::to_string(asset_workflow_sleep_us) + "\"");
-      if (disk_cache && *disk_cache) {
-        set_client_setting(settings_storage, "DFFlagAlwaysSkipDiskCache",
-                           enable_disk_asset_cache ? "false" : "true");
-      }
-      if (disable_slow_rendering)
-        set_client_setting(settings_storage, "FFlagSlowDownRendering", "false");
-      if (prioritize_render_over_assets) {
-        set_client_setting(
-            settings_storage,
-            "FFlagAssetProviderDisablePrioAwareStdWorkerThreadTaskFactory",
-            "false");
-        set_client_setting(
-            settings_storage,
-            "FFlagAssetProviderDisablePriorityAwareDeferredWritesTaskFactory",
-            "false");
-      }
-      if (allow_async_transcode)
-        set_client_setting(settings_storage,
-                           "FFlagSimRuntimeContentTranscodeBlockingCall",
-                           "false");
-      if (disable_texture_pack_generator) {
-        set_client_setting(settings_storage,
-                           "FFlagEnableTexturePackGeneratorOnClient2",
-                           "false");
-        set_client_setting(settings_storage, "FFlagTexturePackGeneratorUseRaw",
-                           "false");
-        set_client_setting(settings_storage,
-                           "DFFlagDisableRccTexturePackGenerator", "true");
-      }
-      if (disable_msaa) {
-        set_client_setting(settings_storage, "DebugForceMSAASamples", "\"0\"");
-        set_client_setting(settings_storage,
-                           "DebugFRMOptionalMSAALevelOverride", "\"0\"");
-      }
-      if (frm_quality != 0)
-        set_client_setting(
-            settings_storage, "DFIntDebugFRMQualityLevelOverride",
-            "\"" + std::to_string(frm_quality) + "\"");
-      if (no_background_http_retry)
-        set_client_setting(
-            settings_storage, "DFStringHttpRetryOverridesDsv2",
-            std::string("\"") + kDesktopHttpRetryOverrides + "\"");
-      if (no_background_http_retry)
-        set_client_setting(settings_storage,
-                           "FStringHttpRetryOverridesDsv2Static",
-                           std::string("\"") + kDesktopHttpRetryOverrides +
-                               "\"");
-      if (no_background_http_retry)
-        set_client_setting(
-            settings_storage, "DFStringHttpRetryOverridesDsv2_PlaceFilter",
-            std::string("\"") + kDesktopHttpRetryOverrides + "\"");
-      if (no_background_http_retry)
-        set_client_setting(
-            settings_storage,
-            "FStringHttpRetryOverridesDsv2Static_PlaceFilter",
-            std::string("\"") + kDesktopHttpRetryOverrides + "\"");
-      if (no_background_http_retry)
-        set_client_setting(settings_storage, "DFIntHttpRbxApiMaxRetryCount",
-                           "\"0\"");
-      if (http_request_timeout_ms != 0) {
-        const std::string timeout =
-            "\"" + std::to_string(http_request_timeout_ms) + "\"";
-        set_client_setting(settings_storage,
-                           "DFIntHttpServiceRequestTimeoutMs", timeout);
-        set_client_setting(settings_storage,
-                           "DFIntHttpResponseDefaultTimeoutMillis", timeout);
-      }
-      if (disable_profile_configuration) {
-        set_client_setting(settings_storage,
-                           "FFlagPlayersGetProfileConfigurationEnabled",
-                           "false");
-        set_client_setting(
-            settings_storage,
-            "FFlagPlayersGetProfileConfigurationFromUserIdEnabled", "false");
-        set_client_setting(settings_storage,
-                           "DFFlagPopulateUserInformationForPlayers", "false");
-      }
-      set_client_setting(settings_storage,
-                         "DFFlagDebugDisableRbxTransportDummyClient", "true");
-      settings_json = settings_storage.c_str();
-      if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
-          trace && *trace) {
-        std::cerr << "nuah graphics: using packaged applicationSettings "
-                     "(host overrides applied) backend="
-                  << (prefer_opengl ? "opengl" : "vulkan") << '\n';
-        if (render_texture_budget_ms != 0 || asset_provider_threads != 0) {
-          std::cerr << "nuah graphics: scheduler_threads="
-                    << scheduler_threads << " texture_budget_ms="
-                    << render_texture_budget_ms
-                    << " asset_provider_threads=" << asset_provider_threads
-                    << '\n';
-        }
-        if (disk_cache && *disk_cache)
-          std::cerr << "nuah graphics: disk_asset_cache="
-                    << (enable_disk_asset_cache ? "enabled" : "disabled")
-                    << '\n';
-        if (disable_slow_rendering)
-          std::cerr << "nuah graphics: slow_rendering=disabled ("
-                    << (fast_render_explicit ? "A/B" : "turbo default")
-                    << ")\n";
-        if (prioritize_render_over_assets)
-          std::cerr << "nuah graphics: asset_workers=priority-aware ("
-                    << (asset_background_explicit ? "A/B" : "turbo default")
-                    << ")\n";
-        std::cerr << "nuah graphics: asset_workflow_sleep_us="
-                  << asset_workflow_sleep_us << '\n';
-        if (allow_async_transcode)
-          std::cerr << "nuah graphics: blocking texture transcode=disabled ("
-                    << (async_transcode_explicit ? "A/B" : "low-end default")
-                    << ")\n";
-        if (disable_texture_pack_generator)
-          std::cerr << "nuah graphics: TexturePackGenerator=disabled (A/B)\n";
-        if (frm_quality != 0)
-          std::cerr << "nuah graphics: FRM quality=" << frm_quality << ' '
-                    << (frm_quality_explicit ? "(A/B)" : "(turbo default)")
-                    << "\n";
-        if (no_background_http_retry)
-          std::cerr << "nuah network: profile HTTP 429 retries disabled ("
-                    << (no_background_http_retry_env && *no_background_http_retry_env
-                            ? "A/B"
-                            : "desktop default")
-                    << ")\n";
-        if (http_request_timeout_ms != 0)
-          std::cerr << "nuah network: HTTP request timeout="
-                    << http_request_timeout_ms << " ms (A/B)\n";
-        if (disable_profile_configuration)
-          std::cerr << "nuah network: player profile configuration disabled ("
-                    << (disable_profile_configuration_explicit ? "A/B"
-                                                                : "turbo default")
-                    << ")\n";
-      }
-    } else {
-      if (render_texture_budget_ms != 0) {
-        set_client_setting(
-            default_settings_storage,
-            "FIntRenderTextureProcessingBudgetMilliseconds",
-            "\"" + std::to_string(render_texture_budget_ms) + "\"");
-      }
-      if (asset_provider_threads != 0) {
-        const std::string worker_count =
-            "\"" + std::to_string(asset_provider_threads) + "\"";
-        set_client_setting(default_settings_storage,
-                           "DFIntAssetProviderAssetCacheReadThreadCount",
-                           worker_count);
-        set_client_setting(
-            default_settings_storage,
-            "DFIntAssetProviderCallbackExecutorThreadCount", worker_count);
-      }
-      set_client_setting(
-          default_settings_storage,
-          "DFIntAssetProviderWorkflowExecutorSleepMicroSeconds",
-          "\"" + std::to_string(asset_workflow_sleep_us) + "\"");
-      if (disk_cache && *disk_cache) {
-        set_client_setting(default_settings_storage,
-                           "DFFlagAlwaysSkipDiskCache",
-                           enable_disk_asset_cache ? "false" : "true");
-      }
-      if (disable_slow_rendering)
-        set_client_setting(default_settings_storage, "FFlagSlowDownRendering",
-                           "false");
-      if (prioritize_render_over_assets) {
-        set_client_setting(
-            default_settings_storage,
-            "FFlagAssetProviderDisablePrioAwareStdWorkerThreadTaskFactory",
-            "false");
-        set_client_setting(
-            default_settings_storage,
-            "FFlagAssetProviderDisablePriorityAwareDeferredWritesTaskFactory",
-            "false");
-      }
-      if (allow_async_transcode)
-        set_client_setting(
-            default_settings_storage,
-            "FFlagSimRuntimeContentTranscodeBlockingCall", "false");
-      if (disable_texture_pack_generator) {
-        set_client_setting(default_settings_storage,
-                           "FFlagEnableTexturePackGeneratorOnClient2",
-                           "false");
-        set_client_setting(default_settings_storage,
-                           "FFlagTexturePackGeneratorUseRaw", "false");
-        set_client_setting(default_settings_storage,
-                           "DFFlagDisableRccTexturePackGenerator", "true");
-      }
-      if (disable_msaa) {
-        set_client_setting(default_settings_storage, "DebugForceMSAASamples",
-                           "\"0\"");
-        set_client_setting(default_settings_storage,
-                           "DebugFRMOptionalMSAALevelOverride", "\"0\"");
-      }
-      if (frm_quality != 0)
-        set_client_setting(
-            default_settings_storage, "DFIntDebugFRMQualityLevelOverride",
-            "\"" + std::to_string(frm_quality) + "\"");
-      if (no_background_http_retry)
-        set_client_setting(
-            default_settings_storage, "DFStringHttpRetryOverridesDsv2",
-            std::string("\"") + kDesktopHttpRetryOverrides + "\"");
-      if (no_background_http_retry)
-        set_client_setting(default_settings_storage,
-                           "FStringHttpRetryOverridesDsv2Static",
-                           std::string("\"") + kDesktopHttpRetryOverrides +
-                               "\"");
-      if (no_background_http_retry)
-        set_client_setting(
-            default_settings_storage,
-            "DFStringHttpRetryOverridesDsv2_PlaceFilter",
-            std::string("\"") + kDesktopHttpRetryOverrides + "\"");
-      if (no_background_http_retry)
-        set_client_setting(
-            default_settings_storage,
-            "FStringHttpRetryOverridesDsv2Static_PlaceFilter",
-            std::string("\"") + kDesktopHttpRetryOverrides + "\"");
-      if (no_background_http_retry)
-        set_client_setting(default_settings_storage,
-                           "DFIntHttpRbxApiMaxRetryCount", "\"0\"");
-      if (http_request_timeout_ms != 0) {
-        const std::string timeout =
-            "\"" + std::to_string(http_request_timeout_ms) + "\"";
-        set_client_setting(default_settings_storage,
-                           "DFIntHttpServiceRequestTimeoutMs", timeout);
-        set_client_setting(default_settings_storage,
-                           "DFIntHttpResponseDefaultTimeoutMillis", timeout);
-      }
-      if (disable_profile_configuration) {
-        set_client_setting(default_settings_storage,
-                           "FFlagPlayersGetProfileConfigurationEnabled",
-                           "false");
-        set_client_setting(
-            default_settings_storage,
-            "FFlagPlayersGetProfileConfigurationFromUserIdEnabled", "false");
-        set_client_setting(default_settings_storage,
-                           "DFFlagPopulateUserInformationForPlayers", "false");
-      }
-      settings_json = default_settings_storage.c_str();
-        if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
-            trace && *trace) {
-        std::cerr << "nuah graphics: default backend="
-                  << (prefer_opengl ? "opengl" : "vulkan") << '\n';
+          target_settings,
+          "FFlagPlayersGetProfileConfigurationFromUserIdEnabled", "false");
+      set_client_setting(target_settings,
+                         "DFFlagPopulateUserInformationForPlayers", "false");
+    }
+    set_client_setting(target_settings,
+                       "DFFlagDebugDisableRbxTransportDummyClient", "true");
+    settings_json = target_settings.c_str();
+    if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+        trace && *trace) {
+      std::cerr << "nuah graphics: using applicationSettings "
+                   "(host overrides applied) backend="
+                << (prefer_opengl ? "opengl" : "vulkan") << '\n';
+      if (render_texture_budget_ms != 0 || asset_provider_threads != 0) {
         std::cerr << "nuah graphics: scheduler_threads="
                   << scheduler_threads << " texture_budget_ms="
                   << render_texture_budget_ms
                   << " asset_provider_threads=" << asset_provider_threads
                   << '\n';
-        if (disable_slow_rendering)
-          std::cerr << "nuah graphics: slow_rendering=disabled ("
-                    << (fast_render_explicit ? "A/B" : "turbo default")
-                    << ")\n";
-        if (prioritize_render_over_assets)
-          std::cerr << "nuah graphics: asset_workers=priority-aware ("
-                    << (asset_background_explicit ? "A/B" : "turbo default")
-                    << ")\n";
-        std::cerr << "nuah graphics: asset_workflow_sleep_us="
-                  << asset_workflow_sleep_us << '\n';
-        if (allow_async_transcode)
-          std::cerr << "nuah graphics: blocking texture transcode=disabled ("
-                    << (async_transcode_explicit ? "A/B" : "low-end default")
-                    << ")\n";
-        if (disable_texture_pack_generator)
-          std::cerr << "nuah graphics: TexturePackGenerator=disabled (A/B)\n";
-        if (frm_quality != 0)
-          std::cerr << "nuah graphics: FRM quality=" << frm_quality << ' '
-                    << (frm_quality_explicit ? "(A/B)" : "(turbo default)")
-                    << "\n";
-        if (no_background_http_retry)
-          std::cerr << "nuah network: profile HTTP 429 retries disabled ("
-                    << (no_background_http_retry_env && *no_background_http_retry_env
-                            ? "A/B"
-                            : "desktop default")
-                    << ")\n";
-        if (http_request_timeout_ms != 0)
-          std::cerr << "nuah network: HTTP request timeout="
-                    << http_request_timeout_ms << " ms (A/B)\n";
-        if (disable_profile_configuration)
-          std::cerr << "nuah network: player profile configuration disabled ("
-                    << (disable_profile_configuration_explicit ? "A/B"
-                                                                : "turbo default")
-                    << ")\n";
       }
+      if (disk_cache && *disk_cache)
+        std::cerr << "nuah graphics: disk_asset_cache="
+                  << (enable_disk_asset_cache ? "enabled" : "disabled")
+                  << '\n';
+      if (disable_slow_rendering)
+        std::cerr << "nuah graphics: slow_rendering=disabled ("
+                  << (fast_render_explicit ? "A/B" : "turbo default")
+                  << ")\n";
+      if (prioritize_render_over_assets)
+        std::cerr << "nuah graphics: asset_workers=priority-aware ("
+                  << (asset_background_explicit ? "A/B" : "turbo default")
+                  << ")\n";
+      std::cerr << "nuah graphics: asset_workflow_sleep_us="
+                << asset_workflow_sleep_us << '\n';
+      if (allow_async_transcode)
+        std::cerr << "nuah graphics: blocking texture transcode=disabled ("
+                  << (async_transcode_explicit ? "A/B" : "low-end default")
+                  << ")\n";
+      if (disable_texture_pack_generator)
+        std::cerr << "nuah graphics: TexturePackGenerator=disabled (A/B)\n";
+      if (frm_quality != 0)
+        std::cerr << "nuah graphics: FRM quality=" << frm_quality << ' '
+                  << (frm_quality_explicit ? "(A/B)" : "(turbo default)")
+                  << "\n";
+      if (no_background_http_retry)
+        std::cerr << "nuah network: profile HTTP 429 retries disabled ("
+                  << (no_background_http_retry_env && *no_background_http_retry_env
+                          ? "A/B"
+                          : "desktop default")
+                  << ")\n";
+      if (http_request_timeout_ms != 0)
+        std::cerr << "nuah network: HTTP request timeout="
+                  << http_request_timeout_ms << " ms (A/B)\n";
+      if (disable_profile_configuration)
+        std::cerr << "nuah network: player profile configuration disabled ("
+                  << (disable_profile_configuration_explicit ? "A/B"
+                                                              : "turbo default")
+                  << ")\n";
     }
   }
   if (disable_msaa) {
@@ -3424,6 +3284,10 @@ int run_nuah_jni_isolated_impl(const NativeLaunchOptions& options,
      * locked databases survived later launches. */
     if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || ::getppid() != parent_pid)
       _exit(70);
+    /* Minimize kernel timer slack to 50 microseconds for high-precision frame pacing & input */
+#ifdef PR_SET_TIMERSLACK
+    (void)::prctl(PR_SET_TIMERSLACK, 50000UL, 0, 0, 0);
+#endif
 #endif
     if (!::getenv("NUAH_DISABLE_CRASH_HANDLER")) {
       nuah_bootstrap_diagnostics_install_signal_handler();

@@ -23,12 +23,6 @@
 #include <unordered_set>
 #include <vector>
 
-#if defined(NUAH_HAVE_ISPC_ASSET)
-extern "C" void nuah_ispc_upload_fingerprint(const uint8_t* bytes,
-                                               int32_t length,
-                                               uint64_t* result);
-#endif
-
 namespace {
 // vulkan_android.h requires Android NDK headers. This is the exact public ABI
 // layout of VkAndroidSurfaceCreateInfoKHR, expressed using host-visible types.
@@ -200,15 +194,32 @@ bool frame_work_trace_enabled() {
   return value;
 }
 
-#if defined(NUAH_HAVE_ISPC_ASSET)
-bool ispc_upload_fingerprint_enabled() {
+bool upload_fingerprint_enabled() {
   static const bool value = [] {
-    const char* raw = std::getenv("NUAH_ISPC_UPLOAD_FINGERPRINT");
+    const char* raw = std::getenv("NUAH_UPLOAD_FINGERPRINT");
+    if (!raw || !*raw) raw = std::getenv("NUAH_ISPC_UPLOAD_FINGERPRINT");
     return raw && *raw && std::strcmp(raw, "0") != 0;
   }();
   return value;
 }
-#endif
+
+void gcc_upload_fingerprint(const uint8_t* bytes, int32_t length,
+                            uint64_t* result) {
+  uint32_t first = 0x9e3779b1u;
+  uint32_t second = 0x85ebca77u;
+  for (int32_t index = 0; index < length; ++index) {
+    const uint32_t position = static_cast<uint32_t>(index + 1);
+    const uint32_t value = bytes[static_cast<uint32_t>(index)];
+    uint32_t left = value + 0x9e3779b1u * position;
+    uint32_t right = value + 0x85ebca77u * position;
+    left ^= left >> 15;
+    right ^= right >> 13;
+    first += left * 0x27d4eb2du;
+    second += right * 0x165667b1u;
+  }
+  result[0] = first;
+  result[1] = second;
+}
 
 /* Opt-in mip residency clamp for the Intel path. This is deliberately a
  * sampler policy, not a fake format-capability report: Roblox keeps owning
@@ -322,11 +333,27 @@ struct DescriptorBindState {
   std::unordered_map<uintptr_t, DescriptorBindSnapshot> last_bind;
 };
 
+struct DescriptorPoolLayoutKey {
+  VkDescriptorPool pool = VK_NULL_HANDLE;
+  VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+
+  bool operator==(const DescriptorPoolLayoutKey& other) const noexcept {
+    return pool == other.pool && layout == other.layout;
+  }
+};
+
+struct DescriptorPoolLayoutHash {
+  std::size_t operator()(const DescriptorPoolLayoutKey& key) const noexcept {
+    const auto p = reinterpret_cast<uintptr_t>(key.pool);
+    const auto l = reinterpret_cast<uintptr_t>(key.layout);
+    return p ^ (l + 0x9e3779b97f4a7c15ULL + (p << 6) + (p >> 2));
+  }
+};
+
 struct DescriptorAllocCache {
   std::mutex mutex;
-  std::unordered_map<
-      VkDescriptorPool,
-      std::unordered_map<VkDescriptorSetLayout, std::vector<VkDescriptorSet>>>
+  std::unordered_map<DescriptorPoolLayoutKey, std::vector<VkDescriptorSet>,
+                     DescriptorPoolLayoutHash>
       sets;
 };
 
@@ -346,18 +373,10 @@ bool take_cached_descriptor_set(VkDescriptorPool pool,
                                 VkDescriptorSet* output) {
   DescriptorAllocCache& cache = descriptor_alloc_cache();
   std::scoped_lock lock(cache.mutex);
-  const auto pool_iterator = cache.sets.find(pool);
-  if (pool_iterator == cache.sets.end()) return false;
-  const auto layout_iterator = pool_iterator->second.find(layout);
-  if (layout_iterator == pool_iterator->second.end() ||
-      layout_iterator->second.empty())
-    return false;
-  *output = layout_iterator->second.back();
-  layout_iterator->second.pop_back();
-  if (layout_iterator->second.empty()) {
-    pool_iterator->second.erase(layout_iterator);
-    if (pool_iterator->second.empty()) cache.sets.erase(pool_iterator);
-  }
+  const auto it = cache.sets.find({pool, layout});
+  if (it == cache.sets.end() || it->second.empty()) return false;
+  *output = it->second.back();
+  it->second.pop_back();
   return true;
 }
 
@@ -368,7 +387,7 @@ void restore_cached_descriptor_sets(
   DescriptorAllocCache& cache = descriptor_alloc_cache();
   std::scoped_lock lock(cache.mutex);
   for (const auto& [layout, descriptor_set] : sets)
-    cache.sets[pool][layout].push_back(descriptor_set);
+    cache.sets[{pool, layout}].push_back(descriptor_set);
 }
 
 std::vector<VkDescriptorSet> retain_batched_descriptor_sets(
@@ -380,7 +399,7 @@ std::vector<VkDescriptorSet> retain_batched_descriptor_sets(
   DescriptorAllocCache& cache = descriptor_alloc_cache();
   std::scoped_lock lock(cache.mutex);
   for (const auto& [layout, descriptor_set] : sets) {
-    auto& retained = cache.sets[pool][layout];
+    auto& retained = cache.sets[{pool, layout}];
     if (retained.size() < kPerLayoutLimit)
       retained.push_back(descriptor_set);
     else
@@ -392,7 +411,13 @@ std::vector<VkDescriptorSet> retain_batched_descriptor_sets(
 void clear_cached_descriptor_pool(VkDescriptorPool pool) {
   DescriptorAllocCache& cache = descriptor_alloc_cache();
   std::scoped_lock lock(cache.mutex);
-  cache.sets.erase(pool);
+  for (auto it = cache.sets.begin(); it != cache.sets.end();) {
+    if (it->first.pool == pool) {
+      it = cache.sets.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void clear_all_cached_descriptor_sets() {
@@ -690,7 +715,6 @@ struct UploadAggregate {
   uint64_t suppressed_bytes = 0;
   uint64_t fingerprint_calls = 0;
   uint64_t fingerprint_ns = 0;
-  uint64_t ispc_fingerprint_calls = 0;
 };
 
 struct PendingFrameWork {
@@ -1062,16 +1086,12 @@ void forget_tracked_image(VkImage image) {
 }
 
 uint64_t hash_upload_bytes(const std::byte* bytes, uint64_t size) {
-#if defined(NUAH_HAVE_ISPC_ASSET)
-  if (ispc_upload_fingerprint_enabled() && size <= 0x7fff'ffffULL) {
+  if (upload_fingerprint_enabled() && size <= 0x7fff'ffffULL) {
     std::array<uint64_t, 2> fingerprint{};
-    nuah_ispc_upload_fingerprint(reinterpret_cast<const uint8_t*>(bytes),
-                                 static_cast<int32_t>(size), fingerprint.data());
-    // Fold two independently mixed lanes into the existing 64-bit trace key.
-    // Upload suppression remains opt-in and is never enabled by this helper.
+    gcc_upload_fingerprint(reinterpret_cast<const uint8_t*>(bytes),
+                           static_cast<int32_t>(size), fingerprint.data());
     return fingerprint[0] ^ ((fingerprint[1] << 17) | (fingerprint[1] >> 47));
   }
-#endif
   uint64_t hash = 1469598103934665603ULL;
   for (uint64_t index = 0; index < size; ++index) {
     hash ^= static_cast<uint8_t>(bytes[index]);
@@ -1102,9 +1122,6 @@ uint64_t source_hash(EngineTrace& trace, VkBuffer buffer,
   const uint64_t result = hash_upload_bytes(memory_it->second.base + relative, bytes);
   ++trace.uploads.fingerprint_calls;
   trace.uploads.fingerprint_ns += monotonic_ns() - started_ns;
-#if defined(NUAH_HAVE_ISPC_ASSET)
-  if (ispc_upload_fingerprint_enabled()) ++trace.uploads.ispc_fingerprint_calls;
-#endif
   return result;
 }
 
@@ -1244,7 +1261,7 @@ void record_engine_event(EngineEvent event, uint64_t elapsed_ns,
   }
   if (upload_report.regions) {
     std::fprintf(stderr,
-                 "nuah texture-upload: regions=%llu estimated_mib=%llu repeated_regions=%llu repeated_mib=%llu hashed_regions=%llu identical_regions=%llu identical_mib=%llu suppressed_regions=%llu suppressed_mib=%llu fingerprint_calls=%llu fingerprint_us=%llu ispc_fingerprint_calls=%llu\n",
+                 "nuah texture-upload: regions=%llu estimated_mib=%llu repeated_regions=%llu repeated_mib=%llu hashed_regions=%llu identical_regions=%llu identical_mib=%llu suppressed_regions=%llu suppressed_mib=%llu fingerprint_calls=%llu fingerprint_us=%llu\n",
                  static_cast<unsigned long long>(upload_report.regions),
                  static_cast<unsigned long long>(upload_report.bytes /
                                                  (1024ULL * 1024ULL)),
@@ -1259,8 +1276,7 @@ void record_engine_event(EngineEvent event, uint64_t elapsed_ns,
                  static_cast<unsigned long long>(upload_report.suppressed_bytes /
                                                  (1024ULL * 1024ULL)),
                  static_cast<unsigned long long>(upload_report.fingerprint_calls),
-                 static_cast<unsigned long long>(upload_report.fingerprint_ns / 1000ULL),
-                 static_cast<unsigned long long>(upload_report.ispc_fingerprint_calls));
+                 static_cast<unsigned long long>(upload_report.fingerprint_ns / 1000ULL));
   }
 }
 

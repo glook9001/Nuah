@@ -305,23 +305,89 @@ static void pthread_bridge_wait_end(uint64_t started, int result)
 	}
 }
 
+#define PTHREAD_SLOT_SIZE 64
+#define PTHREAD_CHUNK_SIZE (64 * 1024)
+#define PTHREAD_HEADER_SIZE 64
+#define PTHREAD_SLOTS_PER_CHUNK ((PTHREAD_CHUNK_SIZE - PTHREAD_HEADER_SIZE) / PTHREAD_SLOT_SIZE)
+
+struct pthread_slot_node {
+	struct pthread_slot_node *next;
+};
+
+struct pthread_chunk_header {
+	struct pthread_chunk_header *next;
+	uint32_t allocated_slots;
+	char padding[PTHREAD_HEADER_SIZE - sizeof(void *) - sizeof(uint32_t)];
+};
+
+static pthread_mutex_t pthread_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct pthread_chunk_header *pthread_pool_chunks = NULL;
+static struct pthread_slot_node *pthread_pool_freelist = NULL;
+
 static void *pthread_bridge_mmap(size_t size)
 {
-	void *memory = mmap(NULL, size, PROT_READ | PROT_WRITE,
-	                    MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-	pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_calls);
-	if (memory == MAP_FAILED)
-		pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_failures);
-	return memory;
+	if (__builtin_expect(size > PTHREAD_SLOT_SIZE, 0)) {
+		void *memory = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		                    MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+		pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_calls);
+		if (memory == MAP_FAILED)
+			pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_failures);
+		return memory;
+	}
+
+	pthread_mutex_lock(&pthread_pool_lock);
+	if (pthread_pool_freelist != NULL) {
+		struct pthread_slot_node *slot = pthread_pool_freelist;
+		pthread_pool_freelist = slot->next;
+		pthread_mutex_unlock(&pthread_pool_lock);
+		memset(slot, 0, size);
+		return slot;
+	}
+
+	if (pthread_pool_chunks == NULL ||
+	    pthread_pool_chunks->allocated_slots >= PTHREAD_SLOTS_PER_CHUNK) {
+		void *chunk_mem = mmap(NULL, PTHREAD_CHUNK_SIZE,
+		                       PROT_READ | PROT_WRITE,
+		                       MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+		if (chunk_mem == MAP_FAILED) {
+			pthread_mutex_unlock(&pthread_pool_lock);
+			pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_failures);
+			return MAP_FAILED;
+		}
+		pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_calls);
+		struct pthread_chunk_header *new_chunk =
+			(struct pthread_chunk_header *)chunk_mem;
+		new_chunk->allocated_slots = 0;
+		new_chunk->next = pthread_pool_chunks;
+		pthread_pool_chunks = new_chunk;
+	}
+
+	void *slot = (char *)pthread_pool_chunks + PTHREAD_HEADER_SIZE +
+	             (pthread_pool_chunks->allocated_slots * PTHREAD_SLOT_SIZE);
+	pthread_pool_chunks->allocated_slots++;
+	pthread_mutex_unlock(&pthread_pool_lock);
+	memset(slot, 0, size);
+	return slot;
 }
 
 static int pthread_bridge_munmap(void *memory, size_t size)
 {
-	const int result = munmap(memory, size);
-	pthread_bridge_metric_inc(&pthread_bridge_metrics.munmap_calls);
-	if (result != 0)
-		pthread_bridge_metric_inc(&pthread_bridge_metrics.munmap_failures);
-	return result;
+	if (memory == NULL || memory == MAP_FAILED)
+		return 0;
+	if (__builtin_expect(size > PTHREAD_SLOT_SIZE, 0)) {
+		const int result = munmap(memory, size);
+		pthread_bridge_metric_inc(&pthread_bridge_metrics.munmap_calls);
+		if (result != 0)
+			pthread_bridge_metric_inc(&pthread_bridge_metrics.munmap_failures);
+		return result;
+	}
+
+	pthread_mutex_lock(&pthread_pool_lock);
+	struct pthread_slot_node *slot = (struct pthread_slot_node *)memory;
+	slot->next = pthread_pool_freelist;
+	pthread_pool_freelist = slot;
+	pthread_mutex_unlock(&pthread_pool_lock);
+	return 0;
 }
 
 static void pthread_bridge_metrics_report(void)
@@ -389,14 +455,31 @@ __attribute__((constructor)) static void pthread_bridge_metrics_init(void)
 // For handling static initialization.
 #define INIT_IF_NOT_MAPPED(x, init) do { if (!IS_MAPPED(x)) init(x); } while(0)
 
+static inline size_t get_cached_page_size(void)
+{
+	static size_t ps = 0;
+	if (__builtin_expect(!ps, 0)) {
+		ps = sysconf(_SC_PAGESIZE);
+		if (ps == 0) ps = 4096;
+	}
+	return ps;
+}
+
 static bool is_mapped(void *mem, const size_t sz)
 {
+	if (!mem || mem == MAP_FAILED)
+		return false;
 	pthread_bridge_metric_inc(&pthread_bridge_metrics.mapping_probes);
-	const size_t ps = sysconf(_SC_PAGESIZE);
+	const size_t ps = get_cached_page_size();
 	assert(ps > 0);
-	unsigned char vec[(sz + ps - 1) / ps];
+	const uintptr_t addr = (uintptr_t)mem;
+	const uintptr_t page_aligned = addr & ~(ps - 1);
+	const size_t offset = addr - page_aligned;
+	const size_t total_sz = sz + offset;
+	const size_t pages = (total_sz + ps - 1) / ps;
+	unsigned char vec[pages > 0 ? pages : 1];
 	pthread_bridge_metric_inc(&pthread_bridge_metrics.mincore_calls);
-	const bool mapped = !mincore(mem, sz, vec);
+	const bool mapped = (mincore((void *)page_aligned, total_sz, vec) == 0);
 	if (!mapped)
 		pthread_bridge_metric_inc(&pthread_bridge_metrics.mincore_failures);
 	return mapped;
@@ -908,17 +991,42 @@ int bionic_pthread_mutex_destroy(bionic_mutex_t *mutex)
 	return ret;
 }
 
+static inline const pthread_mutexattr_t *resolve_mutexattr(const bionic_mutexattr_t *attr,
+                                                           pthread_mutexattr_t *fallback_storage)
+{
+	if (!attr)
+		return NULL;
+	if (IS_MAPPED(attr))
+		return attr->glibc;
+
+	pthread_mutexattr_init(fallback_storage);
+	int type = (int)(attr->__private & 3);
+	if (type == 1)
+		pthread_mutexattr_settype(fallback_storage, PTHREAD_MUTEX_RECURSIVE);
+	else if (type == 2)
+		pthread_mutexattr_settype(fallback_storage, PTHREAD_MUTEX_ERRORCHECK);
+	else
+		pthread_mutexattr_settype(fallback_storage, PTHREAD_MUTEX_NORMAL);
+	return fallback_storage;
+}
+
 int bionic_pthread_mutex_init(bionic_mutex_t *mutex, const bionic_mutexattr_t *attr)
 {
-	assert(mutex && (!attr || IS_MAPPED(attr)));
-	// From PTHREAD_MUTEX_INIT(3)
-	// Attempting to initialize an already initialized mutex result in undefined behavior.
+	if (!mutex)
+		return EINVAL;
 	*mutex = (bionic_mutex_t){0};
 	pthread_mutex_t *native = pthread_bridge_mmap(sizeof(*native));
+	if (!native)
+		return ENOMEM;
 	mutex_set_native(mutex, native);
-	return mutex->glibc ? pthread_mutex_init(mutex_native(mutex),
-	                                          (attr ? attr->glibc : NULL))
-	                    : ENOMEM;
+
+	pthread_mutexattr_t stack_attr;
+	const pthread_mutexattr_t *host_attr = resolve_mutexattr(attr, &stack_attr);
+
+	int ret = pthread_mutex_init(mutex_native(mutex), host_attr);
+	if (host_attr == &stack_attr)
+		pthread_mutexattr_destroy(&stack_attr);
+	return ret;
 }
 
 int
@@ -1001,17 +1109,39 @@ int bionic_pthread_cond_destroy(bionic_cond_t *cond)
 	return ret;
 }
 
+static inline const pthread_condattr_t *resolve_condattr(const bionic_condattr_t *attr,
+                                                         pthread_condattr_t *fallback_storage)
+{
+	if (!attr)
+		return NULL;
+	if (IS_MAPPED(attr))
+		return attr->glibc;
+
+	pthread_condattr_init(fallback_storage);
+	clockid_t clock = (clockid_t)(attr->__private & 0xFF);
+	if (clock == CLOCK_MONOTONIC || (attr->__private & 1)) {
+		pthread_condattr_setclock(fallback_storage, CLOCK_MONOTONIC);
+	}
+	return fallback_storage;
+}
+
 int bionic_pthread_cond_init(bionic_cond_t *cond, const bionic_condattr_t *attr)
 {
-	// SUS // assert(cond && (!attr || IS_MAPPED(attr)));
-	// From PTHREAD_COND_INIT(3)
-	// Attempting to initialize an already initialized mutex result in undefined behavior.
+	if (!cond)
+		return EINVAL;
 	*cond = (bionic_cond_t){0};
 	pthread_cond_t *native = pthread_bridge_mmap(sizeof(*native));
+	if (!native)
+		return ENOMEM;
 	cond_set_native(cond, native);
-	return cond->glibc ? pthread_cond_init(cond_native(cond),
-	                                       (attr ? attr->glibc : NULL))
-	                    : ENOMEM;
+
+	pthread_condattr_t stack_attr;
+	const pthread_condattr_t *host_attr = resolve_condattr(attr, &stack_attr);
+
+	int ret = pthread_cond_init(cond_native(cond), host_attr);
+	if (host_attr == &stack_attr)
+		pthread_condattr_destroy(&stack_attr);
+	return ret;
 }
 
 int bionic_pthread_cond_broadcast(bionic_cond_t *cond)

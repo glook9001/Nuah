@@ -7,39 +7,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(NUAH_ANDROID_API_LEVEL 36)
 
-# The derived KTX2 cache is prepared before Roblox starts.  ISPC classifies
-# cache-record batches with AVX2 on the target i3 while retaining an SSE4
-# fallback. It is optional so normal developer builds stay viable on hosts
-# without the compiler; the Python builder retains a scalar fallback.
-option(NUAH_ENABLE_ISPC_ASSET_PACK "Build the ISPC derived-texture pack helper" ON)
-if(NUAH_ENABLE_ISPC_ASSET_PACK)
-  find_program(NUAH_ISPC_EXECUTABLE ispc)
-  if(NUAH_ISPC_EXECUTABLE)
-    set(NUAH_ISPC_ASSET_DIRECTORY "${CMAKE_BINARY_DIR}/ispc")
-    set(NUAH_ISPC_ASSET_OBJECT "${NUAH_ISPC_ASSET_DIRECTORY}/asset_pack.o")
-    set(NUAH_ISPC_ASSET_AVX2_OBJECT "${NUAH_ISPC_ASSET_DIRECTORY}/asset_pack_avx2.o")
-    set(NUAH_ISPC_ASSET_SSE4_OBJECT "${NUAH_ISPC_ASSET_DIRECTORY}/asset_pack_sse4.o")
-    set(NUAH_ISPC_ASSET_HEADER "${NUAH_ISPC_ASSET_DIRECTORY}/asset_pack.h")
-    add_custom_command(
-      OUTPUT "${NUAH_ISPC_ASSET_OBJECT}" "${NUAH_ISPC_ASSET_AVX2_OBJECT}"
-             "${NUAH_ISPC_ASSET_SSE4_OBJECT}" "${NUAH_ISPC_ASSET_HEADER}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${NUAH_ISPC_ASSET_DIRECTORY}"
-      COMMAND "${NUAH_ISPC_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/nuah/ispc/asset_pack.ispc"
-              --target=avx2-i32x8,sse4-i32x4 --arch=x86-64 --pic -O2
-              -o "${NUAH_ISPC_ASSET_OBJECT}" -h "${NUAH_ISPC_ASSET_HEADER}"
-      DEPENDS "${CMAKE_SOURCE_DIR}/nuah/ispc/asset_pack.ispc"
-      COMMENT "Compiling ISPC AVX2/SSE4 derived-texture pack helper"
-      VERBATIM)
-    add_library(nuah_ispc_asset SHARED "${NUAH_ISPC_ASSET_OBJECT}"
-      "${NUAH_ISPC_ASSET_AVX2_OBJECT}" "${NUAH_ISPC_ASSET_SSE4_OBJECT}")
-    set_target_properties(nuah_ispc_asset PROPERTIES
-      OUTPUT_NAME nuah_ispc_asset
-      LINKER_LANGUAGE CXX
-      LIBRARY_OUTPUT_DIRECTORY "${NUAH_ISPC_ASSET_DIRECTORY}")
-  else()
-    message(STATUS "ISPC unavailable: derived-texture builder will use scalar copies")
-  endif()
-endif()
+add_compile_options(
+  $<$<COMPILE_LANGUAGE:C,CXX>:-fno-plt>
+  $<$<COMPILE_LANGUAGE:C,CXX>:-march=x86-64-v3>
+)
 
 include(CTest)
 find_package(ZLIB REQUIRED)
@@ -256,10 +227,6 @@ endif()
 target_link_libraries(
   nuah_android_vulkan PRIVATE dl PkgConfig::NUAH_PLATFORM nuah_host_bridge
   nuah_android_registry)
-if(TARGET nuah_ispc_asset)
-  target_link_libraries(nuah_android_vulkan PRIVATE nuah_ispc_asset)
-  target_compile_definitions(nuah_android_vulkan PRIVATE NUAH_HAVE_ISPC_ASSET=1)
-endif()
 add_library(nuah_android_media SHARED nuah/android_shims/platform.cpp)
 set_target_properties(nuah_android_media PROPERTIES OUTPUT_NAME mediandk LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/android")
 target_compile_options(nuah_android_media PRIVATE -Wall -Wextra -Wpedantic -Werror -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
@@ -342,9 +309,6 @@ add_test(NAME nuah-bionic-sync-stress
 
 add_executable(nuah nuah/src/main.cpp)
 target_link_libraries(nuah PRIVATE nuah_core)
-if(TARGET nuah_ispc_asset)
-  add_dependencies(nuah nuah_ispc_asset)
-endif()
 set_target_properties(nuah PROPERTIES BUILD_RPATH "$ORIGIN" ENABLE_EXPORTS ON)
 add_dependencies(nuah nuah_android_abi_registry_test)
 add_dependencies(nuah nuah_pthread_bio)

@@ -17,9 +17,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <regex>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -47,18 +50,8 @@ void set_hybris_path_if_unset(const char* name, const std::string& value) {
   }
 }
 
-std::filesystem::path data_home_directory() {
-  if (const char* configured = std::getenv("XDG_DATA_HOME");
-      configured && *configured) {
-    return std::filesystem::path(configured) / "nuah";
-  }
-  if (const char* home = std::getenv("HOME"); home && *home) {
-    return std::filesystem::path(home) / ".local/share/nuah";
-  }
-  return {};
-}
-
-// Prefer hybris next to the binary (./build/hybris when running ./build/nuah).
+// Only the tree beside the binary (./build/hybris) or an explicit override.
+// Do not silently pick ~/.local/share or /usr/local; those can be stale.
 std::filesystem::path hybris_common_library() {
   if (const char* configured = std::getenv("NUAH_HYBRIS_LIBRARY");
       configured && *configured) {
@@ -66,20 +59,7 @@ std::filesystem::path hybris_common_library() {
   }
   if (const char* configured = std::getenv("NUAH_HYBRIS_LIBRARY_DIR");
       configured && *configured) {
-    const auto candidate =
-        std::filesystem::path(configured) / "libhybris-common.so";
-    if (std::filesystem::is_regular_file(candidate)) return candidate;
-  }
-  std::vector<std::filesystem::path> directories;
-  directories.push_back(runtime_directory() / "hybris" / "lib");
-  const auto data = data_home_directory();
-  if (!data.empty()) directories.push_back(data / "hybris" / "lib");
-  directories.emplace_back("/usr/local/lib64/hybris/lib");
-  for (const auto& directory : directories) {
-    const auto candidate = directory / "libhybris-common.so";
-    if (std::filesystem::is_regular_file(candidate) ||
-        std::filesystem::is_symlink(candidate))
-      return candidate;
+    return std::filesystem::path(configured) / "libhybris-common.so";
   }
   return runtime_directory() / "hybris" / "lib" / "libhybris-common.so";
 }
@@ -1121,12 +1101,70 @@ void configure_host_provider_hooks(void* hybris) {
   configured = true;
 }
 
-std::uint16_t u16(const std::vector<std::byte>& b, std::size_t off) {
+struct MappedFile {
+  void* data = nullptr;
+  std::size_t size = 0;
+  int fd = -1;
+
+  MappedFile() = default;
+  explicit MappedFile(const std::filesystem::path& path) {
+    fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+      throw std::runtime_error("cannot open APK: " + path.string());
+    }
+    struct stat st {};
+    if (::fstat(fd, &st) != 0) {
+      ::close(fd);
+      throw std::runtime_error("cannot stat APK: " + path.string());
+    }
+    size = static_cast<std::size_t>(st.st_size);
+    if (size == 0) return;
+    data = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (data == MAP_FAILED) {
+      ::close(fd);
+      throw std::runtime_error("cannot mmap APK: " + path.string());
+    }
+    ::madvise(data, size, MADV_WILLNEED | MADV_SEQUENTIAL);
+  }
+
+  ~MappedFile() {
+    if (data && data != MAP_FAILED && size > 0) ::munmap(data, size);
+    if (fd >= 0) ::close(fd);
+  }
+
+  MappedFile(const MappedFile&) = delete;
+  MappedFile& operator=(const MappedFile&) = delete;
+  MappedFile(MappedFile&& other) noexcept : data(other.data), size(other.size), fd(other.fd) {
+    other.data = nullptr;
+    other.size = 0;
+    other.fd = -1;
+  }
+  MappedFile& operator=(MappedFile&& other) noexcept {
+    if (this != &other) {
+      if (data && data != MAP_FAILED && size > 0) ::munmap(data, size);
+      if (fd >= 0) ::close(fd);
+      data = other.data;
+      size = other.size;
+      fd = other.fd;
+      other.data = nullptr;
+      other.size = 0;
+      other.fd = -1;
+    }
+    return *this;
+  }
+
+  std::span<const std::byte> span() const noexcept {
+    if (!data || data == MAP_FAILED) return {};
+    return {reinterpret_cast<const std::byte*>(data), size};
+  }
+};
+
+inline std::uint16_t u16(std::span<const std::byte> b, std::size_t off) {
   if (off + 2 > b.size()) throw std::runtime_error("truncated ZIP field");
   return static_cast<std::uint16_t>(static_cast<unsigned char>(b[off])) |
          (static_cast<std::uint16_t>(static_cast<unsigned char>(b[off + 1])) << 8);
 }
-std::uint32_t u32(const std::vector<std::byte>& b, std::size_t off) {
+inline std::uint32_t u32(std::span<const std::byte> b, std::size_t off) {
   if (off + 4 > b.size()) throw std::runtime_error("truncated ZIP field");
   return static_cast<std::uint32_t>(static_cast<unsigned char>(b[off])) |
          (static_cast<std::uint32_t>(static_cast<unsigned char>(b[off + 1])) << 8) |
@@ -1288,7 +1326,7 @@ void write_all(int fd, const std::vector<std::byte>& data) {
   }
 }
 
-std::vector<std::byte> inflate_raw(const std::vector<std::byte>& compressed, std::size_t expected_size) {
+std::vector<std::byte> inflate_raw(std::span<const std::byte> compressed, std::size_t expected_size) {
   std::vector<std::byte> result(expected_size);
   z_stream stream{};
   stream.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(compressed.data()));
@@ -1306,7 +1344,8 @@ std::vector<std::byte> inflate_raw(const std::vector<std::byte>& compressed, std
 
 template <typename Visitor>
 void visit_apk_members(const std::filesystem::path& apk, Visitor&& visitor) {
-  const auto data = read_file(apk);
+  const MappedFile mapped(apk);
+  const auto data = mapped.span();
   const std::size_t first =
       data.size() > 0xffff + 22 ? data.size() - (0xffff + 22) : 0;
   std::size_t eocd = data.size();
@@ -1347,7 +1386,7 @@ void visit_apk_members(const std::filesystem::path& apk, Visitor&& visitor) {
   }
 }
 
-std::vector<std::byte> decode_member(const std::vector<std::byte>& data,
+std::vector<std::byte> decode_member(std::span<const std::byte> data,
                                      std::uint16_t method,
                                      std::uint32_t compressed_size,
                                      std::uint32_t uncompressed_size,
@@ -1360,12 +1399,11 @@ std::vector<std::byte> decode_member(const std::vector<std::byte>& data,
       static_cast<std::size_t>(local) + 30 + local_name + local_extra;
   if (start + compressed_size > data.size())
     throw std::runtime_error("truncated APK member data");
-  const std::vector<std::byte> encoded(data.begin() + start,
-                                       data.begin() + start + compressed_size);
+  std::span<const std::byte> encoded(data.data() + start, compressed_size);
   if (method == 0) {
     if (compressed_size != uncompressed_size)
       throw std::runtime_error("stored APK member has inconsistent size");
-    return encoded;
+    return std::vector<std::byte>(encoded.begin(), encoded.end());
   }
   if (method == 8) return inflate_raw(encoded, uncompressed_size);
   throw std::runtime_error("unsupported APK ZIP compression method");
@@ -1522,7 +1560,7 @@ ApkMember read_stored_apk_member(const std::filesystem::path& apk, const std::st
   visit_apk_members(
       apk, [&](const std::string& name, std::uint16_t method,
                std::uint32_t compressed, std::uint32_t uncompressed,
-               std::uint32_t local, const std::vector<std::byte>& data) {
+               std::uint32_t local, std::span<const std::byte> data) {
         if (name != member) return false;
         result = ApkMember{
             name, decode_member(data, method, compressed, uncompressed, local)};
@@ -1538,7 +1576,7 @@ std::vector<ApkMember> read_apk_members_with_prefix(
   visit_apk_members(
       apk, [&](const std::string& name, std::uint16_t method,
                std::uint32_t compressed, std::uint32_t uncompressed,
-               std::uint32_t local, const std::vector<std::byte>& data) {
+               std::uint32_t local, std::span<const std::byte> data) {
         if (name.starts_with(prefix) && !name.ends_with("/")) {
           result.push_back(ApkMember{
               name,
@@ -1554,15 +1592,30 @@ std::vector<std::string> elf_needed_libraries(
   return needed_libraries(elf_bytes);
 }
 
+void prepend_search_path(const char* name, const std::string& piece) {
+  if (piece.empty()) return;
+  const char* existing = ::getenv(name);
+  if (existing && *existing && std::string(existing).find(piece) != std::string::npos)
+    return;
+  std::string value = piece;
+  if (existing && *existing) {
+    value.push_back(':');
+    value += existing;
+  }
+  if (::setenv(name, value.c_str(), 1) != 0) {
+    throw std::runtime_error(std::string("cannot configure ") + name);
+  }
+}
+
 void configure_android_library_path(
     const std::filesystem::path& app_directory) {
   const std::string app_library = (app_directory / "lib").string();
-  // The explicit lib directory handles System.loadLibrary("name"), while the
-  // app-root wildcard covers Android libraries extracted by app code into
-  // its private data tree.  The linker parses this list after it has already
-  // been initialized, so include the provider list that native_runtime
-  // published in BIONIC_LD_LIBRARY_PATH; merely setting that environment
-  // variable is too late for this parser.
+  const std::string app_tree = app_directory.string() + "**";
+  prepend_search_path("HYBRIS_LD_LIBRARY_PATH", app_library);
+  prepend_search_path("HYBRIS_LD_LIBRARY_PATH", app_tree);
+  prepend_search_path("BIONIC_LD_LIBRARY_PATH", app_library);
+  prepend_search_path("BIONIC_LD_LIBRARY_PATH", app_tree);
+
   std::string path = app_library;
   if (const char* configured = ::getenv("BIONIC_LD_LIBRARY_PATH");
       configured && *configured) {
@@ -1583,9 +1636,6 @@ void configure_android_library_path(
         ::dlsym(RTLD_DEFAULT, "dl_parse_library_path"));
   }
   if (!parse) {
-    /* Fedora ships the bionic linker as libdl_bio.so.0. Nuah never puts that
-     * DSO on LD_PRELOAD; this is a last-chance lookup for the path parser
-     * and r_debug hook the Android linker expects after init. */
     static const char* candidates[] = {
         "/lib64/libdl_bio.so.0", "/usr/lib64/libdl_bio.so.0",
         "/lib/libdl_bio.so.0", "/usr/lib/libdl_bio.so.0"};
@@ -1599,14 +1649,11 @@ void configure_android_library_path(
       ::dlclose(linker);
     }
   }
-  if (!parse) {
-    throw std::runtime_error(
-        "bionic linker lacks dl_parse_library_path");
+  if (parse) {
+    char delimiter[] = ":";
+    parse(path.data(), delimiter);
   }
 
-  // Without a host r_debug pointer the first later dlopen can reach
-  // apkenv_find_library and write through null. Give the linker the glibc
-  // loader's real debug object instead of emulating its link-map protocol.
   struct r_debug** linker_debug = nullptr;
   if (linker_handle) {
     linker_debug = reinterpret_cast<struct r_debug**>(
@@ -1621,13 +1668,6 @@ void configure_android_library_path(
         ::dlsym(RTLD_DEFAULT, "_r_debug"));
     if (host_debug) *linker_debug = host_debug;
   }
-  if (linker_debug && !*linker_debug) {
-    throw std::runtime_error("bionic linker lacks host r_debug state");
-  }
-  char delimiter[] = ":";
-  // dl_parse_library_path tokenizes the path in place, so do not hand it
-  // std::string::c_str().
-  parse(path.data(), delimiter);
 }
 
 LoadedModule::~LoadedModule() {
@@ -1805,6 +1845,10 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
     void* loader_library = nullptr;
     const std::string library = hybris_common_library().string();
     configure_hybris_environment(library.c_str());
+    if (const char* app_directory = ::getenv("ANDROID_APP_DATA_DIR");
+        app_directory && *app_directory) {
+      configure_android_library_path(app_directory);
+    }
     loader_library = ::dlopen(library.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!loader_library) {
       const char* error = ::dlerror();
@@ -1827,14 +1871,6 @@ LoadedModule load_apk_library(const std::filesystem::path& apk, const std::strin
       throw std::runtime_error("libhybris common library lacks Android loader entrypoints");
     }
     configure_host_provider_hooks(loader_library);
-    // ATL registers the app's private native-library roots before its first
-    // Android DSO is opened. Nuah does the same when native-run prepared an
-    // app data directory; doing it here also keeps linker path mutation out
-    // of Roblox constructors and ART startup threads.
-    if (const char* app_directory = ::getenv("ANDROID_APP_DATA_DIR");
-        app_directory && *app_directory) {
-      configure_android_library_path(app_directory);
-    }
     preflight_host_hooks(image_bytes, path.c_str());
     if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace) {
       void* libc_handle = android_dlopen("libc.so", RTLD_NOW | RTLD_LOCAL);
@@ -2006,11 +2042,20 @@ void prepend_path_env(const char* name, const std::filesystem::path& item) {
 void apply_native_host_environment() {
   const auto hybris = hybris_common_library();
   std::error_code hybris_error;
-  if (std::filesystem::exists(hybris, hybris_error) && !hybris_error) {
-    set_if_unset("NUAH_HYBRIS_LIBRARY", hybris.string());
-    configure_hybris_environment(hybris.c_str());
-    prepend_path_env("LD_LIBRARY_PATH", hybris.parent_path());
+  if (!std::filesystem::exists(hybris, hybris_error) || hybris_error) {
+    throw std::runtime_error(
+        "libhybris is missing at " + hybris.string() +
+        " (expected beside the binary as hybris/lib/libhybris-common.so; "
+        "set NUAH_HYBRIS_LIBRARY to override)");
   }
+  set_if_unset("NUAH_HYBRIS_LIBRARY", hybris.string());
+  configure_hybris_environment(hybris.c_str());
+  prepend_path_env("LD_LIBRARY_PATH", hybris.parent_path());
+  std::error_code real_error;
+  const auto real = std::filesystem::canonical(hybris, real_error);
+  std::cerr << "nuah runtime: hybris=" << hybris;
+  if (!real_error && real != hybris) std::cerr << " -> " << real;
+  std::cerr << '\n';
 
   const auto root = runtime_directory();
   prepend_path_env("LD_LIBRARY_PATH", root);

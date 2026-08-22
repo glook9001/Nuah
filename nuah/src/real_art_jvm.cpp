@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <link.h>
 #include <filesystem>
 #include <pthread.h>
 #include <string>
@@ -85,6 +86,9 @@ extern "C" jint nuah_art_log_println(JNIEnv* env, jclass, jint, jint,
   }
   return 0;
 }
+
+extern "C" void nuah_art_logging_protocol_native_log_event(
+    JNIEnv*, jclass, jstring, jlong, jobjectArray) {}
 
 extern "C" void nuah_art_context_update_config(JNIEnv*, jclass, jobject) {
   // SDL owns the host window; ATL's GTK monitor callback is not valid in this
@@ -189,6 +193,9 @@ std::string artifact_root() {
 std::string art_path() {
   if (const char* value = std::getenv("NUAH_ART_LIBRARY"); value && *value)
     return value;
+  if (const char* directory = std::getenv("NUAH_ART_LIBRARY_DIR");
+      directory && *directory)
+    return (std::filesystem::path(directory) / "libart.so").string();
   return "/usr/local/lib64/art/libart.so";
 }
 
@@ -558,6 +565,23 @@ void force_android_sdk_level(JNIEnv* env, jint sdk) {
   }
 }
 
+void bind_host_r_debug() {
+  /* ART's libart is DT_NEEDED on libdl_bio. That linker stores a host
+   * r_debug pointer; leaving it null makes apkenv_find_library fault at
+   * offset 0x18 on the first bionic_dlopen during JNI_CreateJavaVM. */
+  void* bio = ::dlopen("libdl_bio.so.0", RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
+  if (!bio) bio = ::dlopen("libdl_bio.so.0", RTLD_NOW | RTLD_GLOBAL);
+  if (!bio) return;
+  auto** linker_debug = reinterpret_cast<struct r_debug**>(
+      ::dlsym(bio, "_r_debug_ptr"));
+  if (linker_debug && !*linker_debug) {
+    if (auto* host = reinterpret_cast<struct r_debug*>(
+            ::dlsym(RTLD_DEFAULT, "_r_debug"))) {
+      *linker_debug = host;
+    }
+  }
+}
+
 }  // namespace
 
 extern "C" NuahJvm* nuah_jvm_create(void) {
@@ -569,6 +593,7 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
     delete jvm;
     return nullptr;
   }
+  bind_host_r_debug();
   auto create = reinterpret_cast<CreateJavaVm>(dlsym(jvm->art, "JNI_CreateJavaVM"));
   if (!create) {
     std::fprintf(stderr, "nuah ART: libart has no JNI_CreateJavaVM\n");
@@ -833,6 +858,10 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
       jvm->env, "android/util/Log", "println_native",
       "(IILjava/lang/String;Ljava/lang/String;)I",
       reinterpret_cast<void*>(&nuah_art_log_println));
+  (void)register_host_native(
+      jvm->env, "com/roblox/universalapp/logging/JNILoggingProtocol",
+      "nativeLogEvent", "(Ljava/lang/String;J[Ljava/lang/Object;)V",
+      reinterpret_cast<void*>(&nuah_art_logging_protocol_native_log_event));
   if (jvm->api_native) {
     // These entries are the provider's generated JNI contract, not hand
     // written Android replacements.  Registering the complete resource

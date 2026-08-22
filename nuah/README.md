@@ -287,34 +287,16 @@ Four swapchain images are intentional here: the extra image reduces FIFO
 `vkAcquireNextImageKHR`/`drmSyncobjTransfer` stalls during streaming. Set the
 value to `3` only for a direct comparison.
 
-When `ispc` is installed at CMake configure time, Nuah also builds
-`build/ispc/libnuah_ispc_asset.so`. The sidecar builder loads it automatically
-and uses AVX2 (with SSE4 fallback) SPMD gangs to classify the complete SQLite
-cache before parsing eligible KTX2 records. This runs only while preparing a
-new hash-keyed profile, with no render-thread calls. To test an explicit
-library or force the scalar fallback:
-
-```sh
-python3 nuah/tools/build-lossy-ktx-sidecar.py SOURCE.db DERIVED.db \
-  --ispc-copy-lib build/ispc/libnuah_ispc_asset.so
-# Scalar comparison: --ispc-copy-lib /nonexistent
-```
-
-The normal Release C++ build already uses `-O3`, which enables GCC's tree
-vectorizer; ISPC is used where explicit SPMD batch work is clearer and more
-reliable than hoping a scalar loop auto-vectorizes.
-
-For a separate runtime A/B, ISPC can fingerprint mapped texture-upload bytes
-before Nuah's already-guarded duplicate-upload experiment. It uses the AVX2
-implementation above and only suppresses a copy when the same sampled image
-subresource has the same fingerprint; color/depth/storage/transient targets
-remain excluded. This is disabled by default because a fixed room/camera
-visual comparison is required before treating it as a play profile:
+Release C++ already uses `-O3` (GCC tree vectorizer). Mapped texture-upload
+fingerprinting is a C++ helper in the Vulkan shim, not a separate ISPC DSO.
+It only suppresses a copy when the same sampled image subresource has the
+same fingerprint; color/depth/storage/transient targets remain excluded.
+Disabled by default:
 
 ```sh
 NUAH_TEXTURE_UPLOAD_TRACE=1 \
 NUAH_TEXTURE_UPLOAD_HASH_TRACE=1 \
-NUAH_ISPC_UPLOAD_FINGERPRINT=1 \
+NUAH_UPLOAD_FINGERPRINT=1 \
 NUAH_TEXTURE_UPLOAD_DEDUP=1 \
 nuah/tools/run-rivals-worker-ab.sh 4 1280 720
 ```
@@ -323,7 +305,7 @@ The log reports `hashed_regions`, `identical_regions`, and
 `suppressed_regions`. A successful RIVALS run suppressed 44 proven-identical
 regions (~2 MiB) in one interval, but that is evidence of avoided work—not
 yet a general FPS claim. Set `NUAH_TEXTURE_UPLOAD_DEDUP=0` to retain the
-ISPC measurement while forwarding every upload.
+fingerprint measurement while forwarding every upload.
 
 `NUAH_VULKAN_COPY_TRACE=1` is also rate-limited to one line per second. The
 copy command can be called once per mip level; unbounded `fprintf` logging on

@@ -38,30 +38,34 @@ else
 fi
 width=${2:-1280}
 height=${3:-720}
-performance_mode=${NUAH_PERFORMANCE_MODE:-quality}
-async_transcode=${NUAH_ASSET_TRANSCODE_ASYNC:-0}
-mip_bias=${NUAH_RENDER_TEXTURE_MIP_BIAS:-0}
+performance_mode=${NUAH_PERFORMANCE_MODE:-turbo}
+async_transcode=${NUAH_ASSET_TRANSCODE_ASYNC:-1}
+mip_bias=${NUAH_RENDER_TEXTURE_MIP_BIAS:-1}
 texture_budget=${NUAH_RENDER_TEXTURE_BUDGET_MS:-0}
 texture_sidecar=${NUAH_TEXTURE_SIDECAR:-0}
 intel_no_ccs=${NUAH_INTEL_NO_CCS:-0}
 memory_low_mb=${NUAH_MEMORY_LOW_MB:-0}
 memory_min_mb=${NUAH_MEMORY_MIN_MB:-0}
-descriptor_batch=${NUAH_DESCRIPTOR_ALLOC_BATCH:-0}
+descriptor_batch=${NUAH_DESCRIPTOR_ALLOC_BATCH:-4}
 descriptor_trace=${NUAH_DESCRIPTOR_ALLOC_TRACE:-0}
-submit_thread=${NUAH_VULKAN_SUBMIT_THREAD:-0}
+submit_thread=${NUAH_VULKAN_SUBMIT_THREAD:-1}
 vulkan_icd=${VK_ICD_FILENAMES:-}
 min_image_count=${NUAH_VULKAN_MIN_IMAGE_COUNT:-4}
 copy_trace=${NUAH_VULKAN_COPY_TRACE:-0}
 texture_trace=${NUAH_TEXTURE_UPLOAD_TRACE:-0}
 texture_hash_trace=${NUAH_TEXTURE_UPLOAD_HASH_TRACE:-0}
 texture_dedup=${NUAH_TEXTURE_UPLOAD_DEDUP:-0}
-ispc_fingerprint=${NUAH_ISPC_UPLOAD_FINGERPRINT:-0}
+upload_fingerprint=${NUAH_UPLOAD_FINGERPRINT:-${NUAH_ISPC_UPLOAD_FINGERPRINT:-0}}
 madvise_patch=${NUAH_LIBROBLOX_MADVISE_PATCH:-0}
 asset_background=${NUAH_ASSET_BACKGROUND:-1}
 texture_min_lod=${NUAH_TEXTURE_MIN_LOD:-1}
+descriptor_bind_dedup=${NUAH_DESCRIPTOR_BIND_DEDUP:-1}
+command_state_dedup=${NUAH_COMMAND_STATE_DEDUP:-1}
+disable_msaa=${NUAH_DISABLE_MSAA:-1}
+frm_quality=${NUAH_FRM_QUALITY:-1}
 perf_trace=${NUAH_PERF_TRACE:-1}
 android_preload=${NUAH_ANDROID_PRELOAD:-}
-for value in "$threads" "$width" "$height" "$async_transcode" "$mip_bias" "$texture_budget" "$texture_sidecar" "$intel_no_ccs" "$memory_low_mb" "$memory_min_mb" "$descriptor_batch" "$descriptor_trace" "$min_image_count" "$copy_trace" "$texture_trace" "$texture_hash_trace" "$texture_dedup" "$ispc_fingerprint" "$madvise_patch" "$asset_background"; do
+for value in "$threads" "$width" "$height" "$async_transcode" "$mip_bias" "$texture_budget" "$texture_sidecar" "$intel_no_ccs" "$memory_low_mb" "$memory_min_mb" "$descriptor_batch" "$descriptor_trace" "$min_image_count" "$copy_trace" "$texture_trace" "$texture_hash_trace" "$texture_dedup" "$upload_fingerprint" "$madvise_patch" "$asset_background" "$descriptor_bind_dedup" "$command_state_dedup" "$disable_msaa" "$frm_quality"; do
   [[ $value =~ ^[0-9]+$ ]] || {
     echo "worker count and dimensions must be non-negative integers" >&2
     exit 2
@@ -146,30 +150,12 @@ hybris_library_dir=""
 if [[ -n "${NUAH_HYBRIS_LIBRARY_DIR:-}" ]]; then
   hybris_library_dir="$NUAH_HYBRIS_LIBRARY_DIR"
 else
-  for cand in "$repo_root/build/hybris/lib" "$repo_root/hybris/lib" \
-              "$nuah_data/hybris/lib" /usr/local/lib64/hybris/lib; do
-    if [[ -r "$cand/libhybris-common.so" ]]; then
-      hybris_library_dir="$cand"
-      break
-    fi
-  done
-  hybris_library_dir=${hybris_library_dir:-$repo_root/build/hybris/lib}
+  # Do not fall back to ~/.local/share or /usr/local; those copies go stale.
+  hybris_library_dir="$repo_root/build/hybris/lib"
 fi
 hybris_library=${NUAH_HYBRIS_LIBRARY:-$hybris_library_dir/libhybris-common.so}
 hybris_linker_dir=${HYBRIS_LINKER_DIR:-$hybris_library_dir/libhybris/linker}
 
-ispc_library_dir=""
-if [[ -n "${NUAH_ISPC_LIBRARY_DIR:-}" ]]; then
-  ispc_library_dir="$NUAH_ISPC_LIBRARY_DIR"
-else
-  for cand in "$repo_root/build/ispc" "$repo_root/ispc" "$nuah_data/ispc"; do
-    if [[ -r "$cand/libnuah_ispc_asset.so" ]]; then
-      ispc_library_dir="$cand"
-      break
-    fi
-  done
-  ispc_library_dir=${ispc_library_dir:-$repo_root/build/ispc}
-fi
 vulkan_library_dir=${NUAH_VULKAN_LIBRARY_DIR:-}
 
 [[ -x "$nuah_binary" ]] || {
@@ -182,10 +168,6 @@ vulkan_library_dir=${NUAH_VULKAN_LIBRARY_DIR:-}
 }
 [[ -r "$hybris_library" && -d "$hybris_linker_dir" ]] || {
   echo "libhybris runtime is missing: $hybris_library / $hybris_linker_dir" >&2
-  exit 2
-}
-[[ -r "$ispc_library_dir/libnuah_ispc_asset.so" ]] || {
-  echo "ISPC runtime is missing: $ispc_library_dir/libnuah_ispc_asset.so" >&2
   exit 2
 }
 if [[ -n "$vulkan_library_dir" ]]; then
@@ -301,7 +283,7 @@ echo "Vulkan minimum swapchain images: $min_image_count"
 echo "Vulkan ICD override: ${vulkan_icd:-system default}"
 echo "Vulkan image-copy trace: $copy_trace"
 echo "Texture upload trace/hash/dedup: $texture_trace/$texture_hash_trace/$texture_dedup"
-echo "ISPC upload fingerprint: $ispc_fingerprint"
+echo "Upload fingerprint: $upload_fingerprint"
 echo "libroblox madvise patch: $madvise_patch"
 echo "Asset background scheduling: $asset_background"
 echo "Texture minimum LOD: $texture_min_lod"
@@ -355,18 +337,20 @@ done
   NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$cookie" \
   NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$cookie" \
   ${NUAH_ROBLOX_USER_ID:+NUAH_ROBLOX_USER_ID="$NUAH_ROBLOX_USER_ID"} \
-  ${NUAH_FRM_QUALITY:+NUAH_FRM_QUALITY="$NUAH_FRM_QUALITY"} \
+  NUAH_FRM_QUALITY="$frm_quality" \
   NUAH_CLIENT_SETTINGS_JSON="{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true,\"FIntRenderTextureMipBias\":\"$mip_bias\"}}" \
   NUAH_ART_HOME="$atl_home" \
   NUAH_ATL_HOME="$atl_home" \
   NUAH_HYBRIS_LIBRARY="$hybris_library" \
   HYBRIS_LINKER_DIR="$hybris_linker_dir" \
-  LD_LIBRARY_PATH="$repo_root/build:$art_library_dir:$art_library_dir/natives:$hybris_library_dir:$ispc_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" \
+  LD_LIBRARY_PATH="$repo_root/build:$repo_root/build/bionic-translation:$art_library_dir:$art_library_dir/natives:$hybris_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" \
   LD_PRELOAD="${icu_preload:+$icu_preload:}${android_preload:+$android_preload:}/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:$art_library_dir/libandroidfw.so" \
+  NUAH_DISABLE_MSAA="$disable_msaa" \
+  ${NUAH_DISABLE_TEXTURE_PACK_GENERATOR:+NUAH_DISABLE_TEXTURE_PACK_GENERATOR="$NUAH_DISABLE_TEXTURE_PACK_GENERATOR"} \
   NUAH_GRAPHICS_BACKEND=vulkan \
   INTEL_DEBUG="$intel_debug" \
   NUAH_PERFORMANCE_MODE="$performance_mode" \
-  NUAH_VULKAN_PRESENT_MODE=fifo \
+  NUAH_VULKAN_PRESENT_MODE="${NUAH_VULKAN_PRESENT_MODE:-fifo}" \
   NUAH_VULKAN_SUBMIT_THREAD="$submit_thread" \
   "${vulkan_icd_env[@]}" \
   NUAH_VULKAN_MIN_IMAGE_COUNT="$min_image_count" \
@@ -376,7 +360,7 @@ done
   NUAH_TEXTURE_UPLOAD_TRACE="$texture_trace" \
   NUAH_TEXTURE_UPLOAD_HASH_TRACE="$texture_hash_trace" \
   NUAH_TEXTURE_UPLOAD_DEDUP="$texture_dedup" \
-  NUAH_ISPC_UPLOAD_FINGERPRINT="$ispc_fingerprint" \
+  NUAH_UPLOAD_FINGERPRINT="$upload_fingerprint" \
   NUAH_LIBROBLOX_MADVISE_PATCH="$madvise_patch" \
   NUAH_INPUT_COALESCE=1 \
   NUAH_NONBLOCK_WAYLAND_EVENTS=0 \
@@ -387,7 +371,9 @@ done
   NUAH_DESCRIPTOR_ALLOC_BATCH="$descriptor_batch" \
   NUAH_DESCRIPTOR_ALLOC_TRACE="$descriptor_trace" \
   NUAH_ASSET_TRANSCODE_ASYNC="$async_transcode" \
-  NUAH_TARGET_FPS=60 \
+  NUAH_DESCRIPTOR_BIND_DEDUP="$descriptor_bind_dedup" \
+  NUAH_COMMAND_STATE_DEDUP="$command_state_dedup" \
+  NUAH_TARGET_FPS="${NUAH_TARGET_FPS:-60}" \
   NUAH_TEXTURE_MIN_LOD="$texture_min_lod" \
   NUAH_TEXTURE_SIDECAR=0 \
   NUAH_PERF_TRACE="$perf_trace" \
