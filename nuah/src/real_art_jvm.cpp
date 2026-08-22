@@ -38,6 +38,13 @@ struct NuahJvm {
   jobject surface = nullptr;
   jobject key_event = nullptr;
   jobject motion_event = nullptr;
+  jclass key_event_class = nullptr;
+  jmethodID key_event_ctor = nullptr;
+  bool key_event_extended = false;
+  bool key_event_lookup_done = false;
+  jclass motion_event_class = nullptr;
+  jmethodID motion_event_ctor = nullptr;
+  bool motion_event_lookup_done = false;
   jclass native_input_interface = nullptr;
   jmethodID native_pass_mouse_move = nullptr;
   jmethodID native_pass_mouse_button = nullptr;
@@ -1467,6 +1474,8 @@ extern "C" void nuah_jvm_destroy(NuahJvm* jvm) {
   delete_global(jvm->env, jvm->activity);
   delete_global(jvm->env, jvm->key_event);
   delete_global(jvm->env, jvm->motion_event);
+  delete_global_class(jvm->env, jvm->key_event_class);
+  delete_global_class(jvm->env, jvm->motion_event_class);
   delete_global_class(jvm->env, jvm->native_input_interface);
   delete_global_class(jvm->env, jvm->native_gl_interface);
   // ART cannot safely be destroyed while Roblox worker threads are alive.  It
@@ -1783,23 +1792,35 @@ extern "C" int nuah_jvm_capture_native_handle(NuahJvm* jvm) {
 extern "C" void* nuah_jvm_key_event(
     NuahJvm* jvm, int keycode, int action, int repeat, int scancode,
     unsigned int modifiers, unsigned long long event_time_ms) {
-  if (!jvm) return nullptr;
-  jclass klass = find_class(jvm->env, "android/view/KeyEvent");
-  if (!klass) return nullptr;
-  const char* extended_signature = "(JJIIIIIIII)V";
-  jmethodID ctor = jvm->env->GetMethodID(klass, "<init>", extended_signature);
-  bool extended = ctor != nullptr;
-  if (!ctor) {
-    clear_exception(jvm->env, "KeyEvent constructor");
-    ctor = jvm->env->GetMethodID(klass, "<init>", "(JJIIII)V");
+  if (!jvm || !jvm->env) return nullptr;
+  if (!jvm->key_event_lookup_done) {
+    jvm->key_event_lookup_done = true;
+    jclass local_class = find_class(jvm->env, "android/view/KeyEvent");
+    if (local_class) {
+      jvm->key_event_class = reinterpret_cast<jclass>(
+          jvm->env->NewGlobalRef(local_class));
+      jvm->env->DeleteLocalRef(local_class);
+      if (jvm->key_event_class) {
+        const char* extended_signature = "(JJIIIIIIII)V";
+        jvm->key_event_ctor = jvm->env->GetMethodID(
+            jvm->key_event_class, "<init>", extended_signature);
+        if (jvm->key_event_ctor) {
+          jvm->key_event_extended = true;
+        } else {
+          clear_exception(jvm->env, "KeyEvent constructor");
+          jvm->key_event_ctor = jvm->env->GetMethodID(
+              jvm->key_event_class, "<init>", "(JJIIII)V");
+          if (!jvm->key_event_ctor) {
+            clear_exception(jvm->env, "KeyEvent fallback constructor");
+          }
+        }
+      }
+    }
   }
-  if (!ctor) {
-    clear_exception(jvm->env, "KeyEvent fallback constructor");
-    return nullptr;
-  }
+  if (!jvm->key_event_class || !jvm->key_event_ctor) return nullptr;
   jobject local = nullptr;
-  if (extended) {
-    local = jvm->env->NewObject(klass, ctor,
+  if (jvm->key_event_extended) {
+    local = jvm->env->NewObject(jvm->key_event_class, jvm->key_event_ctor,
                                 static_cast<jlong>(event_time_ms),
                                 static_cast<jlong>(event_time_ms), action,
                                 keycode, repeat, static_cast<jint>(modifiers),
@@ -1807,7 +1828,7 @@ extern "C" void* nuah_jvm_key_event(
   }
   if (!local) {
     clear_exception(jvm->env, "KeyEvent allocation");
-    local = jvm->env->NewObject(klass, ctor,
+    local = jvm->env->NewObject(jvm->key_event_class, jvm->key_event_ctor,
                                 static_cast<jlong>(event_time_ms),
                                 static_cast<jlong>(event_time_ms), action,
                                 keycode, repeat, static_cast<jint>(modifiers));
@@ -1818,18 +1839,29 @@ extern "C" void* nuah_jvm_key_event(
 extern "C" void* nuah_jvm_motion_event(
     NuahJvm* jvm, int action, int /*button*/, double x, double y, double dx,
     double dy, unsigned long long event_time_ms) {
-  if (!jvm) return nullptr;
-  jclass klass = find_class(jvm->env, "android/view/MotionEvent");
-  if (!klass) return nullptr;
-  jmethodID ctor = jvm->env->GetMethodID(klass, "<init>", "(IIJFFFF)V");
-  if (!ctor) {
-    clear_exception(jvm->env, "MotionEvent constructor");
-    return nullptr;
+  if (!jvm || !jvm->env) return nullptr;
+  if (!jvm->motion_event_lookup_done) {
+    jvm->motion_event_lookup_done = true;
+    jclass local_class = find_class(jvm->env, "android/view/MotionEvent");
+    if (local_class) {
+      jvm->motion_event_class = reinterpret_cast<jclass>(
+          jvm->env->NewGlobalRef(local_class));
+      jvm->env->DeleteLocalRef(local_class);
+      if (jvm->motion_event_class) {
+        jvm->motion_event_ctor = jvm->env->GetMethodID(
+            jvm->motion_event_class, "<init>", "(IIJFFFF)V");
+        if (!jvm->motion_event_ctor) {
+          clear_exception(jvm->env, "MotionEvent constructor");
+        }
+      }
+    }
   }
+  if (!jvm->motion_event_class || !jvm->motion_event_ctor) return nullptr;
   jobject local = jvm->env->NewObject(
-      klass, ctor, 0x1002, action, static_cast<jlong>(event_time_ms),
-      static_cast<jfloat>(x), static_cast<jfloat>(y),
-      static_cast<jfloat>(x + dx), static_cast<jfloat>(y + dy));
+      jvm->motion_event_class, jvm->motion_event_ctor, 0x1002, action,
+      static_cast<jlong>(event_time_ms), static_cast<jfloat>(x),
+      static_cast<jfloat>(y), static_cast<jfloat>(x + dx),
+      static_cast<jfloat>(y + dy));
   if (!local) {
     clear_exception(jvm->env, "MotionEvent allocation");
     return nullptr;

@@ -1,10 +1,20 @@
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "nuah/bootstrap_diagnostics.h"
 
 namespace {
 NuahDiagnosticsCallbacks diagnostics_callbacks{};
+
+bool log_enabled() {
+  static const bool enabled = [] {
+    const char* v = std::getenv("NUAH_ANDROID_LOG");
+    return v && *v && std::strcmp(v, "0") != 0;
+  }();
+  return enabled;
+}
 
 void record(const char* message) {
   if (diagnostics_callbacks.record_log) {
@@ -21,7 +31,10 @@ void nuah_log_set_diagnostics_callbacks(
                                            : NuahDiagnosticsCallbacks{};
 }
 int __android_log_write(int priority, const char* tag, const char* text) {
-  std::fprintf(stderr, "[android:%d] %s: %s\n", priority, tag ? tag : "Nuah", text ? text : "");
+  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
+  if (log_enabled()) {
+    std::fprintf(stderr, "[android:%d] %s: %s\n", priority, tag ? tag : "Nuah", text ? text : "");
+  }
   record(text);
   return 0;
 }
@@ -30,6 +43,7 @@ int __android_log_buf_write(int, int priority, const char* tag, const char* text
 }
 int __android_log_buf_print(int, int priority, const char* tag,
                             const char* format, ...) {
+  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
   char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   va_list arguments;
   va_start(arguments, format);
@@ -39,20 +53,24 @@ int __android_log_buf_print(int, int priority, const char* tag,
   __android_log_write(priority, tag, message);
   return result;
 }
-int __android_log_print(int, const char* tag, const char* format, ...) {
+int __android_log_print(int priority, const char* tag, const char* format, ...) {
+  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
   char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   va_list arguments;
   va_start(arguments, format);
   const int result =
       std::vsnprintf(message, sizeof(message), format ? format : "", arguments);
   va_end(arguments);
-  std::fprintf(stderr, "[android] %s%s%s\n", tag ? tag : "",
-               tag ? ": " : "", message);
+  if (log_enabled()) {
+    std::fprintf(stderr, "[android:%d] %s%s%s\n", priority, tag ? tag : "",
+                 tag ? ": " : "", message);
+  }
   record(message);
   return result;
 }
 int __android_log_vprint(int priority, const char* tag, const char* format,
                          va_list arguments) {
+  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
   char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   const int result =
       std::vsnprintf(message, sizeof(message), format ? format : "", arguments);

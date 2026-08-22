@@ -2623,6 +2623,9 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       set_client_setting(target_settings, "FFlagDisablePostFx", "true");
       set_client_setting(target_settings, "FFlagGlobalWind", "false");
       set_client_setting(target_settings, "FFlagEnableGlobalWind", "false");
+      set_client_setting(target_settings, "FFlagFastGPULightGrid", "true");
+      set_client_setting(target_settings, "FIntFRMMinGrassDistance", "\"0\"");
+      set_client_setting(target_settings, "FIntFRMMaxGrassDistance", "\"0\"");
       set_client_setting(target_settings, "FIntShadowMapBias", "\"0\"");
     }
     if (no_background_http_retry)

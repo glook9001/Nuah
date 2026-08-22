@@ -749,8 +749,9 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (android_provider_handle &&
       (std::strncmp(symbol, "egl", 3) == 0 ||
        std::strncmp(symbol, "gl", 2) == 0)) {
-    const std::string bionic_name = std::string("bionic_") + symbol;
-    if (void* resolved = ::dlsym(android_provider_handle, bionic_name.c_str())) {
+    char bionic_name[128];
+    std::snprintf(bionic_name, sizeof(bionic_name), "bionic_%s", symbol);
+    if (void* resolved = ::dlsym(android_provider_handle, bionic_name)) {
       return resolved;
     }
   }
