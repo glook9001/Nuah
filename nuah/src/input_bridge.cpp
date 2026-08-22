@@ -56,12 +56,15 @@ bool window_mapped_for_android(SDL_Window* window) {
 }
 
 bool mouse_capture_enabled() {
-  const char* value = std::getenv("NUAH_MOUSE_CAPTURE");
-  /* Roblox's desktop adapter uses Android pointer capture whenever its own
-   * mouse-lock callback says the camera is centered.  Keep that contract by
-   * default; NUAH_MOUSE_CAPTURE=0 remains a diagnostic escape hatch for
-   * compositors without relative-pointer support. */
-  return !value || std::strcmp(value, "0") != 0;
+  static const bool enabled = [] {
+    const char* value = std::getenv("NUAH_MOUSE_CAPTURE");
+    /* Roblox's desktop adapter uses Android pointer capture whenever its own
+     * mouse-lock callback says the camera is centered.  Keep that contract by
+     * default; NUAH_MOUSE_CAPTURE=0 remains a diagnostic escape hatch for
+     * compositors without relative-pointer support. */
+    return !value || std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
 }
 
 bool input_trace_enabled() {
@@ -188,21 +191,33 @@ unsigned int button_bit(int button) {
  * virtual pointer internally and translate only at the boundary. */
 bool locked_surface_dimensions(int* width, int* height) {
   if (!width || !height) return false;
-  const char* locked = std::getenv("NUAH_LOCK_SURFACE_SIZE");
-  if (!locked || !*locked || std::strcmp(locked, "0") == 0) return false;
-  const char* width_value = std::getenv("NUAH_SURFACE_WIDTH");
-  const char* height_value = std::getenv("NUAH_SURFACE_HEIGHT");
-  if (!width_value || !height_value) return false;
-  char* width_end = nullptr;
-  char* height_end = nullptr;
-  const long parsed_width = std::strtol(width_value, &width_end, 10);
-  const long parsed_height = std::strtol(height_value, &height_end, 10);
-  if (width_end == width_value || *width_end != '\0' ||
-      height_end == height_value || *height_end != '\0' ||
-      parsed_width <= 0 || parsed_height <= 0)
-    return false;
-  *width = static_cast<int>(parsed_width);
-  *height = static_cast<int>(parsed_height);
+  static const struct LockedDimensions {
+    bool valid = false;
+    int w = 0;
+    int h = 0;
+  } dims = [] {
+    LockedDimensions res;
+    const char* locked = std::getenv("NUAH_LOCK_SURFACE_SIZE");
+    if (!locked || !*locked || std::strcmp(locked, "0") == 0) return res;
+    const char* width_value = std::getenv("NUAH_SURFACE_WIDTH");
+    const char* height_value = std::getenv("NUAH_SURFACE_HEIGHT");
+    if (!width_value || !height_value) return res;
+    char* width_end = nullptr;
+    char* height_end = nullptr;
+    const long parsed_width = std::strtol(width_value, &width_end, 10);
+    const long parsed_height = std::strtol(height_value, &height_end, 10);
+    if (width_end == width_value || *width_end != '\0' ||
+        height_end == height_value || *height_end != '\0' ||
+        parsed_width <= 0 || parsed_height <= 0)
+      return res;
+    res.valid = true;
+    res.w = static_cast<int>(parsed_width);
+    res.h = static_cast<int>(parsed_height);
+    return res;
+  }();
+  if (!dims.valid) return false;
+  *width = dims.w;
+  *height = dims.h;
   return true;
 }
 
@@ -521,7 +536,7 @@ extern "C" int nuah_input_pump(void) {
   service_focus_loss();
   SDL_Event event{};
   int count = 0;
-  const bool nonblocking_events = [] {
+  static const bool nonblocking_events = [] {
     const char* value = std::getenv("NUAH_NONBLOCK_WAYLAND_EVENTS");
     /* Keep this in lock-step with window_session's Wayland pump.  The
      * non-blocking path starves the shared display round-trip on the Intel

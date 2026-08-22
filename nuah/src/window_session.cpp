@@ -324,20 +324,26 @@ extern "C" int nuah_window_session_should_close(
 extern "C" void nuah_window_session_pump(NuahWindowSession* session) {
   if (!session) return;
   if (session->loading_visible) {
-    const char* timeout_value = std::getenv("NUAH_LOADING_FRAME_TIMEOUT_MS");
-    uint64_t timeout_ms = 30000;
-    if (timeout_value && *timeout_value) {
-      char* end = nullptr;
-      const unsigned long parsed = std::strtoul(timeout_value, &end, 10);
-      if (end != timeout_value && *end == '\0') timeout_ms = parsed;
-    }
-    const char* minimum_value = std::getenv("NUAH_LOADING_FRAME_MIN_MS");
-    uint64_t minimum_ms = 10000;
-    if (minimum_value && *minimum_value) {
-      char* end = nullptr;
-      const unsigned long parsed = std::strtoul(minimum_value, &end, 10);
-      if (end != minimum_value && *end == '\0') minimum_ms = parsed;
-    }
+    static const uint64_t timeout_ms = [] {
+      const char* timeout_value = std::getenv("NUAH_LOADING_FRAME_TIMEOUT_MS");
+      uint64_t ms = 30000;
+      if (timeout_value && *timeout_value) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(timeout_value, &end, 10);
+        if (end != timeout_value && *end == '\0') ms = parsed;
+      }
+      return ms;
+    }();
+    static const uint64_t minimum_ms = [] {
+      const char* minimum_value = std::getenv("NUAH_LOADING_FRAME_MIN_MS");
+      uint64_t ms = 10000;
+      if (minimum_value && *minimum_value) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(minimum_value, &end, 10);
+        if (end != minimum_value && *end == '\0') ms = parsed;
+      }
+      return ms;
+    }();
     const uint64_t elapsed_ms = monotonic_ms() - session->loading_started_ms;
     if (elapsed_ms >= minimum_ms || elapsed_ms >= timeout_ms) {
       if (const char* trace = std::getenv("NUAH_BOOTSTRAP_TRACE");
@@ -353,7 +359,7 @@ extern "C" void nuah_window_session_pump(NuahWindowSession* session) {
   }
   /* Keep the façade dimensions current even when the resize event is consumed
    * by the input bridge. Roblox queries ANativeWindow geometry during surface
-   * and Vulkan setup, so this must be updated on every host pump. */
+   * and Vulkan setup, so this must be updated when dimensions change. */
   int width = 0;
   int height = 0;
   SDL_GetWindowSize(session->host, &width, &height);
@@ -362,7 +368,11 @@ extern "C" void nuah_window_session_pump(NuahWindowSession* session) {
     width = session->locked_surface_width;
     height = session->locked_surface_height;
   }
-  if (width > 0 && height > 0) {
+  static int last_width = 0;
+  static int last_height = 0;
+  if (width > 0 && height > 0 && (width != last_width || height != last_height)) {
+    last_width = width;
+    last_height = height;
     nuah_native_window_update_geometry(session->native, width, height);
   }
   /* SDL_PumpEvents refreshes the host queue without consuming it. The input

@@ -77,7 +77,11 @@ extern "C" void back_button_set_sensitive(bool) {}
 
 extern "C" jint nuah_art_log_println(JNIEnv* env, jclass, jint, jint,
                                       jstring, jstring message) {
-  if (env && message) {
+  static const bool android_log_enabled = [] {
+    const char* v = std::getenv("NUAH_ANDROID_LOG");
+    return v && *v && std::strcmp(v, "0") != 0;
+  }();
+  if (android_log_enabled && env && message) {
     const char* text = env->GetStringUTFChars(message, nullptr);
     if (text) {
       std::fprintf(stderr, "[android] %s\n", text);

@@ -2013,6 +2013,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
     VkFence fence) {
   static const auto function = host_function<PFN_vkQueueSubmit>("vkQueueSubmit");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (!submit_trace_enabled() && !engine_trace_enabled() &&
+      !frame_work_trace_enabled()) {
+    return function(queue, submit_count, submits, fence);
+  }
   const uint64_t started_ns = monotonic_ns();
   const VkResult result = function(queue, submit_count, submits, fence);
   uint64_t command_buffers = 0;
@@ -2037,6 +2041,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
     VkFence fence) {
   static const auto function = host_function<PFN_vkQueueSubmit2>("vkQueueSubmit2");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (!submit_trace_enabled() && !engine_trace_enabled() &&
+      !frame_work_trace_enabled()) {
+    return function(queue, submit_count, submits, fence);
+  }
   const uint64_t started_ns = monotonic_ns();
   const VkResult result = function(queue, submit_count, submits, fence);
   uint64_t command_buffers = 0;
@@ -2118,6 +2126,12 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage(
   static const auto function = host_function<PFN_vkCmdCopyBufferToImage>(
       "vkCmdCopyBufferToImage");
   if (!function) return;
+  if (!texture_upload_dedup_enabled() && !texture_upload_trace_enabled() &&
+      !copy_trace_enabled() && !engine_trace_enabled() &&
+      !frame_work_trace_enabled()) {
+    function(command_buffer, source, destination, layout, region_count, regions);
+    return;
+  }
   const uint64_t started_ns = monotonic_ns();
   const std::vector<uint64_t> content_hashes =
       collect_upload_hashes(source, destination, region_count, regions);
@@ -2171,6 +2185,12 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage2(
   static const auto function = host_function<PFN_vkCmdCopyBufferToImage2>(
       "vkCmdCopyBufferToImage2");
   if (!function || !copy_info) return;
+  if (!texture_upload_dedup_enabled() && !texture_upload_trace_enabled() &&
+      !copy_trace_enabled() && !engine_trace_enabled() &&
+      !frame_work_trace_enabled()) {
+    function(command_buffer, copy_info);
+    return;
+  }
 
   const uint64_t started_ns = monotonic_ns();
   std::vector<VkBufferImageCopy> legacy_regions;
@@ -2246,6 +2266,10 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage2(
   static const auto function =
       host_function<PFN_vkCmdCopyImage2>("vkCmdCopyImage2");
   if (!function || !copy_info) return;
+  if (!copy_trace_enabled() && !engine_trace_enabled()) {
+    function(command_buffer, copy_info);
+    return;
+  }
   const uint64_t started_ns = monotonic_ns();
   function(command_buffer, copy_info);
   uint64_t texels = 0;
@@ -2276,6 +2300,11 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(
   static const auto function =
       host_function<PFN_vkCmdCopyImage>("vkCmdCopyImage");
   if (!function) return;
+  if (!copy_trace_enabled() && !engine_trace_enabled()) {
+    function(command_buffer, source, source_layout, destination,
+             destination_layout, region_count, regions);
+    return;
+  }
   const uint64_t started_ns = monotonic_ns();
   function(command_buffer, source, source_layout, destination,
            destination_layout, region_count, regions);
