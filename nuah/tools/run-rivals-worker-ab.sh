@@ -350,7 +350,7 @@ done
   NUAH_GRAPHICS_BACKEND=vulkan \
   INTEL_DEBUG="$intel_debug" \
   NUAH_PERFORMANCE_MODE="$performance_mode" \
-  NUAH_VULKAN_PRESENT_MODE="${NUAH_VULKAN_PRESENT_MODE:-fifo}" \
+  NUAH_VULKAN_PRESENT_MODE="${NUAH_VULKAN_PRESENT_MODE:-mailbox}" \
   NUAH_VULKAN_SUBMIT_THREAD="$submit_thread" \
   "${vulkan_icd_env[@]}" \
   NUAH_VULKAN_MIN_IMAGE_COUNT="$min_image_count" \
@@ -373,7 +373,7 @@ done
   NUAH_ASSET_TRANSCODE_ASYNC="$async_transcode" \
   NUAH_DESCRIPTOR_BIND_DEDUP="$descriptor_bind_dedup" \
   NUAH_COMMAND_STATE_DEDUP="$command_state_dedup" \
-  NUAH_TARGET_FPS="${NUAH_TARGET_FPS:-60}" \
+  NUAH_TARGET_FPS="${NUAH_TARGET_FPS:-240}" \
   NUAH_TEXTURE_MIN_LOD="$texture_min_lod" \
   NUAH_TEXTURE_SIDECAR=0 \
   NUAH_PERF_TRACE="$perf_trace" \

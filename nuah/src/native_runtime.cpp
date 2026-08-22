@@ -2621,12 +2621,21 @@ int run_nuah_jni(const NativeLaunchOptions& options,
           "\"" + std::to_string(frm_quality) + "\"");
     if (turbo_mode) {
       set_client_setting(target_settings, "FFlagDisablePostFx", "true");
+      set_client_setting(target_settings, "FFlagDebugDisableBloom", "true");
+      set_client_setting(target_settings, "FFlagDebugDisableColorCorrection", "true");
+      set_client_setting(target_settings, "FFlagDebugDisableSunRays", "true");
+      set_client_setting(target_settings, "FFlagDebugDisableDepthOfField", "true");
       set_client_setting(target_settings, "FFlagGlobalWind", "false");
       set_client_setting(target_settings, "FFlagEnableGlobalWind", "false");
       set_client_setting(target_settings, "FFlagFastGPULightGrid", "true");
+      set_client_setting(target_settings, "FFlagRenderLightGridDirectLight", "false");
       set_client_setting(target_settings, "FIntFRMMinGrassDistance", "\"0\"");
       set_client_setting(target_settings, "FIntFRMMaxGrassDistance", "\"0\"");
+      set_client_setting(target_settings, "FIntRenderShadowIntensity", "\"0\"");
       set_client_setting(target_settings, "FIntShadowMapBias", "\"0\"");
+      set_client_setting(target_settings, "FIntTerrainArraySliceSize", "\"4\"");
+      set_client_setting(target_settings, "FFlagTaskSchedulerLimitTargetFpsTo240", "false");
+      set_client_setting(target_settings, "FFlagGameBasicSettingsFramerateCap5", "false");
     }
     if (no_background_http_retry)
       set_client_setting(

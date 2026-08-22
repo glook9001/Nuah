@@ -2620,22 +2620,24 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindPipeline(
   static const auto function =
       host_function<PFN_vkCmdBindPipeline>("vkCmdBindPipeline");
   if (!function) return;
+  const bool dedup = command_state_dedup_enabled();
+  if (!dedup) {
+    function(command_buffer, bind_point, pipeline);
+    return;
+  }
   CommandStateSnapshot snapshot;
   snapshot.kind = CommandStateKind::pipeline;
   snapshot.bind_point = bind_point;
   snapshot.pipeline = pipeline;
-  const bool dedup = command_state_dedup_enabled();
-  if (dedup) {
-    ++command_state_calls;
-    if (command_state_is_duplicate(command_buffer, snapshot)) {
-      ++command_state_suppressed;
-      maybe_report_command_state();
-      return;
-    }
+  ++command_state_calls;
+  if (command_state_is_duplicate(command_buffer, snapshot)) {
+    ++command_state_suppressed;
+    maybe_report_command_state();
+    return;
   }
   function(command_buffer, bind_point, pipeline);
-  if (dedup) remember_command_state(command_buffer, std::move(snapshot));
-  if (dedup) maybe_report_command_state();
+  remember_command_state(command_buffer, std::move(snapshot));
+  maybe_report_command_state();
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdBindIndexBuffer(
@@ -2644,23 +2646,25 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindIndexBuffer(
   static const auto function =
       host_function<PFN_vkCmdBindIndexBuffer>("vkCmdBindIndexBuffer");
   if (!function) return;
+  const bool dedup = command_state_dedup_enabled();
+  if (!dedup) {
+    function(command_buffer, buffer, offset, index_type);
+    return;
+  }
   CommandStateSnapshot snapshot;
   snapshot.kind = CommandStateKind::index_buffer;
   snapshot.index_buffer = buffer;
   snapshot.index_offset = offset;
   snapshot.index_type = index_type;
-  const bool dedup = command_state_dedup_enabled();
-  if (dedup) {
-    ++command_state_calls;
-    if (command_state_is_duplicate(command_buffer, snapshot)) {
-      ++command_state_suppressed;
-      maybe_report_command_state();
-      return;
-    }
+  ++command_state_calls;
+  if (command_state_is_duplicate(command_buffer, snapshot)) {
+    ++command_state_suppressed;
+    maybe_report_command_state();
+    return;
   }
   function(command_buffer, buffer, offset, index_type);
-  if (dedup) remember_command_state(command_buffer, std::move(snapshot));
-  if (dedup) maybe_report_command_state();
+  remember_command_state(command_buffer, std::move(snapshot));
+  maybe_report_command_state();
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers(
@@ -2670,6 +2674,11 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers(
   static const auto function =
       host_function<PFN_vkCmdBindVertexBuffers>("vkCmdBindVertexBuffers");
   if (!function) return;
+  const bool dedup = command_state_dedup_enabled();
+  if (!dedup) {
+    function(command_buffer, first_binding, binding_count, buffers, offsets);
+    return;
+  }
   CommandStateSnapshot snapshot;
   snapshot.kind = CommandStateKind::vertex_buffers;
   snapshot.first_binding = first_binding;
@@ -2677,18 +2686,15 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers(
     snapshot.buffers.assign(buffers, buffers + binding_count);
   if (offsets && binding_count)
     snapshot.offsets.assign(offsets, offsets + binding_count);
-  const bool dedup = command_state_dedup_enabled();
-  if (dedup) {
-    ++command_state_calls;
-    if (command_state_is_duplicate(command_buffer, snapshot)) {
-      ++command_state_suppressed;
-      maybe_report_command_state();
-      return;
-    }
+  ++command_state_calls;
+  if (command_state_is_duplicate(command_buffer, snapshot)) {
+    ++command_state_suppressed;
+    maybe_report_command_state();
+    return;
   }
   function(command_buffer, first_binding, binding_count, buffers, offsets);
-  if (dedup) remember_command_state(command_buffer, std::move(snapshot));
-  if (dedup) maybe_report_command_state();
+  remember_command_state(command_buffer, std::move(snapshot));
+  maybe_report_command_state();
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers2(
@@ -2699,6 +2705,12 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers2(
   static const auto function =
       host_function<PFN_vkCmdBindVertexBuffers2>("vkCmdBindVertexBuffers2");
   if (!function) return;
+  const bool dedup = command_state_dedup_enabled();
+  if (!dedup) {
+    function(command_buffer, first_binding, binding_count, buffers, offsets,
+             sizes, strides);
+    return;
+  }
   CommandStateSnapshot snapshot;
   snapshot.kind = CommandStateKind::vertex_buffers2;
   snapshot.first_binding = first_binding;
@@ -2712,19 +2724,16 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers2(
     snapshot.sizes.assign(sizes, sizes + binding_count);
   if (strides && binding_count)
     snapshot.strides.assign(strides, strides + binding_count);
-  const bool dedup = command_state_dedup_enabled();
-  if (dedup) {
-    ++command_state_calls;
-    if (command_state_is_duplicate(command_buffer, snapshot)) {
-      ++command_state_suppressed;
-      maybe_report_command_state();
-      return;
-    }
+  ++command_state_calls;
+  if (command_state_is_duplicate(command_buffer, snapshot)) {
+    ++command_state_suppressed;
+    maybe_report_command_state();
+    return;
   }
   function(command_buffer, first_binding, binding_count, buffers, offsets,
            sizes, strides);
-  if (dedup) remember_command_state(command_buffer, std::move(snapshot));
-  if (dedup) maybe_report_command_state();
+  remember_command_state(command_buffer, std::move(snapshot));
+  maybe_report_command_state();
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(
@@ -2737,6 +2746,13 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(
   if (!function) return;
 
   const bool dedup = descriptor_bind_dedup_enabled();
+  const bool trace = engine_trace_enabled();
+  if (!dedup && !trace) {
+    function(command_buffer, bind_point, layout, first_set, descriptor_set_count,
+             descriptor_sets, dynamic_offset_count, dynamic_offsets);
+    return;
+  }
+
   if (dedup) {
     ++descriptor_bind_calls;
     DescriptorBindState& state = descriptor_bind_state();
@@ -2759,7 +2775,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(
     }
   }
 
-  const uint64_t started_ns = monotonic_ns();
+  const uint64_t started_ns = trace ? monotonic_ns() : 0;
   function(command_buffer, bind_point, layout, first_set, descriptor_set_count,
            descriptor_sets, dynamic_offset_count, dynamic_offsets);
   if (dedup)
@@ -2767,8 +2783,9 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(
                              descriptor_set_count, descriptor_sets,
                              dynamic_offset_count, dynamic_offsets);
   if (dedup) maybe_report_descriptor_bind_dedup();
-  record_engine_event(EngineEvent::descriptor_bind, monotonic_ns() - started_ns,
-                      descriptor_set_count);
+  if (trace)
+    record_engine_event(EngineEvent::descriptor_bind, monotonic_ns() - started_ns,
+                        descriptor_set_count);
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(
@@ -2779,9 +2796,17 @@ VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(
     const VkBufferMemoryBarrier* buffer_memory_barriers,
     uint32_t image_memory_barrier_count,
     const VkImageMemoryBarrier* image_memory_barriers) {
-  const auto function =
+  static const auto function =
       host_function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier");
   if (!function) return;
+  const bool trace = engine_trace_enabled();
+  if (!trace) {
+    function(command_buffer, source_stage_mask, destination_stage_mask,
+             dependency_flags, memory_barrier_count, memory_barriers,
+             buffer_memory_barrier_count, buffer_memory_barriers,
+             image_memory_barrier_count, image_memory_barriers);
+    return;
+  }
   const uint64_t started_ns = monotonic_ns();
   function(command_buffer, source_stage_mask, destination_stage_mask,
            dependency_flags, memory_barrier_count, memory_barriers,
