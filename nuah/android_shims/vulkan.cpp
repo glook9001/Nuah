@@ -1992,8 +1992,11 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyDevice(
 VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(
     VkDevice device, uint32_t count, const VkFence* fences, VkBool32 wait_all,
     uint64_t timeout) {
-  const auto function = host_function<PFN_vkWaitForFences>("vkWaitForFences");
+  static const auto function = host_function<PFN_vkWaitForFences>("vkWaitForFences");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (!wait_trace_enabled() && !engine_trace_enabled()) {
+    return function(device, count, fences, wait_all, timeout);
+  }
   const uint64_t started_ns = monotonic_ns();
   const VkResult result = function(device, count, fences, wait_all, timeout);
   const uint64_t elapsed_ns = monotonic_ns() - started_ns;
@@ -2067,8 +2070,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(
     VkDevice device, const VkImageCreateInfo* create_info,
     const VkAllocationCallbacks* allocator, VkImage* image) {
-  const auto function = host_function<PFN_vkCreateImage>("vkCreateImage");
+  static const auto function = host_function<PFN_vkCreateImage>("vkCreateImage");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (!intel_format_trace_enabled() && !texture_upload_dedup_enabled() &&
+      !engine_trace_enabled()) {
+    return function(device, create_info, allocator, image);
+  }
   const uint64_t started_ns = monotonic_ns();
   const VkResult result = function(device, create_info, allocator, image);
   if (result == VK_SUCCESS) {
@@ -2506,9 +2513,12 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(
     VkDevice device, const VkImageViewCreateInfo* create_info,
     const VkAllocationCallbacks* allocator, VkImageView* image_view) {
-  const auto function =
+  static const auto function =
       host_function<PFN_vkCreateImageView>("vkCreateImageView");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (!engine_trace_enabled()) {
+    return function(device, create_info, allocator, image_view);
+  }
   const uint64_t started_ns = monotonic_ns();
   const VkResult result = function(device, create_info, allocator, image_view);
   record_engine_event(EngineEvent::image_view_create,
@@ -2519,7 +2529,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(
     VkDevice device, const VkSamplerCreateInfo* create_info,
     const VkAllocationCallbacks* allocator, VkSampler* sampler) {
-  const auto function = host_function<PFN_vkCreateSampler>("vkCreateSampler");
+  static const auto function = host_function<PFN_vkCreateSampler>("vkCreateSampler");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
   const float min_lod = texture_min_lod();
   if (!create_info || min_lod == 0.0f ||

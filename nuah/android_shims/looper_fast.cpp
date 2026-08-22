@@ -194,11 +194,7 @@ int ALooper_pollOnce(int timeout_ms, int* out_fd, int* out_events,
   auto* looper = static_cast<Looper*>(ALooper_forThread());
   if (!looper || looper->epoll_fd < 0) return kPollError;
 
-  /* Keep Android's non-blocking probe contract, but stop an empty probe loop
-   * from consuming a host core.  This is only a 1 ms yield after eight empty
-   * probes and is reset as soon as an fd or wake event arrives. */
   int effective_timeout = timeout_ms;
-  if (timeout_ms == 0 && looper->empty_polls >= 8) effective_timeout = 1;
 
   std::array<epoll_event, kMaxRegistrations + 1> events{};
   looper->polling.store(true, std::memory_order_relaxed);
