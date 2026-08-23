@@ -18,30 +18,34 @@ std::FILE* nuah_linker_stdout __asm__("stdout") = nullptr;
 std::FILE* nuah_linker_stderr __asm__("stderr") = nullptr;
 unsigned long long __stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 
+#ifndef NUAH_UNLIKELY
+#define NUAH_UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#endif
+
 void* __memset_chk(void* dst, int value, std::size_t count,
                    std::size_t capacity) {
-  if (count > capacity) std::abort();
+  if (NUAH_UNLIKELY(count > capacity)) std::abort();
   return std::memset(dst, value, count);
 }
 void* __memcpy_chk(void* dst, const void* src, std::size_t count,
                    std::size_t capacity) {
-  if (count > capacity) std::abort();
+  if (NUAH_UNLIKELY(count > capacity)) std::abort();
   return std::memcpy(dst, src, count);
 }
 void* __memmove_chk(void* dst, const void* src, std::size_t count,
                     std::size_t capacity) {
-  if (count > capacity) std::abort();
+  if (NUAH_UNLIKELY(count > capacity)) std::abort();
   return std::memmove(dst, src, count);
 }
 char* __strcpy_chk(char* dst, const char* src, std::size_t capacity) {
   const std::size_t length = src ? std::strlen(src) : 0;
-  if (!src || length + 1 > capacity) std::abort();
+  if (NUAH_UNLIKELY(!src || length + 1 > capacity)) std::abort();
   return std::strcpy(dst, src);
 }
 char* __strcat_chk(char* dst, const char* src, std::size_t capacity) {
   const std::size_t used = dst ? std::strlen(dst) : 0;
   const std::size_t added = src ? std::strlen(src) : 0;
-  if (!dst || !src || used + added + 1 > capacity) std::abort();
+  if (NUAH_UNLIKELY(!dst || !src || used + added + 1 > capacity)) std::abort();
   return std::strcat(dst, src);
 }
 char* __strchr_chk(const char* text, int c, std::size_t) {
@@ -52,7 +56,7 @@ std::size_t __strlen_chk(const char* text, std::size_t) {
 }
 char* __strncpy_chk(char* dst, const char* src, std::size_t count,
                     std::size_t capacity) {
-  if (!dst || !src || count > capacity) std::abort();
+  if (NUAH_UNLIKELY(!dst || !src || count > capacity)) std::abort();
   return std::strncpy(dst, src, count);
 }
 char* __strncpy_chk2(char* dst, const char* src, std::size_t count,
@@ -61,13 +65,13 @@ char* __strncpy_chk2(char* dst, const char* src, std::size_t count,
 }
 ssize_t __write_chk(int fd, const void* data, std::size_t count,
                     std::size_t capacity) {
-  if (count > capacity) std::abort();
+  if (NUAH_UNLIKELY(count > capacity)) std::abort();
   return ::write(fd, data, count);
 }
 ssize_t __sendto_chk(int fd, const void* data, std::size_t count,
                      std::size_t capacity, int flags,
                      const sockaddr* address, socklen_t address_length) {
-  if (count > capacity) std::abort();
+  if (NUAH_UNLIKELY(count > capacity)) std::abort();
   return ::sendto(fd, data, count, flags, address, address_length);
 }
 std::size_t __fwrite_chk(const void* data, std::size_t size,

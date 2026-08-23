@@ -23,6 +23,13 @@ void record(const char* message) {
 }
 }  // namespace
 
+#ifndef NUAH_LIKELY
+#define NUAH_LIKELY(x) (__builtin_expect(!!(x), 1))
+#endif
+#ifndef NUAH_UNLIKELY
+#define NUAH_UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#endif
+
 extern "C" {
 void nuah_log_set_diagnostics_callbacks(
     const NuahDiagnosticsCallbacks* callbacks) {
@@ -31,7 +38,7 @@ void nuah_log_set_diagnostics_callbacks(
                                            : NuahDiagnosticsCallbacks{};
 }
 int __android_log_write(int priority, const char* tag, const char* text) {
-  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
+  if (NUAH_LIKELY(!log_enabled() && !diagnostics_callbacks.record_log)) return 0;
   if (log_enabled()) {
     std::fprintf(stderr, "[android:%d] %s: %s\n", priority, tag ? tag : "Nuah", text ? text : "");
   }
@@ -43,7 +50,7 @@ int __android_log_buf_write(int, int priority, const char* tag, const char* text
 }
 int __android_log_buf_print(int, int priority, const char* tag,
                             const char* format, ...) {
-  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
+  if (NUAH_LIKELY(!log_enabled() && !diagnostics_callbacks.record_log)) return 0;
   char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   va_list arguments;
   va_start(arguments, format);
@@ -54,7 +61,7 @@ int __android_log_buf_print(int, int priority, const char* tag,
   return result;
 }
 int __android_log_print(int priority, const char* tag, const char* format, ...) {
-  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
+  if (NUAH_LIKELY(!log_enabled() && !diagnostics_callbacks.record_log)) return 0;
   char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   va_list arguments;
   va_start(arguments, format);
@@ -70,7 +77,7 @@ int __android_log_print(int priority, const char* tag, const char* format, ...) 
 }
 int __android_log_vprint(int priority, const char* tag, const char* format,
                          va_list arguments) {
-  if (!log_enabled() && !diagnostics_callbacks.record_log) return 0;
+  if (NUAH_LIKELY(!log_enabled() && !diagnostics_callbacks.record_log)) return 0;
   char message[NUAH_BOOTSTRAP_TEXT_CAPACITY]{};
   const int result =
       std::vsnprintf(message, sizeof(message), format ? format : "", arguments);

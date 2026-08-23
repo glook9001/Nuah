@@ -18,6 +18,13 @@
 #include <vector>
 #include <unistd.h>
 
+#ifndef NUAH_LIKELY
+#define NUAH_LIKELY(x) (__builtin_expect(!!(x), 1))
+#endif
+#ifndef NUAH_UNLIKELY
+#define NUAH_UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#endif
+
 namespace {
 bool looper_trace_enabled() {
   /* ALooper_pollOnce is a hot path when Roblox asks for a non-blocking poll.
@@ -246,12 +253,12 @@ void* ANativeWindow_fromSurface(void*, void* surface) {
   return window;
 }
 int ANativeWindow_getWidth(void* window) {
-  if (looper_trace_enabled())
+  if (NUAH_UNLIKELY(looper_trace_enabled()))
     std::fprintf(stderr, "nuah android: ANativeWindow_getWidth(%p)\n", window);
   return nuah_native_window_width(static_cast<NuahNativeWindow*>(window));
 }
 int ANativeWindow_getHeight(void* window) {
-  if (looper_trace_enabled())
+  if (NUAH_UNLIKELY(looper_trace_enabled()))
     std::fprintf(stderr, "nuah android: ANativeWindow_getHeight(%p)\n", window);
   return nuah_native_window_height(static_cast<NuahNativeWindow*>(window));
 }
@@ -288,7 +295,7 @@ int slCreateEngine(void**, unsigned, const void*, unsigned, const void*, const b
 void ZSTD_trace_compress_begin(...) {}
 void ZSTD_trace_compress_end(...) {}
 unsigned long long ZSTD_trace_decompress_begin(const void*) {
-  if (!zstd_trace_enabled()) return 0;
+  if (NUAH_LIKELY(!zstd_trace_enabled())) return 0;
   const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                           SteadyClock::now().time_since_epoch())
                           .count();
@@ -296,7 +303,7 @@ unsigned long long ZSTD_trace_decompress_begin(const void*) {
 }
 void ZSTD_trace_decompress_end(unsigned long long begin_ns,
                                const ZstdTrace* trace) {
-  if (!zstd_trace_enabled() || begin_ns == 0) {
+  if (NUAH_LIKELY(!zstd_trace_enabled()) || begin_ns == 0) {
     return;
   }
   const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
