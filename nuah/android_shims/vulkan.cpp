@@ -2349,10 +2349,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAllocateDescriptorSets(
   static const auto function = host_function<PFN_vkAllocateDescriptorSets>(
       "vkAllocateDescriptorSets");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  const uint32_t batch_size = descriptor_alloc_batch_size();
+  const bool trace = descriptor_alloc_trace_enabled() || engine_trace_enabled();
+  if (!batch_size && !trace) {
+    return function(device, allocate_info, descriptor_sets);
+  }
   ++descriptor_alloc_calls;
   const uint64_t started_ns = monotonic_ns();
   VkResult result = VK_ERROR_INITIALIZATION_FAILED;
-  const uint32_t batch_size = descriptor_alloc_batch_size();
   const bool batchable =
       batch_size && allocate_info && descriptor_sets &&
       allocate_info->descriptorSetCount && allocate_info->pSetLayouts &&
@@ -2454,6 +2458,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkFreeDescriptorSets(
   static const auto function = host_function<PFN_vkFreeDescriptorSets>(
       "vkFreeDescriptorSets");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (!engine_trace_enabled()) {
+    return function(device, descriptor_pool, descriptor_set_count, descriptor_sets);
+  }
   const uint64_t started_ns = monotonic_ns();
   const VkResult result = function(device, descriptor_pool,
                                    descriptor_set_count, descriptor_sets);
@@ -2468,6 +2475,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorPool(
   static const auto function = host_function<PFN_vkCreateDescriptorPool>(
       "vkCreateDescriptorPool");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (!engine_trace_enabled()) {
+    return function(device, create_info, allocator, descriptor_pool);
+  }
   const uint64_t started_ns = monotonic_ns();
   const VkResult result = function(device, create_info, allocator,
                                    descriptor_pool);
@@ -2483,12 +2493,15 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(
   static const auto function = host_function<PFN_vkResetDescriptorPool>(
       "vkResetDescriptorPool");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
-  const uint64_t started_ns = monotonic_ns();
+  const bool trace = engine_trace_enabled();
+  const uint64_t started_ns = trace ? monotonic_ns() : 0;
   const VkResult result = function(device, descriptor_pool, flags);
   if (descriptor_alloc_batch_size() && result == VK_SUCCESS)
     clear_cached_descriptor_pool(descriptor_pool);
-  record_engine_event(EngineEvent::descriptor_pool_reset,
-                      monotonic_ns() - started_ns);
+  if (trace) {
+    record_engine_event(EngineEvent::descriptor_pool_reset,
+                        monotonic_ns() - started_ns);
+  }
   return result;
 }
 
@@ -2514,6 +2527,11 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(
   static const auto function = host_function<PFN_vkUpdateDescriptorSets>(
       "vkUpdateDescriptorSets");
   if (!function) return;
+  if (!engine_trace_enabled()) {
+    function(device, descriptor_write_count, descriptor_writes,
+             descriptor_copy_count, descriptor_copies);
+    return;
+  }
   const uint64_t started_ns = monotonic_ns();
   function(device, descriptor_write_count, descriptor_writes,
            descriptor_copy_count, descriptor_copies);
