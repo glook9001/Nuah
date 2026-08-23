@@ -796,18 +796,18 @@ int nuah_sigaction(int signal_number, const AndroidSigaction* action,
 }
 
 int fflush(std::FILE* stream) {
-  return host<int (*)(std::FILE*)>("fflush")(
-      stream ? host_stream(stream) : nullptr);
+  static const auto fn = host<int (*)(std::FILE*)>("fflush");
+  return fn(stream ? host_stream(stream) : nullptr);
 }
 size_t fread(void* destination, size_t size, size_t count,
              std::FILE* stream) {
-  return host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread")(
-      destination, size, count, host_stream(stream));
+  static const auto fn = host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread");
+  return fn(destination, size, count, host_stream(stream));
 }
 size_t fwrite(const void* data, size_t size, size_t count,
               std::FILE* stream) {
-  return host<size_t (*)(const void*, size_t, size_t, std::FILE*)>("fwrite")(
-      data, size, count, host_stream(stream));
+  static const auto fn = host<size_t (*)(const void*, size_t, size_t, std::FILE*)>("fwrite");
+  return fn(data, size, count, host_stream(stream));
 }
 int fclose(std::FILE* stream) {
   // Standard streams are process-owned and must not be closed by a legacy
@@ -817,7 +817,8 @@ int fclose(std::FILE* stream) {
       translated == nuah_stderr) {
     return 0;
   }
-  return host<int (*)(std::FILE*)>("fclose")(translated);
+  static const auto fn = host<int (*)(std::FILE*)>("fclose");
+  return fn(translated);
 }
 }
 
@@ -873,17 +874,19 @@ char* __strcat_chk(char* destination, const char* source,
   return strcat(destination, source);
 }
 char* strerror(int error) {
-  return host<char* (*)(int)>("strerror")(error);
+  static const auto fn = host<char* (*)(int)>("strerror");
+  return fn(error);
 }
 extern "C" int nuah_strerror_r(int error, char* buffer, size_t length)
     __asm__("strerror_r");
 int nuah_strerror_r(int error, char* buffer, size_t length) {
-  return host<int (*)(int, char*, size_t)>("__xpg_strerror_r")(
-      error, buffer, length);
+  static const auto fn = host<int (*)(int, char*, size_t)>("__xpg_strerror_r");
+  return fn(error, buffer, length);
 }
 extern "C" void nuah_tzset() __asm__("tzset");
 void nuah_tzset() {
-  host<void (*)()>("tzset")();
+  static const auto fn = host<void (*)()>("tzset");
+  fn();
   synchronize_timezone_data();
 }
 extern "C" int nuah_getopt_long(int argument_count, char* const arguments[],
@@ -1048,8 +1051,8 @@ extern "C" size_t nuah_fread_chk(void* destination, size_t size, size_t count,
 size_t nuah_fread_chk(void* destination, size_t size, size_t count,
                       std::FILE* stream, size_t destination_size) {
   if (size != 0 && count > destination_size / size) std::abort();
-  return host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread")(
-      destination, size, count, stream);
+  static const auto fn = host<size_t (*)(void*, size_t, size_t, std::FILE*)>("fread");
+  return fn(destination, size, count, stream);
 }
 size_t nuah_fread_chk_n(void* destination, size_t size, size_t count,
                         std::FILE* stream, size_t destination_size) {

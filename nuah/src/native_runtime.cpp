@@ -2639,6 +2639,11 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       set_client_setting(target_settings, "FFlagRenderEnableVolumetricClouds", "false");
       set_client_setting(target_settings, "FFlagDebugSkyDisableAtmosphere", "true");
       set_client_setting(target_settings, "FFlagRenderEnableLowEndLOD", "true");
+      set_client_setting(target_settings, "FFlagEnableTextureStreaming2", "true");
+      set_client_setting(target_settings, "FFlagRenderEnableTextureStreaming", "true");
+      set_client_setting(target_settings, "FFlagRenderTextureManagerFlushUnused", "true");
+      set_client_setting(target_settings, "FIntTexturePoolSizeMB", "\"256\"");
+      set_client_setting(target_settings, "FFlagRenderMeshLodStreaming", "true");
       set_client_setting(target_settings, "FIntTerrainArraySliceSize", "\"4\"");
       set_client_setting(target_settings, "FFlagLuauNativeCodeGen", "true");
       set_client_setting(target_settings, "FFlagLuauNativeCodeGenMode2", "true");
