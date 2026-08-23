@@ -54,8 +54,11 @@ std::once_flag manager_once;
 NuahAssetManager manager;
 
 bool trace_enabled() {
-  const char* value = std::getenv("NUAH_BOOTSTRAP_TRACE");
-  return value && *value;
+  static const bool enabled = [] {
+    const char* value = std::getenv("NUAH_BOOTSTRAP_TRACE");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
 }
 
 void initialize_manager() {

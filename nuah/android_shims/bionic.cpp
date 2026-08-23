@@ -132,8 +132,11 @@ std::array<AndroidKeySlot, kAndroidKeySlots> android_key_slots{};
 std::array<AndroidKeySlot, kAndroidKeySlots> android_raw_key_slots{};
 
 bool android_key_namespace_enabled() {
-  const char* value = std::getenv("NUAH_PTHREAD_NAMESPACE");
-  return value && *value && std::strcmp(value, "0") != 0;
+  static const bool enabled = [] {
+    const char* value = std::getenv("NUAH_PTHREAD_NAMESPACE");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
 }
 
 pthread_key_t host_key_for_android(pthread_key_t key) {
@@ -174,8 +177,11 @@ template <typename T> T host(const char* name);
 extern "C" int getaddrinfo(const char* node, const char* service,
                            const struct addrinfo* hints,
                            struct addrinfo** result) {
-  const char* prefer_ipv4 = std::getenv("NUAH_PREFER_IPV4");
-  if (prefer_ipv4 && std::strcmp(prefer_ipv4, "0") == 0)
+  static const bool prefer_ipv4_default = [] {
+    const char* prefer_ipv4 = std::getenv("NUAH_PREFER_IPV4");
+    return !prefer_ipv4 || std::strcmp(prefer_ipv4, "0") != 0;
+  }();
+  if (!prefer_ipv4_default)
     return nuah_host_getaddrinfo(node, service, hints, result);
   if (hints && hints->ai_family != AF_UNSPEC)
     return nuah_host_getaddrinfo(node, service, hints, result);
@@ -254,8 +260,11 @@ SemEntry semaphores[512];
  * probe, not a second synchronization implementation. */
 std::atomic<unsigned> sync_trace_events{0};
 bool sync_trace_slot() {
-  const char* value = ::getenv("NUAH_TRACE_PTHREAD");
-  if (!value || !*value || std::strcmp(value, "0") == 0) return false;
+  static const bool enabled = [] {
+    const char* value = ::getenv("NUAH_TRACE_PTHREAD");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  if (!enabled) return false;
   return sync_trace_events.fetch_add(1, std::memory_order_relaxed) < 4096;
 }
 
@@ -264,8 +273,11 @@ bool sync_trace_slot() {
  * key is created or read. */
 std::atomic<unsigned> tls_trace_events{0};
 bool tls_trace_slot() {
-  const char* value = ::getenv("NUAH_TRACE_TLS");
-  if (!value || !*value || std::strcmp(value, "0") == 0) return false;
+  static const bool enabled = [] {
+    const char* value = ::getenv("NUAH_TRACE_TLS");
+    return value && *value && std::strcmp(value, "0") != 0;
+  }();
+  if (!enabled) return false;
   return tls_trace_events.fetch_add(1, std::memory_order_relaxed) < 1024;
 }
 
@@ -1122,10 +1134,25 @@ int pthread_key_delete(pthread_key_t key) {
   }
   return result;
 }
+bool pthread_tls_guard_enabled() {
+  static const bool enabled = [] {
+    const char* guard = ::getenv("NUAH_PTHREAD_TLS_GUARD");
+    return guard && *guard && std::strcmp(guard, "0") != 0;
+  }();
+  return enabled;
+}
+
+bool bootstrap_trace_enabled() {
+  static const bool enabled = [] {
+    const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
+    return trace && *trace && std::strcmp(trace, "0") != 0;
+  }();
+  return enabled;
+}
+
 void* pthread_getspecific(pthread_key_t key) {
   const pthread_key_t host_key = host_key_for_android(key);
-  const char* guard = ::getenv("NUAH_PTHREAD_TLS_GUARD");
-  const bool guard_host_key = guard && *guard && std::strcmp(guard, "0") != 0 &&
+  const bool guard_host_key = pthread_tls_guard_enabled() &&
                               android_key_namespace_enabled() && host_key == 4;
   void* value = guard_host_key ? nullptr : nuah_host_pthread_getspecific(host_key);
   if (tls_trace_slot()) {
@@ -1143,8 +1170,7 @@ int nuah_pthread_setspecific_export(pthread_key_t key, const void* value) {
   using Function = int (*)(pthread_key_t, const void*);
   const Function function = &nuah_host_pthread_setspecific;
   const pthread_key_t host_key = host_key_for_android(key);
-  const char* guard = ::getenv("NUAH_PTHREAD_TLS_GUARD");
-  const bool guard_host_key = guard && *guard && std::strcmp(guard, "0") != 0 &&
+  const bool guard_host_key = pthread_tls_guard_enabled() &&
                               android_key_namespace_enabled() && host_key == 4;
   const uintptr_t value_bits = reinterpret_cast<uintptr_t>(value);
   const int result = guard_host_key
@@ -1415,8 +1441,7 @@ int pthread_attr_setstacksize(pthread_attr_t* object, size_t size) {
       entry ? host<int (*)(pthread_attr_t*, size_t)>(
                   "pthread_attr_setstacksize")(&entry->native, size)
             : EINVAL;
-  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
-      trace && *trace) {
+  if (bootstrap_trace_enabled()) {
     std::fprintf(stderr,
                  "nuah bionic: pthread_attr_setstacksize android=%p "
                  "size=%zu result=%d\n",
@@ -1448,8 +1473,7 @@ int pthread_create(pthread_t* thread, const pthread_attr_t* object,
           const_cast<pthread_attr_t*>(host_attributes), kMinimumRobloxStack);
     }
   }
-  if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE");
-      trace && *trace) {
+  if (bootstrap_trace_enabled()) {
     size_t stack_size = 0;
     (void)host<int (*)(const pthread_attr_t*, size_t*)>(
         "pthread_attr_getstacksize")(host_attributes, &stack_size);
