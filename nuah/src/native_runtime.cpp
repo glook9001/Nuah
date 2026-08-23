@@ -2640,6 +2640,15 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       set_client_setting(target_settings, "FFlagDebugSkyDisableAtmosphere", "true");
       set_client_setting(target_settings, "FFlagRenderEnableLowEndLOD", "true");
       set_client_setting(target_settings, "FIntTerrainArraySliceSize", "\"4\"");
+      set_client_setting(target_settings, "FFlagLuauNativeCodeGen", "true");
+      set_client_setting(target_settings, "FFlagLuauNativeCodeGenMode2", "true");
+      set_client_setting(target_settings, "FIntLuauNativeCodeGenThreshold", "\"0\"");
+      set_client_setting(target_settings, "FFlagLuauFastVariables", "true");
+      set_client_setting(target_settings, "FFlagLuauVector3Bytecode", "true");
+      set_client_setting(target_settings, "DFIntTaskSchedulerSleepToleranceMs", "\"1\"");
+      set_client_setting(target_settings, "FFlagDebugDisableShadowCasting", "true");
+      set_client_setting(target_settings, "FFlagRenderFixParticlesCulling", "true");
+      set_client_setting(target_settings, "FFlagPhysicsStepCycleFix", "true");
       set_client_setting(target_settings, "FFlagTaskSchedulerLimitTargetFpsTo240", "false");
       set_client_setting(target_settings, "FFlagGameBasicSettingsFramerateCap5", "false");
     }

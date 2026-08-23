@@ -378,6 +378,11 @@ done
   NUAH_TEXTURE_SIDECAR=0 \
   NUAH_PERF_TRACE="$perf_trace" \
   NUAH_SHADER_CACHE_DIR="$nuah_data/base.apk_/mesa-shader-cache" \
+  MESA_SHADER_CACHE_DIR="$nuah_data/base.apk_/mesa-shader-cache" \
+  MESA_SHADER_CACHE_DISABLE=false \
+  MESA_VK_WSI_PRESENT_MODE="${NUAH_VULKAN_PRESENT_MODE:-mailbox}" \
+  ANV_ENABLE_PIPELINE_CACHE=1 \
+  vblank_mode=0 \
   "$nuah_binary" native-run --width "$width" --height "$height" \
     --apk "$apk_path" --split "$split_apk_path" \
     --data "$runtime_data" --uri 'roblox://placeId=17625359962' >"$log" 2>&1
