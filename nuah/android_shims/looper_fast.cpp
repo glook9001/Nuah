@@ -219,7 +219,7 @@ int ALooper_pollOnce(int timeout_ms, int* out_fd, int* out_events,
     const int fd = events[static_cast<std::size_t>(i)].data.fd;
     if (fd == looper->wake_fd) {
       uint64_t value = 0;
-      while (::read(looper->wake_fd, &value, sizeof(value)) == sizeof(value)) {}
+      (void)::read(looper->wake_fd, &value, sizeof(value));
       return kPollWake;
     }
     bool found = false;

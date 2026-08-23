@@ -160,10 +160,10 @@ bool descriptor_bind_dedup_trace_enabled() {
 uint32_t descriptor_alloc_batch_size() {
   static const uint32_t value = [] {
     const char* raw = std::getenv("NUAH_DESCRIPTOR_ALLOC_BATCH");
-    if (!raw || !*raw) return 0U;
+    if (!raw || !*raw) return 4U;
     char* end = nullptr;
     const unsigned long parsed = std::strtoul(raw, &end, 10);
-    if (end == raw || *end != '\0' || parsed < 1 || parsed > 16)
+    if (end == raw || *end != '\0' || parsed > 16)
       return 0U;
     return static_cast<uint32_t>(parsed);
   }();

@@ -2654,6 +2654,11 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       set_client_setting(target_settings, "FFlagDebugDisableToneMapping", "true");
       set_client_setting(target_settings, "FFlagRenderGrassOrnament", "false");
       set_client_setting(target_settings, "FFlagRenderEnableGrass", "false");
+      set_client_setting(target_settings, "FFlagRenderEnableDecalStreaming", "true");
+      set_client_setting(target_settings, "FFlagRenderBatchParticles", "true");
+      set_client_setting(target_settings, "FFlagRenderOptimizeLightGrid", "true");
+      set_client_setting(target_settings, "FFlagRenderDisableShadowMapResolution", "true");
+      set_client_setting(target_settings, "FFlagRenderDisableVolumetricAtmosphere", "true");
       set_client_setting(target_settings, "FIntTerrainArraySliceSize", "\"4\"");
       set_client_setting(target_settings, "FFlagLuauNativeCodeGen", "true");
       set_client_setting(target_settings, "FFlagLuauNativeCodeGenMode2", "true");
