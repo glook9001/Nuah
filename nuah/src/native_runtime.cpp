@@ -304,10 +304,14 @@ void configure_mesa_shader_cache(const std::filesystem::path& profile) {
   if (!std::getenv("MESA_SHADER_CACHE_MAX_SIZE")) {
     const char* requested = std::getenv("NUAH_SHADER_CACHE_MAX_SIZE");
     (void)::setenv("MESA_SHADER_CACHE_MAX_SIZE",
-                   requested && *requested ? requested : "1G", 1);
+                   requested && *requested ? requested : "2G", 1);
   }
   if (!std::getenv("MESA_SHADER_CACHE_DISABLE"))
     (void)::setenv("MESA_SHADER_CACHE_DISABLE", "false", 1);
+  if (!std::getenv("MESA_DISK_CACHE_SINGLE_FILE"))
+    (void)::setenv("MESA_DISK_CACHE_SINGLE_FILE", "1", 1);
+  if (!std::getenv("ANV_ENABLE_PIPELINE_CACHE"))
+    (void)::setenv("ANV_ENABLE_PIPELINE_CACHE", "1", 1);
   if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
     std::cerr << "nuah graphics: Mesa shader cache=" << directory << '\n';
 }

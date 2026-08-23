@@ -1638,13 +1638,17 @@ bool residency_snapshot_enabled() {
 
 std::filesystem::path pipeline_cache_path() {
   const char* directory = std::getenv("NUAH_SHADER_CACHE_DIR");
-  /* configure_mesa_shader_cache publishes the profile location through
-   * MESA_SHADER_CACHE_DIR for ordinary launches.  Falling back to it keeps
-   * the Vulkan pipeline cache beside Mesa's cache instead of silently
-   * disabling persistence unless callers duplicate that environment knob. */
   if (!directory || !*directory)
     directory = std::getenv("MESA_SHADER_CACHE_DIR");
-  if (!directory || !*directory) return {};
+  if (!directory || !*directory) {
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+      static const auto default_dir =
+          std::filesystem::path(home) / ".local" / "share" / "nuah" / "mesa-shader-cache";
+      return default_dir / "nuah-vk-pipeline-cache.bin";
+    }
+    return {};
+  }
   return std::filesystem::path(directory) / "nuah-vk-pipeline-cache.bin";
 }
 
