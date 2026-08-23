@@ -906,29 +906,32 @@ int nuah_getopt_long(int argument_count, char* const arguments[],
   return result;
 }
 int close(int fd) {
-  return host<int (*)(int)>("close")(fd);
+  static const auto fn = host<int (*)(int)>("close");
+  return fn(fd);
 }
 ssize_t read(int fd, void* data, size_t count) {
-  return host<ssize_t (*)(int, void*, size_t)>("read")(fd, data, count);
+  static const auto fn = host<ssize_t (*)(int, void*, size_t)>("read");
+  return fn(fd, data, count);
 }
 ssize_t __read_chk(int fd, void* data, size_t count, size_t data_size) {
   if (count > data_size) std::abort();
   return read(fd, data, count);
 }
 ssize_t write(int fd, const void* data, size_t count) {
-  return host<ssize_t (*)(int, const void*, size_t)>("write")(fd, data, count);
+  static const auto fn = host<ssize_t (*)(int, const void*, size_t)>("write");
+  return fn(fd, data, count);
 }
 ssize_t pread(int fd, void* data, size_t count, off_t offset) {
-  return host<ssize_t (*)(int, void*, size_t, off_t)>("pread")(
-      fd, data, count, offset);
+  static const auto fn = host<ssize_t (*)(int, void*, size_t, off_t)>("pread");
+  return fn(fd, data, count, offset);
 }
 ssize_t pwrite(int fd, const void* data, size_t count, off_t offset) {
-  return host<ssize_t (*)(int, const void*, size_t, off_t)>("pwrite")(
-      fd, data, count, offset);
+  static const auto fn = host<ssize_t (*)(int, const void*, size_t, off_t)>("pwrite");
+  return fn(fd, data, count, offset);
 }
 ssize_t writev(int fd, const iovec* vectors, int count) {
-  return host<ssize_t (*)(int, const iovec*, int)>("writev")(
-      fd, vectors, count);
+  static const auto fn = host<ssize_t (*)(int, const iovec*, int)>("writev");
+  return fn(fd, vectors, count);
 }
 int open(const char* path, int flags, ...) {
   mode_t mode = 0;
@@ -942,19 +945,24 @@ int open(const char* path, int flags, ...) {
     mode = static_cast<mode_t>(va_arg(arguments, int));
     va_end(arguments);
   }
-  return host<int (*)(const char*, int, mode_t)>("open")(path, flags, mode);
+  static const auto fn = host<int (*)(const char*, int, mode_t)>("open");
+  return fn(path, flags, mode);
 }
 int __open_2(const char* path, int flags) {
-  return host<int (*)(const char*, int)>("__open_2")(path, flags);
+  static const auto fn = host<int (*)(const char*, int)>("__open_2");
+  return fn(path, flags);
 }
 int access(const char* path, int mode) {
-  return host<int (*)(const char*, int)>("access")(path, mode);
+  static const auto fn = host<int (*)(const char*, int)>("access");
+  return fn(path, mode);
 }
 int fchmod(int fd, mode_t mode) {
-  return host<int (*)(int, mode_t)>("fchmod")(fd, mode);
+  static const auto fn = host<int (*)(int, mode_t)>("fchmod");
+  return fn(fd, mode);
 }
 int fchown(int fd, uid_t owner, gid_t group) {
-  return host<int (*)(int, uid_t, gid_t)>("fchown")(fd, owner, group);
+  static const auto fn = host<int (*)(int, uid_t, gid_t)>("fchown");
+  return fn(fd, owner, group);
 }
 int fcntl(int fd, int command, ...) {
   uintptr_t argument = 0;
@@ -971,44 +979,53 @@ int fcntl(int fd, int command, ...) {
       break;
     }
   }
-  return host<int (*)(int, int, uintptr_t)>("fcntl")(fd, command, argument);
+  static const auto fn = host<int (*)(int, int, uintptr_t)>("fcntl");
+  return fn(fd, command, argument);
 }
 int fstat(int fd, struct stat* value) {
-  return host<int (*)(int, struct stat*)>("fstat")(fd, value);
+  static const auto fn = host<int (*)(int, struct stat*)>("fstat");
+  return fn(fd, value);
 }
 int lstat(const char* path, struct stat* value) {
-  return host<int (*)(const char*, struct stat*)>("lstat")(path, value);
+  static const auto fn = host<int (*)(const char*, struct stat*)>("lstat");
+  return fn(path, value);
 }
 int stat(const char* path, struct stat* value) {
-  return host<int (*)(const char*, struct stat*)>("stat")(path, value);
+  static const auto fn = host<int (*)(const char*, struct stat*)>("stat");
+  return fn(path, value);
 }
 int fsync(int fd) {
-  return host<int (*)(int)>("fsync")(fd);
+  static const auto fn = host<int (*)(int)>("fsync");
+  return fn(fd);
 }
 int ftruncate(int fd, off_t length) {
-  return host<int (*)(int, off_t)>("ftruncate")(fd, length);
+  static const auto fn = host<int (*)(int, off_t)>("ftruncate");
+  return fn(fd, length);
 }
 off_t lseek(int fd, off_t offset, int origin) {
-  return host<off_t (*)(int, off_t, int)>("lseek")(fd, offset, origin);
+  static const auto fn = host<off_t (*)(int, off_t, int)>("lseek");
+  return fn(fd, offset, origin);
 }
 int mkdir(const char* path, mode_t mode) {
-  return host<int (*)(const char*, mode_t)>("mkdir")(path, mode);
+  static const auto fn = host<int (*)(const char*, mode_t)>("mkdir");
+  return fn(path, mode);
 }
 void* mmap(void* address, size_t length, int protection, int flags, int fd,
            off_t offset) {
-  return host<void* (*)(void*, size_t, int, int, int, off_t)>("mmap")(
-      address, length, protection, flags, fd, offset);
+  static const auto fn = host<void* (*)(void*, size_t, int, int, int, off_t)>("mmap");
+  return fn(address, length, protection, flags, fd, offset);
 }
 int mprotect(void* address, size_t length, int protection) {
-  return host<int (*)(void*, size_t, int)>("mprotect")(
-      address, length, protection);
+  static const auto fn = host<int (*)(void*, size_t, int)>("mprotect");
+  return fn(address, length, protection);
 }
 int munmap(void* address, size_t length) {
-  return host<int (*)(void*, size_t)>("munmap")(address, length);
+  static const auto fn = host<int (*)(void*, size_t)>("munmap");
+  return fn(address, length);
 }
 ssize_t readlink(const char* path, char* destination, size_t length) {
-  return host<ssize_t (*)(const char*, char*, size_t)>("readlink")(
-      path, destination, length);
+  static const auto fn = host<ssize_t (*)(const char*, char*, size_t)>("readlink");
+  return fn(path, destination, length);
 }
 ssize_t __readlink_chk(const char* path, char* destination, size_t length,
                        size_t destination_size) {
@@ -1016,13 +1033,14 @@ ssize_t __readlink_chk(const char* path, char* destination, size_t length,
   return readlink(path, destination, length);
 }
 int unlink(const char* path) {
-  return host<int (*)(const char*)>("unlink")(path);
+  static const auto fn = host<int (*)(const char*)>("unlink");
+  return fn(path);
 }
 int __poll_chk(pollfd* descriptors, nfds_t count, int timeout,
                size_t descriptors_size) {
   if (count > descriptors_size / sizeof(*descriptors)) std::abort();
-  return host<int (*)(pollfd*, nfds_t, int)>("poll")(
-      descriptors, count, timeout);
+  static const auto fn = host<int (*)(pollfd*, nfds_t, int)>("poll");
+  return fn(descriptors, count, timeout);
 }
 extern "C" size_t nuah_fread_chk(void* destination, size_t size, size_t count,
                                  std::FILE* stream, size_t destination_size)
