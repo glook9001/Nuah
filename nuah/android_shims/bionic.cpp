@@ -20,6 +20,7 @@
 #include <signal.h>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <sys/mman.h>
 #include <sys/auxv.h>
 #include <sys/socket.h>
@@ -1590,9 +1591,70 @@ int pthread_kill(pthread_t thread, int signal) {
 pthread_t pthread_self() {
   return host<pthread_t (*)()>("pthread_self")();
 }
+struct CoreAffinityPolicy {
+  cpu_set_t render_core;
+  cpu_set_t worker_core;
+  bool active = false;
+};
+
+const CoreAffinityPolicy& get_core_affinity_policy() {
+  static const CoreAffinityPolicy policy = [] {
+    CoreAffinityPolicy p{};
+    CPU_ZERO(&p.render_core);
+    CPU_ZERO(&p.worker_core);
+    const char* env_disabled = ::getenv("NUAH_AFFINITY_POLICY");
+    if (env_disabled && (std::strcmp(env_disabled, "0") == 0 ||
+                         std::strcmp(env_disabled, "off") == 0)) {
+      return p;
+    }
+    std::vector<int> core0;
+    std::vector<int> core1;
+    for (int cpu = 0; cpu < 64; ++cpu) {
+      char path[64];
+      std::snprintf(path, sizeof(path),
+                    "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
+      std::FILE* f = std::fopen(path, "r");
+      if (!f) break;
+      int cid = -1;
+      if (std::fscanf(f, "%d", &cid) == 1) {
+        if (cid == 0) core0.push_back(cpu);
+        else if (cid == 1) core1.push_back(cpu);
+      }
+      std::fclose(f);
+    }
+    if (core0.size() >= 2 && core1.size() >= 2 &&
+        (core0.size() + core1.size() == 4)) {
+      for (int c : core0) CPU_SET(c, &p.render_core);
+      for (int c : core1) CPU_SET(c, &p.worker_core);
+      p.active = true;
+    }
+    return p;
+  }();
+  return policy;
+}
+
 int pthread_setname_np(pthread_t thread, const char* name) {
-  return host<int (*)(pthread_t, const char*)>("pthread_setname_np")(
+  const int result = host<int (*)(pthread_t, const char*)>("pthread_setname_np")(
       thread, name);
+  if (NUAH_LIKELY(result == 0) && *name) {
+    const auto& policy = get_core_affinity_policy();
+    if (policy.active) {
+      static const auto setaffinity_fn =
+          host<int (*)(pthread_t, size_t, const cpu_set_t*)>("pthread_setaffinity_np");
+      if (setaffinity_fn) {
+        if (std::strstr(name, "Render") || std::strstr(name, "Vulkan") ||
+            std::strstr(name, "Present") || std::strstr(name, "Graphics") ||
+            std::strstr(name, "Main") || std::strstr(name, "Display")) {
+          (void)setaffinity_fn(thread, sizeof(cpu_set_t), &policy.render_core);
+        } else if (std::strstr(name, "Worker") || std::strstr(name, "Job") ||
+                   std::strstr(name, "Http") || std::strstr(name, "Asset") ||
+                   std::strstr(name, "Audio") || std::strstr(name, "Physics")) {
+          (void)setaffinity_fn(thread, sizeof(cpu_set_t), &policy.worker_core);
+        }
+      }
+    }
+  }
+  return result;
 }
 int pthread_setschedparam(pthread_t thread, int policy,
                           const sched_param* parameters) {
