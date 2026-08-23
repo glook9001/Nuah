@@ -1188,6 +1188,9 @@ bool bootstrap_trace_enabled() {
 }
 
 void* pthread_getspecific(pthread_key_t key) {
+  if (__builtin_expect(!android_key_namespace_enabled() && !tls_trace_slot(), 1)) {
+    return nuah_host_pthread_getspecific(key);
+  }
   const pthread_key_t host_key = host_key_for_android(key);
   const bool guard_host_key = pthread_tls_guard_enabled() &&
                               android_key_namespace_enabled() && host_key == 4;
@@ -1204,6 +1207,9 @@ void* pthread_getspecific(pthread_key_t key) {
 int nuah_pthread_setspecific_export(pthread_key_t key, const void* value)
     __asm__("pthread_setspecific");
 int nuah_pthread_setspecific_export(pthread_key_t key, const void* value) {
+  if (__builtin_expect(!android_key_namespace_enabled() && !tls_trace_slot(), 1)) {
+    return nuah_host_pthread_setspecific(key, value);
+  }
   using Function = int (*)(pthread_key_t, const void*);
   const Function function = &nuah_host_pthread_setspecific;
   const pthread_key_t host_key = host_key_for_android(key);
