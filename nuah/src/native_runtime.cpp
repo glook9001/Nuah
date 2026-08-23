@@ -2331,12 +2331,9 @@ int run_nuah_jni(const NativeLaunchOptions& options,
         governor_balanced
             ? 2UL
             : low_end_profile
-            ? (logical_cpus <= 1
+            ? (logical_cpus <= 2
                    ? 1UL
-                   : std::min<unsigned long>(
-                         3UL,
-                         std::max<unsigned long>(
-                             2UL, static_cast<unsigned long>(logical_cpus - 1))))
+                   : 2UL)
             : logical_cpus <= 1
                   ? 1UL
                   : std::min<unsigned long>(

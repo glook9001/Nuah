@@ -52,19 +52,14 @@ enum class RequestedPresentMode {
 RequestedPresentMode requested_present_mode() {
   static const RequestedPresentMode value = [] {
     const char* raw = std::getenv("NUAH_VULKAN_PRESENT_MODE");
-    /* The Android client expects a compositor-paced swap loop.  On this
-     * Wayland/Intel path FIFO gives a stable ~16.6 ms cadence in the same
-     * Roblox room, while immediate mode produces uneven 22--35 ms intervals
-     * and feels like a slideshow.  Keep immediate available as an explicit
-     * low-latency diagnostic override. */
-    if (!raw || !*raw) return RequestedPresentMode::fifo;
+    if (!raw || !*raw) return RequestedPresentMode::mailbox;
     if (std::strcmp(raw, "fifo") == 0) return RequestedPresentMode::fifo;
     if (std::strcmp(raw, "fifo_relaxed") == 0)
       return RequestedPresentMode::fifo_relaxed;
     if (std::strcmp(raw, "mailbox") == 0) return RequestedPresentMode::mailbox;
     if (std::strcmp(raw, "immediate") == 0)
       return RequestedPresentMode::immediate;
-    return RequestedPresentMode::none;
+    return RequestedPresentMode::mailbox;
   }();
   return value;
 }
