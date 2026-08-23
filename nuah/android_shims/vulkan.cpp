@@ -2555,35 +2555,41 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(
 VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(
     VkCommandBuffer command_buffer,
     const VkCommandBufferBeginInfo* begin_info) {
-  const auto function = host_function<PFN_vkBeginCommandBuffer>(
+  static const auto function = host_function<PFN_vkBeginCommandBuffer>(
       "vkBeginCommandBuffer");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  const bool dedup_desc = descriptor_bind_dedup_enabled();
+  const bool dedup_cmd = command_state_dedup_enabled();
   const VkResult result = function(command_buffer, begin_info);
-  if (descriptor_bind_dedup_enabled()) clear_descriptor_bind(command_buffer);
-  if (command_state_dedup_enabled()) clear_command_state(command_buffer);
+  if (dedup_desc) clear_descriptor_bind(command_buffer);
+  if (dedup_cmd) clear_command_state(command_buffer);
   return result;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(
     VkCommandBuffer command_buffer) {
-  const auto function =
+  static const auto function =
       host_function<PFN_vkEndCommandBuffer>("vkEndCommandBuffer");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  const bool dedup_desc = descriptor_bind_dedup_enabled();
+  const bool dedup_cmd = command_state_dedup_enabled();
   const VkResult result = function(command_buffer);
-  if (descriptor_bind_dedup_enabled()) clear_descriptor_bind(command_buffer);
-  if (command_state_dedup_enabled()) clear_command_state(command_buffer);
+  if (dedup_desc) clear_descriptor_bind(command_buffer);
+  if (dedup_cmd) clear_command_state(command_buffer);
   return result;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(
     VkCommandBuffer command_buffer, VkCommandBufferResetFlags flags) {
-  const auto function =
+  static const auto function =
       host_function<PFN_vkResetCommandBuffer>("vkResetCommandBuffer");
   if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  const bool dedup_desc = descriptor_bind_dedup_enabled();
+  const bool dedup_cmd = command_state_dedup_enabled();
   const VkResult result = function(command_buffer, flags);
-  if (descriptor_bind_dedup_enabled() && result == VK_SUCCESS)
+  if (dedup_desc && result == VK_SUCCESS)
     clear_descriptor_bind(command_buffer);
-  if (command_state_dedup_enabled() && result == VK_SUCCESS)
+  if (dedup_cmd && result == VK_SUCCESS)
     clear_command_state(command_buffer);
   return result;
 }
@@ -2591,7 +2597,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(
 VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(
     VkDevice device, VkCommandPool command_pool, uint32_t command_buffer_count,
     const VkCommandBuffer* command_buffers) {
-  const auto function = host_function<PFN_vkFreeCommandBuffers>(
+  static const auto function = host_function<PFN_vkFreeCommandBuffers>(
       "vkFreeCommandBuffers");
   if (!function) return;
   function(device, command_pool, command_buffer_count, command_buffers);
@@ -2614,7 +2620,7 @@ VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(
 VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(
     VkCommandBuffer command_buffer, uint32_t command_buffer_count,
     const VkCommandBuffer* command_buffers) {
-  const auto function = host_function<PFN_vkCmdExecuteCommands>(
+  static const auto function = host_function<PFN_vkCmdExecuteCommands>(
       "vkCmdExecuteCommands");
   if (!function) return;
   function(command_buffer, command_buffer_count, command_buffers);

@@ -2633,6 +2633,12 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       set_client_setting(target_settings, "FIntFRMMaxGrassDistance", "\"0\"");
       set_client_setting(target_settings, "FIntRenderShadowIntensity", "\"0\"");
       set_client_setting(target_settings, "FIntShadowMapBias", "\"0\"");
+      set_client_setting(target_settings, "FIntRenderShadowMapResolution", "\"0\"");
+      set_client_setting(target_settings, "FFlagDebugDisableClouds", "true");
+      set_client_setting(target_settings, "FFlagRenderClouds", "false");
+      set_client_setting(target_settings, "FFlagRenderEnableVolumetricClouds", "false");
+      set_client_setting(target_settings, "FFlagDebugSkyDisableAtmosphere", "true");
+      set_client_setting(target_settings, "FFlagRenderEnableLowEndLOD", "true");
       set_client_setting(target_settings, "FIntTerrainArraySliceSize", "\"4\"");
       set_client_setting(target_settings, "FFlagTaskSchedulerLimitTargetFpsTo240", "false");
       set_client_setting(target_settings, "FFlagGameBasicSettingsFramerateCap5", "false");
