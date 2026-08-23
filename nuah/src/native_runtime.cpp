@@ -2645,7 +2645,13 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       set_client_setting(target_settings, "FIntLuauNativeCodeGenThreshold", "\"0\"");
       set_client_setting(target_settings, "FFlagLuauFastVariables", "true");
       set_client_setting(target_settings, "FFlagLuauVector3Bytecode", "true");
-      set_client_setting(target_settings, "DFIntTaskSchedulerSleepToleranceMs", "\"1\"");
+      set_client_setting(target_settings, "DFIntTaskSchedulerSleepToleranceMs", "\"0\"");
+      set_client_setting(target_settings, "FFlagTaskSchedulerAvoidSleeping", "true");
+      set_client_setting(target_settings, "FIntPhysicsMaxSubSteps", "\"1\"");
+      set_client_setting(target_settings, "FFlagFastPhysicsStep", "true");
+      set_client_setting(target_settings, "FFlagAdaptivePhysicsStepping", "true");
+      set_client_setting(target_settings, "FFlagSimdLinearAlgebra", "true");
+      set_client_setting(target_settings, "FIntRenderJobWaitBudgetMicroseconds", "\"0\"");
       set_client_setting(target_settings, "FFlagDebugDisableShadowCasting", "true");
       set_client_setting(target_settings, "FFlagRenderFixParticlesCulling", "true");
       set_client_setting(target_settings, "FFlagPhysicsStepCycleFix", "true");
