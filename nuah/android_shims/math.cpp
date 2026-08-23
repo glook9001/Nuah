@@ -1,37 +1,22 @@
-#include <dlfcn.h>
+#include <cmath>
 
 #include "nuah/android_abi_registry.h"
 
-namespace {
-template <typename Function>
-Function host(const char* name) {
-  return reinterpret_cast<Function>(::dlsym(RTLD_NEXT, name));
-}
-}
-
 #define NUAH_UNARY_DOUBLE(name) \
   extern "C" double name(double value) { \
-    static const auto fn = \
-        reinterpret_cast<double (*)(double)>(::dlsym(RTLD_NEXT, #name)); \
-    return fn(value); \
+    return __builtin_##name(value); \
   }
 #define NUAH_UNARY_FLOAT(name) \
   extern "C" float name(float value) { \
-    static const auto fn = \
-        reinterpret_cast<float (*)(float)>(::dlsym(RTLD_NEXT, #name)); \
-    return fn(value); \
+    return __builtin_##name(value); \
   }
 #define NUAH_BINARY_DOUBLE(name) \
   extern "C" double name(double left, double right) { \
-    static const auto fn = \
-        reinterpret_cast<double (*)(double, double)>(::dlsym(RTLD_NEXT, #name)); \
-    return fn(left, right); \
+    return __builtin_##name(left, right); \
   }
 #define NUAH_BINARY_FLOAT(name) \
   extern "C" float name(float left, float right) { \
-    static const auto fn = \
-        reinterpret_cast<float (*)(float, float)>(::dlsym(RTLD_NEXT, #name)); \
-    return fn(left, right); \
+    return __builtin_##name(left, right); \
   }
 
 NUAH_UNARY_DOUBLE(acos)
@@ -80,96 +65,60 @@ NUAH_BINARY_FLOAT(nextafterf)
 NUAH_BINARY_FLOAT(remainderf)
 
 extern "C" int finitef(float value) {
-  static const auto fn =
-      reinterpret_cast<int (*)(float)>(::dlsym(RTLD_NEXT, "finitef"));
-  return fn(value);
+  return std::isfinite(value) ? 1 : 0;
 }
 extern "C" long double fmal(long double left, long double right,
                              long double addend) {
-  static const auto fn = reinterpret_cast<long double (*)(
-      long double, long double, long double)>(::dlsym(RTLD_NEXT, "fmal"));
-  return fn(left, right, addend);
+  return __builtin_fmal(left, right, addend);
 }
 extern "C" int ilogb(double value) {
-  static const auto fn =
-      reinterpret_cast<int (*)(double)>(::dlsym(RTLD_NEXT, "ilogb"));
-  return fn(value);
+  return __builtin_ilogb(value);
 }
 extern "C" long long llround(double value) {
-  static const auto fn =
-      reinterpret_cast<long long (*)(double)>(::dlsym(RTLD_NEXT, "llround"));
-  return fn(value);
+  return __builtin_llround(value);
 }
 extern "C" long long llroundf(float value) {
-  static const auto fn =
-      reinterpret_cast<long long (*)(float)>(::dlsym(RTLD_NEXT, "llroundf"));
-  return fn(value);
+  return __builtin_llroundf(value);
 }
 extern "C" long lround(double value) {
-  static const auto fn =
-      reinterpret_cast<long (*)(double)>(::dlsym(RTLD_NEXT, "lround"));
-  return fn(value);
+  return __builtin_lround(value);
 }
 extern "C" long lroundf(float value) {
-  static const auto fn =
-      reinterpret_cast<long (*)(float)>(::dlsym(RTLD_NEXT, "lroundf"));
-  return fn(value);
+  return __builtin_lroundf(value);
 }
 extern "C" double nan(const char* tag) {
-  static const auto fn =
-      reinterpret_cast<double (*)(const char*)>(::dlsym(RTLD_NEXT, "nan"));
-  return fn(tag);
+  return __builtin_nan(tag);
 }
 extern "C" long double powl(long double left, long double right) {
-  static const auto fn = reinterpret_cast<long double (*)(
-      long double, long double)>(::dlsym(RTLD_NEXT, "powl"));
-  return fn(left, right);
+  return __builtin_powl(left, right);
 }
 extern "C" float remquof(float left, float right, int* quotient) {
-  static const auto fn = reinterpret_cast<float (*)(float, float, int*)>(
-      ::dlsym(RTLD_NEXT, "remquof"));
-  return fn(left, right, quotient);
+  return __builtin_remquof(left, right, quotient);
 }
 
 extern "C" double frexp(double value, int* exponent) {
-  static const auto fn =
-      reinterpret_cast<double (*)(double, int*)>(::dlsym(RTLD_NEXT, "frexp"));
-  return fn(value, exponent);
+  return __builtin_frexp(value, exponent);
 }
 extern "C" float frexpf(float value, int* exponent) {
-  static const auto fn =
-      reinterpret_cast<float (*)(float, int*)>(::dlsym(RTLD_NEXT, "frexpf"));
-  return fn(value, exponent);
+  return __builtin_frexpf(value, exponent);
 }
 extern "C" double ldexp(double value, int exponent) {
-  static const auto fn =
-      reinterpret_cast<double (*)(double, int)>(::dlsym(RTLD_NEXT, "ldexp"));
-  return fn(value, exponent);
+  return __builtin_ldexp(value, exponent);
 }
 extern "C" float ldexpf(float value, int exponent) {
-  static const auto fn =
-      reinterpret_cast<float (*)(float, int)>(::dlsym(RTLD_NEXT, "ldexpf"));
-  return fn(value, exponent);
+  return __builtin_ldexpf(value, exponent);
 }
 extern "C" double modf(double value, double* integral) {
-  static const auto fn =
-      reinterpret_cast<double (*)(double, double*)>(::dlsym(RTLD_NEXT, "modf"));
-  return fn(value, integral);
+  return __builtin_modf(value, integral);
 }
 extern "C" float modff(float value, float* integral) {
-  static const auto fn =
-      reinterpret_cast<float (*)(float, float*)>(::dlsym(RTLD_NEXT, "modff"));
-  return fn(value, integral);
+  return __builtin_modff(value, integral);
 }
 extern "C" void sincos(double value, double* sine, double* cosine) {
-  static const auto fn = reinterpret_cast<void (*)(double, double*, double*)>(
-      ::dlsym(RTLD_NEXT, "sincos"));
-  fn(value, sine, cosine);
+  __builtin_sincos(value, sine, cosine);
 }
 extern "C" void sincosf(float value, float* sine, float* cosine) {
-  static const auto fn = reinterpret_cast<void (*)(float, float*, float*)>(
-      ::dlsym(RTLD_NEXT, "sincosf"));
-  fn(value, sine, cosine);
+  __builtin_sincosf(value, sine, cosine);
 }
 
 __attribute__((constructor)) static void register_math_abi() {
