@@ -32,6 +32,13 @@
 #define NUAH_STRINGIFY_INNER(value) #value
 #define NUAH_STRINGIFY(value) NUAH_STRINGIFY_INNER(value)
 
+#ifndef NUAH_LIKELY
+#define NUAH_LIKELY(x) (__builtin_expect(!!(x), 1))
+#endif
+#ifndef NUAH_UNLIKELY
+#define NUAH_UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#endif
+
 extern "C" {
 // Legacy Android objects still reference Bionic's pre-API-23 __sF array.
 // Bionic's LP64 FILE ABI is an opaque 152-byte object; it is not glibc FILE.
@@ -848,29 +855,29 @@ __attribute__((constructor)) static void initialize_standard_streams() {
 extern "C" {
 void* __memset_chk(void* destination, int value, size_t length,
                    size_t destination_size) {
-  if (length > destination_size) std::abort();
+  if (NUAH_UNLIKELY(length > destination_size)) std::abort();
   return memset(destination, value, length);
 }
 void* __memcpy_chk(void* destination, const void* source, size_t length,
                    size_t destination_size) {
-  if (length > destination_size) std::abort();
+  if (NUAH_UNLIKELY(length > destination_size)) std::abort();
   return memcpy(destination, source, length);
 }
 void* __memmove_chk(void* destination, const void* source, size_t length,
                     size_t destination_size) {
-  if (length > destination_size) std::abort();
+  if (NUAH_UNLIKELY(length > destination_size)) std::abort();
   return memmove(destination, source, length);
 }
 char* __strcpy_chk(char* destination, const char* source,
                    size_t destination_size) {
   const size_t length = strlen(source) + 1;
-  if (length > destination_size) std::abort();
+  if (NUAH_UNLIKELY(length > destination_size)) std::abort();
   return strcpy(destination, source);
 }
 char* __strcat_chk(char* destination, const char* source,
                    size_t destination_size) {
   const size_t length = strlen(destination) + strlen(source) + 1;
-  if (length > destination_size) std::abort();
+  if (NUAH_UNLIKELY(length > destination_size)) std::abort();
   return strcat(destination, source);
 }
 char* strerror(int error) {
@@ -1017,10 +1024,10 @@ void* mmap(void* address, size_t length, int protection, int flags, int fd,
            off_t offset) {
   static const auto fn = host<void* (*)(void*, size_t, int, int, int, off_t)>("mmap");
   void* result = fn(address, length, protection, flags, fd, offset);
-  if (result != MAP_FAILED && (flags & MAP_ANONYMOUS) != 0 && length >= 2 * 1024 * 1024) {
+  if (NUAH_LIKELY(result != MAP_FAILED) && (flags & MAP_ANONYMOUS) != 0 && length >= 2 * 1024 * 1024) {
 #ifdef MADV_HUGEPAGE
     static const auto madv_fn = host<int (*)(void*, size_t, int)>("madvise");
-    if (madv_fn) {
+    if (NUAH_LIKELY(madv_fn != nullptr)) {
       madv_fn(result, length, MADV_HUGEPAGE);
     }
 #endif
@@ -1029,10 +1036,10 @@ void* mmap(void* address, size_t length, int protection, int flags, int fd,
 }
 int madvise(void* address, size_t length, int advice) {
   static const auto fn = host<int (*)(void*, size_t, int)>("madvise");
-  if (advice == 8) {
+  if (NUAH_UNLIKELY(advice == 8)) {
     advice = MADV_DONTNEED;
   }
-  return fn ? fn(address, length, advice) : 0;
+  return NUAH_LIKELY(fn != nullptr) ? fn(address, length, advice) : 0;
 }
 int mprotect(void* address, size_t length, int protection) {
   static const auto fn = host<int (*)(void*, size_t, int)>("mprotect");

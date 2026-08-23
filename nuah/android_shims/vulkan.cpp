@@ -23,6 +23,13 @@
 #include <unordered_set>
 #include <vector>
 
+#ifndef NUAH_LIKELY
+#define NUAH_LIKELY(x) (__builtin_expect(!!(x), 1))
+#endif
+#ifndef NUAH_UNLIKELY
+#define NUAH_UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#endif
+
 namespace {
 // vulkan_android.h requires Android NDK headers. This is the exact public ABI
 // layout of VkAndroidSurfaceCreateInfoKHR, expressed using host-visible types.
@@ -2456,8 +2463,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkFreeDescriptorSets(
     uint32_t descriptor_set_count, const VkDescriptorSet* descriptor_sets) {
   static const auto function = host_function<PFN_vkFreeDescriptorSets>(
       "vkFreeDescriptorSets");
-  if (!function) return VK_ERROR_INITIALIZATION_FAILED;
-  if (!engine_trace_enabled()) {
+  if (NUAH_UNLIKELY(!function)) return VK_ERROR_INITIALIZATION_FAILED;
+  if (NUAH_LIKELY(!engine_trace_enabled())) {
     return function(device, descriptor_pool, descriptor_set_count, descriptor_sets);
   }
   const uint64_t started_ns = monotonic_ns();
@@ -2473,8 +2480,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorPool(
     const VkAllocationCallbacks* allocator, VkDescriptorPool* descriptor_pool) {
   static const auto function = host_function<PFN_vkCreateDescriptorPool>(
       "vkCreateDescriptorPool");
-  if (!function) return VK_ERROR_INITIALIZATION_FAILED;
-  if (!engine_trace_enabled()) {
+  if (NUAH_UNLIKELY(!function)) return VK_ERROR_INITIALIZATION_FAILED;
+  if (NUAH_LIKELY(!engine_trace_enabled())) {
     return function(device, create_info, allocator, descriptor_pool);
   }
   const uint64_t started_ns = monotonic_ns();
@@ -2491,7 +2498,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(
     VkDescriptorPoolResetFlags flags) {
   static const auto function = host_function<PFN_vkResetDescriptorPool>(
       "vkResetDescriptorPool");
-  if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (NUAH_UNLIKELY(!function)) return VK_ERROR_INITIALIZATION_FAILED;
   const bool trace = engine_trace_enabled();
   const uint64_t started_ns = trace ? monotonic_ns() : 0;
   const VkResult result = function(device, descriptor_pool, flags);
@@ -2509,7 +2516,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(
     const VkAllocationCallbacks* allocator) {
   static const auto function = host_function<PFN_vkDestroyDescriptorPool>(
       "vkDestroyDescriptorPool");
-  if (!function) return;
+  if (NUAH_UNLIKELY(!function)) return;
   function(device, descriptor_pool, allocator);
   if (descriptor_alloc_batch_size())
     clear_cached_descriptor_pool(descriptor_pool);
@@ -2525,8 +2532,8 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(
     const VkCopyDescriptorSet* descriptor_copies) {
   static const auto function = host_function<PFN_vkUpdateDescriptorSets>(
       "vkUpdateDescriptorSets");
-  if (!function) return;
-  if (!engine_trace_enabled()) {
+  if (NUAH_UNLIKELY(!function)) return;
+  if (NUAH_LIKELY(!engine_trace_enabled())) {
     function(device, descriptor_write_count, descriptor_writes,
              descriptor_copy_count, descriptor_copies);
     return;
@@ -2545,8 +2552,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(
     const VkAllocationCallbacks* allocator, VkImageView* image_view) {
   static const auto function =
       host_function<PFN_vkCreateImageView>("vkCreateImageView");
-  if (!function) return VK_ERROR_INITIALIZATION_FAILED;
-  if (!engine_trace_enabled()) {
+  if (NUAH_UNLIKELY(!function)) return VK_ERROR_INITIALIZATION_FAILED;
+  if (NUAH_LIKELY(!engine_trace_enabled())) {
     return function(device, create_info, allocator, image_view);
   }
   const uint64_t started_ns = monotonic_ns();
@@ -2665,9 +2672,9 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindPipeline(
     VkPipeline pipeline) {
   static const auto function =
       host_function<PFN_vkCmdBindPipeline>("vkCmdBindPipeline");
-  if (!function) return;
+  if (NUAH_UNLIKELY(!function)) return;
   const bool dedup = command_state_dedup_enabled();
-  if (!dedup) {
+  if (NUAH_LIKELY(!dedup)) {
     function(command_buffer, bind_point, pipeline);
     return;
   }
@@ -2691,9 +2698,9 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindIndexBuffer(
     VkIndexType index_type) {
   static const auto function =
       host_function<PFN_vkCmdBindIndexBuffer>("vkCmdBindIndexBuffer");
-  if (!function) return;
+  if (NUAH_UNLIKELY(!function)) return;
   const bool dedup = command_state_dedup_enabled();
-  if (!dedup) {
+  if (NUAH_LIKELY(!dedup)) {
     function(command_buffer, buffer, offset, index_type);
     return;
   }
@@ -2719,9 +2726,9 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers(
     const VkDeviceSize* offsets) {
   static const auto function =
       host_function<PFN_vkCmdBindVertexBuffers>("vkCmdBindVertexBuffers");
-  if (!function) return;
+  if (NUAH_UNLIKELY(!function)) return;
   const bool dedup = command_state_dedup_enabled();
-  if (!dedup) {
+  if (NUAH_LIKELY(!dedup)) {
     function(command_buffer, first_binding, binding_count, buffers, offsets);
     return;
   }
@@ -2750,9 +2757,9 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers2(
     const VkDeviceSize* strides) {
   static const auto function =
       host_function<PFN_vkCmdBindVertexBuffers2>("vkCmdBindVertexBuffers2");
-  if (!function) return;
+  if (NUAH_UNLIKELY(!function)) return;
   const bool dedup = command_state_dedup_enabled();
-  if (!dedup) {
+  if (NUAH_LIKELY(!dedup)) {
     function(command_buffer, first_binding, binding_count, buffers, offsets,
              sizes, strides);
     return;
@@ -2789,11 +2796,11 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(
     const uint32_t* dynamic_offsets) {
   static const auto function = host_function<PFN_vkCmdBindDescriptorSets>(
       "vkCmdBindDescriptorSets");
-  if (!function) return;
+  if (NUAH_UNLIKELY(!function)) return;
 
   const bool dedup = descriptor_bind_dedup_enabled();
   const bool trace = engine_trace_enabled();
-  if (!dedup && !trace) {
+  if (NUAH_LIKELY(!dedup && !trace)) {
     function(command_buffer, bind_point, layout, first_set, descriptor_set_count,
              descriptor_sets, dynamic_offset_count, dynamic_offsets);
     return;
@@ -2844,9 +2851,9 @@ VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(
     const VkImageMemoryBarrier* image_memory_barriers) {
   static const auto function =
       host_function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier");
-  if (!function) return;
+  if (NUAH_UNLIKELY(!function)) return;
   const bool trace = engine_trace_enabled();
-  if (!trace) {
+  if (NUAH_LIKELY(!trace)) {
     function(command_buffer, source_stage_mask, destination_stage_mask,
              dependency_flags, memory_barrier_count, memory_barriers,
              buffer_memory_barrier_count, buffer_memory_barriers,
@@ -2868,8 +2875,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(
     VkSemaphore semaphore, VkFence fence, uint32_t* image_index) {
   static const auto function =
       host_function<PFN_vkAcquireNextImageKHR>("vkAcquireNextImageKHR");
-  if (!function) return VK_ERROR_INITIALIZATION_FAILED;
-  if (!wait_trace_enabled() && !engine_trace_enabled()) {
+  if (NUAH_UNLIKELY(!function)) return VK_ERROR_INITIALIZATION_FAILED;
+  if (NUAH_LIKELY(!wait_trace_enabled() && !engine_trace_enabled())) {
     return function(device, swapchain, timeout, semaphore, fence, image_index);
   }
   const uint64_t started_ns = monotonic_ns();
