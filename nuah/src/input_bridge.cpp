@@ -475,6 +475,7 @@ extern "C" int nuah_android_scancode_from_sdl(int scancode) {
  * state.  Passing SDL_KMOD values through made Shift/Alt appear as unrelated
  * Android flags, so Java/Roblox could reject otherwise valid KeyEvents. */
 unsigned int android_meta_state_from_sdl(SDL_Keymod modifiers) {
+  if (!modifiers) return 0;
   unsigned int result = 0;
   if (modifiers & SDL_KMOD_SHIFT) result |= 0x1;       // META_SHIFT_ON
   if (modifiers & SDL_KMOD_LSHIFT) result |= 0x40;     // META_SHIFT_LEFT_ON
