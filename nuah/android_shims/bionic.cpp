@@ -1016,7 +1016,23 @@ int mkdir(const char* path, mode_t mode) {
 void* mmap(void* address, size_t length, int protection, int flags, int fd,
            off_t offset) {
   static const auto fn = host<void* (*)(void*, size_t, int, int, int, off_t)>("mmap");
-  return fn(address, length, protection, flags, fd, offset);
+  void* result = fn(address, length, protection, flags, fd, offset);
+  if (result != MAP_FAILED && (flags & MAP_ANONYMOUS) != 0 && length >= 2 * 1024 * 1024) {
+#ifdef MADV_HUGEPAGE
+    static const auto madv_fn = host<int (*)(void*, size_t, int)>("madvise");
+    if (madv_fn) {
+      madv_fn(result, length, MADV_HUGEPAGE);
+    }
+#endif
+  }
+  return result;
+}
+int madvise(void* address, size_t length, int advice) {
+  static const auto fn = host<int (*)(void*, size_t, int)>("madvise");
+  if (advice == 8) {
+    advice = MADV_DONTNEED;
+  }
+  return fn ? fn(address, length, advice) : 0;
 }
 int mprotect(void* address, size_t length, int protection) {
   static const auto fn = host<int (*)(void*, size_t, int)>("mprotect");
