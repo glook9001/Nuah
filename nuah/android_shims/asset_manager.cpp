@@ -18,10 +18,45 @@
 #include <unordered_set>
 #include <vector>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 namespace {
 using AssetBytes = std::shared_ptr<const std::vector<unsigned char>>;
+
+struct MappedApk {
+  void* data = nullptr;
+  std::size_t size = 0;
+};
+
+std::unordered_map<std::string, MappedApk> mapped_apks;
+std::mutex mapped_apks_mutex;
+
+MappedApk get_or_map_apk(const std::string& apk_path) {
+  std::scoped_lock lock(mapped_apks_mutex);
+  auto it = mapped_apks.find(apk_path);
+  if (it != mapped_apks.end()) return it->second;
+
+  int fd = ::open(apk_path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return {};
+  struct stat st{};
+  if (::fstat(fd, &st) != 0 || st.st_size <= 0) {
+    ::close(fd);
+    return {};
+  }
+  void* ptr = ::mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ, MAP_SHARED, fd, 0);
+  ::close(fd);
+  if (ptr == MAP_FAILED) return {};
+#ifdef MADV_WILLNEED
+  (void)::madvise(ptr, static_cast<std::size_t>(st.st_size), MADV_WILLNEED);
+#endif
+  MappedApk mapped{ptr, static_cast<std::size_t>(st.st_size)};
+  mapped_apks[apk_path] = mapped;
+  return mapped;
+}
 
 /* AAssetManager is used during bootstrap and can be probed repeatedly by the
  * Android framework.  Keep this bounded: APK assets are immutable for the
@@ -95,8 +130,14 @@ AssetBytes read_member(const std::string& apk, const std::string& member) {
   if (!archive_reader) return nullptr;
   archive_read_support_filter_all(archive_reader.get());
   archive_read_support_format_zip(archive_reader.get());
-  if (archive_read_open_filename(archive_reader.get(), apk.c_str(), 64 * 1024) !=
-      ARCHIVE_OK) {
+  const MappedApk mapped = get_or_map_apk(apk);
+  if (mapped.data && mapped.size > 0) {
+    if (archive_read_open_memory(archive_reader.get(), mapped.data, mapped.size) !=
+        ARCHIVE_OK) {
+      return nullptr;
+    }
+  } else if (archive_read_open_filename(archive_reader.get(), apk.c_str(), 64 * 1024) !=
+             ARCHIVE_OK) {
     return nullptr;
   }
 

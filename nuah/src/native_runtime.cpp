@@ -312,6 +312,14 @@ void configure_mesa_shader_cache(const std::filesystem::path& profile) {
     (void)::setenv("MESA_DISK_CACHE_SINGLE_FILE", "1", 1);
   if (!std::getenv("ANV_ENABLE_PIPELINE_CACHE"))
     (void)::setenv("ANV_ENABLE_PIPELINE_CACHE", "1", 1);
+  if (!std::getenv("VK_DRIVER_FILES") && !std::getenv("VK_ICD_FILENAMES")) {
+    if (std::filesystem::exists("/usr/share/vulkan/icd.d/intel_icd.x86_64.json")) {
+      (void)::setenv("VK_DRIVER_FILES",
+                     "/usr/share/vulkan/icd.d/intel_icd.x86_64.json", 1);
+      (void)::setenv("VK_ICD_FILENAMES",
+                     "/usr/share/vulkan/icd.d/intel_icd.x86_64.json", 1);
+    }
+  }
   if (const char* trace = ::getenv("NUAH_BOOTSTRAP_TRACE"); trace && *trace)
     std::cerr << "nuah graphics: Mesa shader cache=" << directory << '\n';
 }
@@ -2666,6 +2674,9 @@ int run_nuah_jni(const NativeLaunchOptions& options,
       set_client_setting(target_settings, "FFlagLuauFastVariables", "true");
       set_client_setting(target_settings, "FFlagLuauFastVariableAccess", "true");
       set_client_setting(target_settings, "FFlagLuauTablePrealloc", "true");
+      set_client_setting(target_settings, "FIntLuauGcStepMultiplier", "\"100\"");
+      set_client_setting(target_settings, "FIntLuauGcGoalRatio", "\"200\"");
+      set_client_setting(target_settings, "FFlagLuauIncrementalGC", "true");
       set_client_setting(target_settings, "FFlagLuauVector3Bytecode", "true");
       set_client_setting(target_settings, "DFIntTaskSchedulerSleepToleranceMs", "\"0\"");
       set_client_setting(target_settings, "FFlagTaskSchedulerAvoidSleeping", "true");
