@@ -1874,17 +1874,27 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(
     const VkAllocationCallbacks* allocator, VkPipeline* pipelines) {
   static const auto function =
       host_function<PFN_vkCreateGraphicsPipelines>("vkCreateGraphicsPipelines");
-  if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (NUAH_UNLIKELY(!function)) return VK_ERROR_INITIALIZATION_FAILED;
   VkPipelineCache effective_cache = cache;
-  if (effective_cache == VK_NULL_HANDLE)
+  if (NUAH_UNLIKELY(effective_cache == VK_NULL_HANDLE))
     effective_cache = persistent_pipeline_cache(device);
-  if (residency_trace_enabled())
+  if (NUAH_UNLIKELY(residency_trace_enabled()))
     std::fprintf(stderr,
                  "nuah residency: graphics cache_in=%p cache_used=%p count=%u\n",
                  reinterpret_cast<void*>(cache),
                  reinterpret_cast<void*>(effective_cache), count);
   const bool trace = pipeline_trace_enabled() || pipeline_callsite_trace_enabled();
-  const uint64_t started_ns = trace ? monotonic_ns() : 0;
+  if (NUAH_LIKELY(!trace)) {
+    VkResult result =
+        function(device, effective_cache, count, create_info, allocator, pipelines);
+    if (NUAH_UNLIKELY(result != VK_SUCCESS && effective_cache != cache)) {
+      result = function(device, cache, count, create_info, allocator, pipelines);
+    }
+    if (NUAH_UNLIKELY(result == VK_SUCCESS && residency_snapshot_enabled()))
+      save_pipeline_cache_handle(device, effective_cache);
+    return result;
+  }
+  const uint64_t started_ns = monotonic_ns();
   VkResult result =
       function(device, effective_cache, count, create_info, allocator, pipelines);
   if (result != VK_SUCCESS && effective_cache != cache) {
@@ -1892,23 +1902,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(
   }
   if (result == VK_SUCCESS && residency_snapshot_enabled())
     save_pipeline_cache_handle(device, effective_cache);
-  if (trace) {
-    const uint64_t elapsed_us = (monotonic_ns() - started_ns) / 1000ULL;
-    if (pipeline_trace_enabled() && elapsed_us >= 1000ULL) {
-      std::fprintf(stderr,
-                   "nuah perf: vkCreateGraphicsPipelines count=%u elapsed_us=%llu result=%d\n",
-                   count, static_cast<unsigned long long>(elapsed_us),
-                   static_cast<int>(result));
-    }
-    if (pipeline_callsite_trace_enabled() && elapsed_us >= 1000ULL) {
-      const auto caller =
-          reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
-      std::fprintf(stderr,
-                   "nuah perf: vkCreateGraphicsPipelines caller=0x%llx count=%u elapsed_us=%llu result=%d\n",
-                   static_cast<unsigned long long>(caller), count,
-                   static_cast<unsigned long long>(elapsed_us),
-                   static_cast<int>(result));
-    }
+  const uint64_t elapsed_us = (monotonic_ns() - started_ns) / 1000ULL;
+  if (pipeline_trace_enabled() && elapsed_us >= 1000ULL) {
+    std::fprintf(stderr,
+                 "nuah perf: vkCreateGraphicsPipelines count=%u elapsed_us=%llu result=%d\n",
+                 count, static_cast<unsigned long long>(elapsed_us),
+                 static_cast<int>(result));
+  }
+  if (pipeline_callsite_trace_enabled() && elapsed_us >= 1000ULL) {
+    const auto caller =
+        reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
+    std::fprintf(stderr,
+                 "nuah perf: vkCreateGraphicsPipelines caller=0x%llx count=%u elapsed_us=%llu result=%d\n",
+                 static_cast<unsigned long long>(caller), count,
+                 static_cast<unsigned long long>(elapsed_us),
+                 static_cast<int>(result));
   }
   return result;
 }
@@ -1919,17 +1927,27 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(
     const VkAllocationCallbacks* allocator, VkPipeline* pipelines) {
   static const auto function =
       host_function<PFN_vkCreateComputePipelines>("vkCreateComputePipelines");
-  if (!function) return VK_ERROR_INITIALIZATION_FAILED;
+  if (NUAH_UNLIKELY(!function)) return VK_ERROR_INITIALIZATION_FAILED;
   VkPipelineCache effective_cache = cache;
-  if (effective_cache == VK_NULL_HANDLE)
+  if (NUAH_UNLIKELY(effective_cache == VK_NULL_HANDLE))
     effective_cache = persistent_pipeline_cache(device);
-  if (residency_trace_enabled())
+  if (NUAH_UNLIKELY(residency_trace_enabled()))
     std::fprintf(stderr,
                  "nuah residency: compute cache_in=%p cache_used=%p count=%u\n",
                  reinterpret_cast<void*>(cache),
                  reinterpret_cast<void*>(effective_cache), count);
   const bool trace = pipeline_trace_enabled() || pipeline_callsite_trace_enabled();
-  const uint64_t started_ns = trace ? monotonic_ns() : 0;
+  if (NUAH_LIKELY(!trace)) {
+    VkResult result =
+        function(device, effective_cache, count, create_info, allocator, pipelines);
+    if (NUAH_UNLIKELY(result != VK_SUCCESS && effective_cache != cache)) {
+      result = function(device, cache, count, create_info, allocator, pipelines);
+    }
+    if (NUAH_UNLIKELY(result == VK_SUCCESS && residency_snapshot_enabled()))
+      save_pipeline_cache_handle(device, effective_cache);
+    return result;
+  }
+  const uint64_t started_ns = monotonic_ns();
   VkResult result =
       function(device, effective_cache, count, create_info, allocator, pipelines);
   if (result != VK_SUCCESS && effective_cache != cache) {
@@ -1937,23 +1955,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(
   }
   if (result == VK_SUCCESS && residency_snapshot_enabled())
     save_pipeline_cache_handle(device, effective_cache);
-  if (trace) {
-    const uint64_t elapsed_us = (monotonic_ns() - started_ns) / 1000ULL;
-    if (pipeline_trace_enabled() && elapsed_us >= 1000ULL) {
-      std::fprintf(stderr,
-                   "nuah perf: vkCreateComputePipelines count=%u elapsed_us=%llu result=%d\n",
-                   count, static_cast<unsigned long long>(elapsed_us),
-                   static_cast<int>(result));
-    }
-    if (pipeline_callsite_trace_enabled() && elapsed_us >= 1000ULL) {
-      const auto caller =
-          reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
-      std::fprintf(stderr,
-                   "nuah perf: vkCreateComputePipelines caller=0x%llx count=%u elapsed_us=%llu result=%d\n",
-                   static_cast<unsigned long long>(caller), count,
-                   static_cast<unsigned long long>(elapsed_us),
-                   static_cast<int>(result));
-    }
+  const uint64_t elapsed_us = (monotonic_ns() - started_ns) / 1000ULL;
+  if (pipeline_trace_enabled() && elapsed_us >= 1000ULL) {
+    std::fprintf(stderr,
+                 "nuah perf: vkCreateComputePipelines count=%u elapsed_us=%llu result=%d\n",
+                 count, static_cast<unsigned long long>(elapsed_us),
+                 static_cast<int>(result));
+  }
+  if (pipeline_callsite_trace_enabled() && elapsed_us >= 1000ULL) {
+    const auto caller =
+        reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
+    std::fprintf(stderr,
+                 "nuah perf: vkCreateComputePipelines caller=0x%llx count=%u elapsed_us=%llu result=%d\n",
+                 static_cast<unsigned long long>(caller), count,
+                 static_cast<unsigned long long>(elapsed_us),
+                 static_cast<int>(result));
   }
   return result;
 }
