@@ -2766,6 +2766,16 @@ int run_nuah_jni(const NativeLaunchOptions& options,
                        "DFFlagDebugDisableRbxTransportDummyClient", "true");
     settings_json = settings_storage.c_str();
   }
+  try {
+    const std::array<std::filesystem::path, 2> setting_paths = {
+        app_data_directory / "ClientSettings/ClientAppSettings.json",
+        app_data_directory / "files/ClientSettings/ClientAppSettings.json"};
+    for (const auto& path : setting_paths) {
+      std::filesystem::create_directories(path.parent_path());
+      std::ofstream out(path, std::ios::trunc | std::ios::binary);
+      if (out) out << settings_json;
+    }
+  } catch (...) {}
   const jstring settings = env->NewStringUTF(settings_json);
   const jstring settings_signature = env->NewStringUTF("");
   const jstring settings_application = env->NewStringUTF("GoogleAndroidApp");
