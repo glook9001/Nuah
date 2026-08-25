@@ -40,6 +40,7 @@ namespace {
 std::mutex registry_mutex;
 std::unordered_map<void*, NuahNativeWindow*> registry;
 std::unordered_map<void*, NuahNativeWindow*> egl_registry;
+std::atomic<bool> has_egl_aliases{false};
 NuahNativeWindow* default_window = nullptr;
 
 using WaylandEglWindowCreate = void* (*)(void*, int, int);
@@ -118,7 +119,10 @@ extern "C" NuahNativeWindow* nuah_native_window_register_surface(
     return nullptr;
   }
   registry.emplace(surface, window);
-  if (window->egl_window) egl_registry.emplace(window->egl_window, window);
+  if (window->egl_window) {
+    egl_registry.emplace(window->egl_window, window);
+    has_egl_aliases.store(true, std::memory_order_release);
+  }
   return window;
 }
 
@@ -191,7 +195,10 @@ extern "C" void nuah_native_window_release(NuahNativeWindow* window) {
     if (window &&
         window->references.fetch_sub(1, std::memory_order_acq_rel) == 1) {
       egl_window = window->egl_window;
-      if (egl_window) egl_registry.erase(egl_window);
+      if (egl_window) {
+        egl_registry.erase(egl_window);
+        has_egl_aliases.store(!egl_registry.empty(), std::memory_order_release);
+      }
       window->egl_window = nullptr;
       delete_window = true;
     }
@@ -206,18 +213,27 @@ extern "C" void nuah_native_window_release(NuahNativeWindow* window) {
 }
 
 extern "C" int nuah_native_window_width(const NuahNativeWindow* window) {
+  if (__builtin_expect(!has_egl_aliases.load(std::memory_order_relaxed), 1)) {
+    return window ? window->width : 0;
+  }
   std::scoped_lock lock(registry_mutex);
   auto* resolved = resolve_window_locked(const_cast<NuahNativeWindow*>(window));
   return resolved ? resolved->width : 0;
 }
 
 extern "C" int nuah_native_window_height(const NuahNativeWindow* window) {
+  if (__builtin_expect(!has_egl_aliases.load(std::memory_order_relaxed), 1)) {
+    return window ? window->height : 0;
+  }
   std::scoped_lock lock(registry_mutex);
   auto* resolved = resolve_window_locked(const_cast<NuahNativeWindow*>(window));
   return resolved ? resolved->height : 0;
 }
 
 extern "C" void* nuah_native_window_host(const NuahNativeWindow* window) {
+  if (__builtin_expect(!has_egl_aliases.load(std::memory_order_relaxed), 1)) {
+    return window ? window->host_window : nullptr;
+  }
   std::scoped_lock lock(registry_mutex);
   auto* resolved = resolve_window_locked(const_cast<NuahNativeWindow*>(window));
   return resolved ? resolved->host_window : nullptr;
@@ -239,6 +255,7 @@ extern "C" void nuah_native_window_set_egl_handle(
   if (!window || window->egl_window) return;
   window->egl_window = egl_window;
   egl_registry.emplace(egl_window, window);
+  has_egl_aliases.store(true, std::memory_order_release);
 }
 
 extern "C" void nuah_native_window_update_geometry(
