@@ -1,12 +1,12 @@
 LIBC {
   global:
     acos; acosf; asin; asinf; atan; atanf; atan2; atan2f;
-    cbrt; cbrtf; cos; cosf; cosh; coshf; exp; exp2; exp2f; expf;
-    expm1; erfcf; erff; finitef; fmal; fmod; fmodf; frexp; frexpf;
-    ilogb; ldexp; ldexpf; log; log10;
-    log10f; log2; log2f; logf; llround; llroundf; lround; lroundf;
-    modf; modff; nan; nextafterf; pow; powf; powl; remainderf; remquof;
-    round; sin;
-    sincos; sincosf; sinf; sinh; sinhf; sqrt; sqrtf; tan; tanf; tanh;
-    tanhf;
+    cbrt; cbrtf; ceil; ceilf; copysign; copysignf; cos; cosf; cosh; coshf;
+    exp; exp2; exp2f; expf; expm1; erfcf; erff; fabs; fabsf; fdim; fdimf;
+    finitef; floor; floorf; fma; fmaf; fmal; fmax; fmaxf; fmin; fminf;
+    fmod; fmodf; frexp; frexpf; hypot; hypotf; ilogb; ldexp; ldexpf;
+    log; log10; log10f; log2; log2f; logf; llround; llroundf; lround; lroundf;
+    modf; modff; nan; nextafter; nextafterf; pow; powf; powl; remainder; remainderf; remquof;
+    round; roundf; sin; sincos; sincosf; sinf; sinh; sinhf; sqrt; sqrtf;
+    tan; tanf; tanh; tanhf; trunc; truncf;
 };

@@ -23,47 +23,74 @@ NUAH_UNARY_DOUBLE(acos)
 NUAH_UNARY_DOUBLE(asin)
 NUAH_UNARY_DOUBLE(atan)
 NUAH_UNARY_DOUBLE(cbrt)
+NUAH_UNARY_DOUBLE(ceil)
 NUAH_UNARY_DOUBLE(cos)
 NUAH_UNARY_DOUBLE(cosh)
 NUAH_UNARY_DOUBLE(exp)
 NUAH_UNARY_DOUBLE(exp2)
 NUAH_UNARY_DOUBLE(expm1)
+NUAH_UNARY_DOUBLE(fabs)
+NUAH_UNARY_DOUBLE(floor)
 NUAH_UNARY_DOUBLE(log)
 NUAH_UNARY_DOUBLE(log10)
 NUAH_UNARY_DOUBLE(log2)
+NUAH_UNARY_DOUBLE(round)
 NUAH_UNARY_DOUBLE(sin)
 NUAH_UNARY_DOUBLE(sinh)
 NUAH_UNARY_DOUBLE(sqrt)
 NUAH_UNARY_DOUBLE(tan)
 NUAH_UNARY_DOUBLE(tanh)
-NUAH_UNARY_DOUBLE(round)
+NUAH_UNARY_DOUBLE(trunc)
 NUAH_UNARY_FLOAT(acosf)
 NUAH_UNARY_FLOAT(asinf)
 NUAH_UNARY_FLOAT(atanf)
 NUAH_UNARY_FLOAT(cbrtf)
+NUAH_UNARY_FLOAT(ceilf)
 NUAH_UNARY_FLOAT(cosf)
 NUAH_UNARY_FLOAT(coshf)
 NUAH_UNARY_FLOAT(expf)
 NUAH_UNARY_FLOAT(exp2f)
 NUAH_UNARY_FLOAT(erfcf)
 NUAH_UNARY_FLOAT(erff)
+NUAH_UNARY_FLOAT(fabsf)
+NUAH_UNARY_FLOAT(floorf)
 NUAH_UNARY_FLOAT(logf)
 NUAH_UNARY_FLOAT(log10f)
 NUAH_UNARY_FLOAT(log2f)
+NUAH_UNARY_FLOAT(roundf)
 NUAH_UNARY_FLOAT(sinf)
 NUAH_UNARY_FLOAT(sinhf)
 NUAH_UNARY_FLOAT(sqrtf)
 NUAH_UNARY_FLOAT(tanf)
 NUAH_UNARY_FLOAT(tanhf)
+NUAH_UNARY_FLOAT(truncf)
 NUAH_BINARY_DOUBLE(atan2)
+NUAH_BINARY_DOUBLE(copysign)
+NUAH_BINARY_DOUBLE(fdim)
+NUAH_BINARY_DOUBLE(fmax)
+NUAH_BINARY_DOUBLE(fmin)
 NUAH_BINARY_DOUBLE(fmod)
+NUAH_BINARY_DOUBLE(hypot)
+NUAH_BINARY_DOUBLE(nextafter)
 NUAH_BINARY_DOUBLE(pow)
+NUAH_BINARY_DOUBLE(remainder)
 NUAH_BINARY_FLOAT(atan2f)
+NUAH_BINARY_FLOAT(copysignf)
+NUAH_BINARY_FLOAT(fdimf)
+NUAH_BINARY_FLOAT(fmaxf)
+NUAH_BINARY_FLOAT(fminf)
 NUAH_BINARY_FLOAT(fmodf)
-NUAH_BINARY_FLOAT(powf)
+NUAH_BINARY_FLOAT(hypotf)
 NUAH_BINARY_FLOAT(nextafterf)
+NUAH_BINARY_FLOAT(powf)
 NUAH_BINARY_FLOAT(remainderf)
 
+extern "C" double fma(double left, double right, double addend) {
+  return __builtin_fma(left, right, addend);
+}
+extern "C" float fmaf(float left, float right, float addend) {
+  return __builtin_fmaf(left, right, addend);
+}
 extern "C" int finitef(float value) {
   return std::isfinite(value) ? 1 : 0;
 }
@@ -124,16 +151,20 @@ extern "C" void sincosf(float value, float* sine, float* cosine) {
 __attribute__((constructor)) static void register_math_abi() {
   static constexpr const char* symbols[] = {
       "acos",   "acosf",  "asin",   "asinf",  "atan",   "atanf",
-      "atan2",  "atan2f", "cbrt",   "cbrtf",  "cos",    "cosf",
-      "cosh",   "coshf",  "exp",    "exp2",   "exp2f",  "expf",
-      "expm1",  "erfcf",  "erff",   "finitef", "fmal",  "fmod",
-      "fmodf",  "frexp",  "frexpf", "ilogb",  "ldexp",
-      "ldexpf", "log",    "log10",  "log10f", "log2",   "log2f",
-      "logf",   "llround", "llroundf", "lround", "lroundf", "modf",
-      "modff",  "nan",    "nextafterf", "pow", "powf", "powl",
-      "remainderf", "remquof", "round", "sin", "sincos", "sincosf",
-      "sinf",   "sinh",   "sinhf",  "sqrt",   "sqrtf",  "tan",
-      "tanf",   "tanh",   "tanhf"};
+      "atan2",  "atan2f", "cbrt",   "cbrtf",  "ceil",   "ceilf",
+      "copysign", "copysignf", "cos", "cosf", "cosh",   "coshf",
+      "exp",    "exp2",   "exp2f",  "expf",   "expm1",  "erfcf",
+      "erff",   "fabs",   "fabsf",  "fdim",   "fdimf",  "finitef",
+      "floor",  "floorf", "fma",    "fmaf",   "fmal",   "fmax",
+      "fmaxf",  "fmin",   "fminf",  "fmod",   "fmodf",  "frexp",
+      "frexpf", "hypot",  "hypotf", "ilogb",  "ldexp",  "ldexpf",
+      "log",    "log10",  "log10f", "log2",   "log2f",  "logf",
+      "llround", "llroundf", "lround", "lroundf", "modf", "modff",
+      "nan",    "nextafter", "nextafterf", "pow", "powf", "powl",
+      "remainder", "remainderf", "remquof", "round", "roundf",
+      "sin",    "sincos", "sincosf", "sinf",  "sinh",   "sinhf",
+      "sqrt",   "sqrtf",  "tan",    "tanf",   "tanh",   "tanhf",
+      "trunc",  "truncf"};
   for (const char* symbol : symbols) {
     nuah_android_api_register("libm.so", symbol,
                               NUAH_ANDROID_API_TRANSLATED);
