@@ -46,8 +46,10 @@ cmake --build build --target nuah
 | `android/linker-deps/*.so` | `linker_stub.c` (DT_NEEDED placeholders) |
 | `libpthread_bio.so` | `nuah/platform/pthread_bridge.c` |
 
-JNI core is vendored in-tree (`nuah/vendor/android2gnulinux`: `jvm.c`,
-`libjvm-java.c`, `wrapper.c`). JNI headers: `nuah/vendor/libnativehelper-include_jni`.
+Java execution is host ART (`libart.so` via `JNI_CreateJavaVM`); the owned
+JNI façade lives in `nuah/core/roblox_java_facade.c`. Vendored headers only:
+`nuah/vendor/android2gnulinux/jvm/jni.h` (façade types),
+`nuah/vendor/libnativehelper-include_jni` (C++ JNI declarations).
 
 libhybris is **not** a CI artifact. Use the local install
 (`~/.local/share/nuah/hybris`) built from `third_party/libhybris.lock` and
