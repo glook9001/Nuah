@@ -1,0 +1,124 @@
+diff --git a/src/api-impl/android/app/Activity.java b/src/api-impl/android/app/Activity.java
+index c0cb3e0..2e7a23f 100644
+--- a/src/api-impl/android/app/Activity.java
++++ b/src/api-impl/android/app/Activity.java
+@@ -138,6 +138,10 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, La
+ 		return finishing;
+ 	}
+ 
++	public android.window.OnBackInvokedDispatcher getOnBackInvokedDispatcher() {
++		return null;
++	}
++
+ 	public final boolean requestWindowFeature(int featureId) {
+ 		return false; // whatever feature it is, it's probably not supported
+ 	}
+diff --git a/src/api-impl/android/content/Context.java b/src/api-impl/android/content/Context.java
+index 5ec5417..9da0c4d 100644
+--- a/src/api-impl/android/content/Context.java
++++ b/src/api-impl/android/content/Context.java
+@@ -538,6 +538,10 @@ public abstract class Context {
+ 		return registerReceiver(receiver, filter);
+ 	}
+ 
++	public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, int flags) {
++		return registerReceiver(receiver, filter);
++	}
++
+ 	public String[] fileList() {
+ 		return new String[0];
+ 	}
+diff --git a/src/api-impl/android/os/PowerManager.java b/src/api-impl/android/os/PowerManager.java
+index c8665f6..dd75ee3 100644
+--- a/src/api-impl/android/os/PowerManager.java
++++ b/src/api-impl/android/os/PowerManager.java
+@@ -27,6 +27,10 @@ public final class PowerManager {
+ 		return false;
+ 	}
+ 
++	public boolean isDeviceIdleMode() {
++		return false;
++	}
++
+ 	public boolean isScreenOn() {
+ 		return true;
+ 	}
+diff --git a/src/api-impl/android/view/MotionEvent.java b/src/api-impl/android/view/MotionEvent.java
+index e3aa0c8..bc5fdc6 100644
+--- a/src/api-impl/android/view/MotionEvent.java
++++ b/src/api-impl/android/view/MotionEvent.java
+@@ -191,6 +191,8 @@ public final class MotionEvent extends InputEvent {
+ 	 */
+ 	public static final int ACTION_DOWN = 0;
+ 
++	public static final int CLASSIFICATION_NONE = 0;
++
+ 	/**
+ 	 * Constant for {@link #getActionMasked}: A pressed gesture has finished, the
+ 	 * motion contains the final release location as well as any intermediate
+@@ -1763,6 +1765,14 @@ public final class MotionEvent extends InputEvent {
+ 		return action;
+ 	}
+ 
++	public final int getActionButton() {
++		return 0;
++	}
++
++	public final int getClassification() {
++		return CLASSIFICATION_NONE;
++	}
++
+ 	/**
+ 	 * Return the masked action being performed, without pointer index information.
+ 	 * Use {@link #getActionIndex} to return the index associated with pointer actions.
+diff --git a/src/api-impl/android/view/View.java b/src/api-impl/android/view/View.java
+index 9fa596a..2a22b89 100644
+--- a/src/api-impl/android/view/View.java
++++ b/src/api-impl/android/view/View.java
+@@ -57,6 +57,10 @@ class WindowId {}
+ 
+ public class View implements Drawable.Callback {
+ 
++	public interface OnCapturedPointerListener {
++		boolean onCapturedPointer(View view, MotionEvent event);
++	}
++
+ 	// --- constants from android source
+ 
+ 	/**
+diff --git a/src/api-impl/android/window/OnBackInvokedCallback.java b/src/api-impl/android/window/OnBackInvokedCallback.java
+new file mode 100644
+index 0000000..31f27fa
+--- /dev/null
++++ b/src/api-impl/android/window/OnBackInvokedCallback.java
+@@ -0,0 +1,5 @@
++package android.window;
++
++public interface OnBackInvokedCallback {
++	void onBackInvoked();
++}
+diff --git a/src/api-impl/android/window/OnBackInvokedDispatcher.java b/src/api-impl/android/window/OnBackInvokedDispatcher.java
+new file mode 100644
+index 0000000..df4e08b
+--- /dev/null
++++ b/src/api-impl/android/window/OnBackInvokedDispatcher.java
+@@ -0,0 +1,6 @@
++package android.window;
++
++public interface OnBackInvokedDispatcher {
++	void registerOnBackInvokedCallback(int priority, OnBackInvokedCallback callback);
++	void unregisterOnBackInvokedCallback(OnBackInvokedCallback callback);
++}
+diff --git a/src/api-impl/meson.build b/src/api-impl/meson.build
+index 7e92605..0a19775 100644
+--- a/src/api-impl/meson.build
++++ b/src/api-impl/meson.build
+@@ -757,6 +757,8 @@ srcs = [
+ 	'android/widget/ViewSwitcher.java',
+ 	'android/widget/ZoomButton.java',
+ 	'android/widget/ZoomButtonsController.java',
++	'android/window/OnBackInvokedCallback.java',
++	'android/window/OnBackInvokedDispatcher.java',
+ 	'com/android/internal/Manifest.java',
+ 	'com/android/internal/R.java',
+ 	'com/android/internal/graphics/ColorUtils.java',
