@@ -2,7 +2,7 @@
 # Stage a stripped, relocatable Nuah prefix (ART host-only; cookie never shipped).
 set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd); build_dir=${NUAH_BUILD_DIR:-$repo_root/build}; dest=${NUAH_PORTABLE_DIR:-$repo_root/dist/nuah-portable}
-apk_src=${NUAH_APK_PATH:-}; split_src=${NUAH_SPLIT_APK_PATH:-}; art_src=${NUAH_ART_LIBRARY_DIR:-/usr/local/lib64/art}; atl_src=${NUAH_ART_HOME:-/usr/local/lib64/java/dex/android_translation_layer}
+apk_src=${NUAH_APK_PATH:-}; split_src=${NUAH_SPLIT_APK_PATH:-}; art_src=${NUAH_ART_LIBRARY_DIR:-/usr/local/lib64/art}; atl_src=${NUAH_ART_HOME:-$repo_root/nuah/vendor/atl}; [[ -d $atl_src ]] || atl_src=/usr/local/lib64/java/dex/android_translation_layer
 hybris_src=""; copy_apk=1; copy_art=0; copy_atl=1; make_tarball=0; rebuild=1
 usage() { echo "usage: build-portable.sh [--no-apk] [--no-atl] [--with-art] [--no-rebuild] [--tarball] [--dest DIR]" >&2; exit 2; }
 while (( $# > 0 )); do case "$1" in --no-apk) copy_apk=0 ;; --no-atl) copy_atl=0 ;; --no-art) copy_art=0 ;; --with-art) copy_art=1 ;; --no-rebuild) rebuild=0 ;; --tarball) make_tarball=1 ;;

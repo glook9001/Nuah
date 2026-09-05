@@ -26,7 +26,7 @@ nuah_binary=${NUAH_BINARY:-$repo_root/build/nuah}; nuah_data=${NUAH_DATA_DIR:-$H
 lock_file="$nuah_data/nuah-runtime.lock"
 art_library_dir=${NUAH_ART_LIBRARY_DIR:-}
 if [[ -z $art_library_dir ]]; then art_library_dir=$(first_hit libandroidfw.so /usr/local/lib64/art "$HOME/.local/share/nuah/art" "$repo_root/art" "$repo_root/build/art") || true; art_library_dir=${art_library_dir:-/usr/local/lib64/art}; fi
-atl_home=${NUAH_ART_HOME:-/usr/local/lib64/java/dex/android_translation_layer}
+atl_home=${NUAH_ART_HOME:-}; [[ -z $atl_home ]] && atl_home=$repo_root/nuah/vendor/atl; [[ -d $atl_home ]] || atl_home=/usr/local/lib64/java/dex/android_translation_layer
 hybris_library_dir=""; if [[ -n "${NUAH_HYBRIS_LIBRARY_DIR:-}" ]]; then hybris_library_dir="$NUAH_HYBRIS_LIBRARY_DIR"; else hybris_library_dir="$repo_root/build/hybris/lib"; fi
 hybris_library=${NUAH_HYBRIS_LIBRARY:-$hybris_library_dir/libhybris-common.so}; hybris_linker_dir=${HYBRIS_LINKER_DIR:-$hybris_library_dir/libhybris/linker}
 vulkan_library_dir=${NUAH_VULKAN_LIBRARY_DIR:-}
