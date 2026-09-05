@@ -38,18 +38,18 @@ cmake --build build --target nuah
 
 | Output | Source |
 |---|---|
-| `nuah` | `nuah/src/` |
-| `android/libvulkan.so` | `nuah/android_shims/vulkan.cpp` |
-| `android/libbionic.so` | `bionic.cpp` + asm |
-| `android/libandroid.so` | `platform.cpp`, `egl.cpp`, … |
+| `nuah` | `nuah/app/`, `nuah/core/` |
+| `android/libvulkan.so` | `nuah/gfx/vulkan.cpp` |
+| `android/libbionic.so` | `platform/bionic.cpp` + asm |
+| `android/libandroid.so` | `platform/platform.cpp`, `gfx/egl.cpp`, … |
 | other `android/*.so` | remaining shims |
 | `android/linker-deps/*.so` | `linker_stub.c` (DT_NEEDED placeholders) |
-| `libpthread_bio.so` | `nuah/android_shims/pthread_bridge.c` |
+| `libpthread_bio.so` | `nuah/platform/pthread_bridge.c` |
 
 JNI core is vendored in-tree (`nuah/vendor/android2gnulinux`: `jvm.c`,
 `libjvm-java.c`, `wrapper.c`). JNI headers: `nuah/vendor/libnativehelper-include_jni`.
 
 libhybris is **not** a CI artifact. Use the local install
 (`~/.local/share/nuah/hybris`) built from `third_party/libhybris.lock` and
-`nuah/libhybris_patches/0002-expose-builtin-hook-resolution.patch`.
+`third_party/libhybris_patches/0002-expose-builtin-hook-resolution.patch`.
 Host ART is `/usr/local/lib64/art`.
