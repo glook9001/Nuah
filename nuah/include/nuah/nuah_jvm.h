@@ -5,8 +5,8 @@ extern "C" {
 typedef struct NuahJvm NuahJvm; typedef struct NuahNativeWindow NuahNativeWindow;
 NuahJvm* nuah_jvm_create(void); void nuah_jvm_destroy(NuahJvm* jvm);
 // Returns the ABI-level JavaVM reference expected by an Android JNI_OnLoad.
-// It is opaque here so android2gnulinux's C JNI types never leak into Nuah's
-// C++ sources, which use Android's official libnativehelper declarations.
+// It is opaque here so JNI types never leak into Nuah's C++ sources, which
+// use the same vendored libnativehelper declarations.
 void* nuah_jvm_java_vm(NuahJvm* jvm); void* nuah_jvm_jni_env(NuahJvm* jvm);
 // Returns the exact function pointer recorded by Roblox through
 // RegisterNatives, or NULL.  Callers must match on the complete JNI contract;

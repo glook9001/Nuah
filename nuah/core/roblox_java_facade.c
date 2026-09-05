@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "jvm/jni.h"
+#include <jni.h>
 static char nuah_content_path[4096], nuah_launch_access_code[4096], nuah_launch_reserved_server_access_code[4096];
 static jlong nuah_launch_place_id, nuah_launch_user_id;
 static jint nuah_launch_join_request_type;

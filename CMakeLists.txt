@@ -74,7 +74,6 @@ nuah_android_shim(nuah_android_bionic_linker_helpers bionic-linker-helpers "$ORI
 target_compile_definitions(nuah_android_bionic_linker_helpers PRIVATE NUAH_ANDROID_API_LEVEL=${NUAH_ANDROID_API_LEVEL})
 add_library(nuah_core nuah/app/base64.cpp nuah/app/sha256.cpp nuah/app/native_backend.cpp nuah/core/jni_contract.cpp nuah/core/jni_manifest.cpp nuah/app/input_bridge.cpp nuah/app/perf_metrics.cpp nuah/app/native_session.cpp nuah/app/window_session.cpp nuah/core/real_art_jvm.cpp nuah/core/native_runtime.cpp nuah/core/apk_loader.cpp nuah/app/launch_uri.cpp nuah/core/bootstrap_diagnostics.cpp nuah/core/roblox_java_facade.c)
 target_include_directories(nuah_core PUBLIC nuah/include)
-target_include_directories(nuah_core PRIVATE nuah/vendor/android2gnulinux)
 target_compile_definitions(nuah_core PRIVATE _GNU_SOURCE)
 target_compile_options(nuah_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 if(NUAH_SDL3_ROOT)
