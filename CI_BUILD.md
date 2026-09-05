@@ -44,10 +44,10 @@ cmake --build build --target nuah
 | `android/libandroid.so` | `platform.cpp`, `egl.cpp`, … |
 | other `android/*.so` | remaining shims |
 | `android/linker-deps/*.so` | `linker_stub.c` (DT_NEEDED placeholders) |
-| `libpthread_bio.so` | `third_party/bionic_translation/pthread_wrapper/libpthread.c` |
+| `libpthread_bio.so` | `nuah/android_shims/pthread_bridge.c` |
 
-JNI core is the android2gnulinux submodule (`jvm.c`, `libjvm-java.c`,
-`wrapper.c`). Headers: `third_party/libnativehelper`.
+JNI core is vendored in-tree (`nuah/vendor/android2gnulinux`: `jvm.c`,
+`libjvm-java.c`, `wrapper.c`). JNI headers: `nuah/vendor/libnativehelper-include_jni`.
 
 libhybris is **not** a CI artifact. Use the local install
 (`~/.local/share/nuah/hybris`) built from `third_party/libhybris.lock` and
