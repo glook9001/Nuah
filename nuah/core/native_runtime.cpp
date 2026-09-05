@@ -686,27 +686,6 @@ void checkpoint_asset_cache(const std::filesystem::path& runtime_data_directory,
   if (connection) (void)close(connection);
   ::dlclose(library);
 }
-std::filesystem::path extract_roblox_image(const std::filesystem::path& apk) {
-  const auto member = read_stored_apk_member(apk, "lib/x86_64/libroblox.so");
-  char path[] = "/tmp/nuah-roblox-XXXXXX";
-  const int fd = ::mkstemp(path);
-  if (fd < 0) throw std::runtime_error("cannot create temporary Roblox image");
-  std::size_t offset = 0;
-  while (offset < member.bytes.size()) {
-    const auto written = ::write(fd, member.bytes.data() + offset, member.bytes.size() - offset);
-    if (written <= 0) {
-      ::close(fd);
-      ::unlink(path);
-      throw std::runtime_error("cannot write temporary Roblox image");
-    }
-    offset += static_cast<std::size_t>(written);
-  }
-  if (::fchmod(fd, 0500) != 0 || ::close(fd) != 0) {
-    ::unlink(path);
-    throw std::runtime_error("cannot finalize temporary Roblox image");
-  }
-  return path;
-}
 void trace_start_game_params(JNIEnv* env, jobject params) {
   if (!bootstrap_trace() || !env || !params) return;
   jclass klass = env->GetObjectClass(params);
@@ -1404,25 +1383,6 @@ int run_nuah_jni_isolated_impl(const NativeLaunchOptions& options, const std::fi
 int run_nuah_jni_isolated(const NativeLaunchOptions& options, const std::filesystem::path& apk) {
   return run_nuah_jni_isolated_impl(options, apk);
 }
-int run_bionic_loader(const std::filesystem::path& image) {
-  const auto root = runtime_directory();
-  const auto linker = root / "bionic/lib64/linker64";
-  const auto helper = root / "bionic/nuah-bionic-loader";
-  const auto library_path = (root / "bionic/lib64").string();
-  if (!std::filesystem::is_regular_file(linker) || !std::filesystem::is_regular_file(helper)) { throw std::runtime_error("Nuah bionic runtime bundle is missing linker64 or helper"); }
-  const auto child = ::fork();
-  if (child < 0) throw std::runtime_error("cannot start bionic loader helper");
-  if (child == 0) {
-    ::setenv("LD_LIBRARY_PATH", library_path.c_str(), 1);
-    ::execl(linker.c_str(), linker.c_str(), helper.c_str(), image.c_str(), static_cast<char*>(nullptr));
-    _exit(127);
-  }
-  int status = 0;
-  if (::waitpid(child, &status, 0) != child) { throw std::runtime_error("cannot wait for bionic loader helper"); }
-  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return 0;
-  if (WIFEXITED(status)) { throw std::runtime_error("bionic loader helper exited with status " + std::to_string(WEXITSTATUS(status))); }
-  throw std::runtime_error("bionic loader helper terminated by signal " + std::to_string(WTERMSIG(status)));
-}
 }  // namespace
 int run_native(const NativeLaunchOptions& options) {
   NativeLaunchOptions launch = options;
@@ -1470,20 +1430,6 @@ int run_native(const NativeLaunchOptions& options) {
     (void)discover_session_cookie();
   }
   const auto image_apk = find_image(launch);
-  if (const char* smoke = ::getenv("NUAH_NATIVE_BIONIC_SMOKE"); smoke && *smoke) {
-    const auto image = extract_roblox_image(image_apk);
-    try {
-      run_bionic_loader(image);
-    } catch (...) {
-      std::error_code ignored;
-      std::filesystem::remove(image, ignored);
-      throw;
-    }
-    std::error_code ignored;
-    std::filesystem::remove(image, ignored);
-    std::cerr << "nuah native: API-36 bionic loader accepted libroblox.so from " << image_apk << '\n';
-    return 0;
-  }
   try {
     const int result = run_nuah_jni_isolated(launch, image_apk);
     checkpoint_asset_cache(runtime_data_directory, launch.apk);
