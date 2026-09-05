@@ -12,6 +12,8 @@ performance_mode=${NUAH_PERFORMANCE_MODE:-turbo}; async_transcode=${NUAH_ASSET_T
 client_settings_default="{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true,\"FIntRenderTextureMipBias\":\"$mip_bias\"}}"
 texture_budget=${NUAH_RENDER_TEXTURE_BUDGET_MS:-0}; intel_no_ccs=${NUAH_INTEL_NO_CCS:-0}; memory_low_mb=${NUAH_MEMORY_LOW_MB:-0}; memory_min_mb=${NUAH_MEMORY_MIN_MB:-0}
 descriptor_batch=${NUAH_DESCRIPTOR_ALLOC_BATCH:-4}; descriptor_trace=${NUAH_DESCRIPTOR_ALLOC_TRACE:-0}; submit_thread=${NUAH_VULKAN_SUBMIT_THREAD:-1}; vulkan_icd=${VK_ICD_FILENAMES:-}; min_image_count=${NUAH_VULKAN_MIN_IMAGE_COUNT:-4}; copy_trace=${NUAH_VULKAN_COPY_TRACE:-0}
+# Pin the real GPU (Intel ANV here); explicit VK_ICD_FILENAMES still wins, missing file falls back to loader default.
+[[ -z $vulkan_icd && -r /usr/share/vulkan/icd.d/intel_icd.x86_64.json ]] && vulkan_icd=/usr/share/vulkan/icd.d/intel_icd.x86_64.json
 texture_trace=${NUAH_TEXTURE_UPLOAD_TRACE:-0}; texture_hash_trace=${NUAH_TEXTURE_UPLOAD_HASH_TRACE:-0}; texture_dedup=${NUAH_TEXTURE_UPLOAD_DEDUP:-1}; dynamic_kpx=${NUAH_DYNAMIC_RENDER_KILOPIXELS:-460}
 upload_fingerprint=${NUAH_UPLOAD_FINGERPRINT:-0}; asset_background=${NUAH_ASSET_BACKGROUND:-1}; texture_min_lod=${NUAH_TEXTURE_MIN_LOD:-1}
 descriptor_bind_dedup=${NUAH_DESCRIPTOR_BIND_DEDUP:-1}; command_state_dedup=${NUAH_COMMAND_STATE_DEDUP:-1}; disable_msaa=${NUAH_DISABLE_MSAA:-1}; frm_quality=${NUAH_FRM_QUALITY:-1}; perf_trace=${NUAH_PERF_TRACE:-1}; android_preload=${NUAH_ANDROID_PRELOAD:-}
