@@ -36,10 +36,11 @@ need_file "ART runtime is" "$art_library_dir/libandroidfw.so"
 if [[ -n "$vulkan_library_dir" ]]; then need_file "Vulkan host loader is" "$vulkan_library_dir/libvulkan.so.1"; fi
 if [[ -e $lock_file ]] && lsof "$lock_file" >/dev/null 2>&1; then die 1 "Nuah already owns $lock_file; close that session before an A/B run"; fi
 runtime_data="$nuah_data"
-apk_path=${NUAH_APK_PATH:-}; split_apk_path=${NUAH_SPLIT_APK_PATH:-}
+apk_path=${NUAH_APK_PATH:-$repo_root/dist/nuah-portable/apk/base.apk}; split_apk_path=${NUAH_SPLIT_APK_PATH:-$repo_root/dist/nuah-portable/apk/split_config.x86_64.apk}
 [[ -r "$apk_path" && -r "$split_apk_path" ]] || die 1 "Nuah APK/split not found (set NUAH_APK_PATH / NUAH_SPLIT_APK_PATH): $apk_path / $split_apk_path"
-cookie=${NUAH_ROBLOX_COOKIE:-}
-[[ -n $cookie ]] || die 1 "no Roblox session cookie (set NUAH_ROBLOX_COOKIE)"
+cookie_from_file() { grep -o -m1 '\.ROBLOSECURITY=[^;[:space:]]*' "$1" 2>/dev/null | cut -d= -f2-; }
+cookie=${NUAH_ROBLOX_COOKIE:-}; [[ -n $cookie ]] || cookie=$(cookie_from_file "$HOME/.local/share/nuah/cookies")
+[[ -n $cookie ]] || die 1 "no Roblox session cookie (set NUAH_ROBLOX_COOKIE or sign in once to store it)"
 timestamp=$(date +%Y%m%d-%H%M%S); log="/tmp/nuah-rivals-${width}x${height}-workers${threads}-${timestamp}.log"
 echo "Launching RIVALS at ${width}x${height} with NUAH_TASK_THREADS=${threads}"; echo "Performance mode: $performance_mode"; echo "RuntimeContent async transcode: $async_transcode"; echo "Roblox RenderTexture mip bias: $mip_bias"; echo "Roblox RenderTexture budget: ${texture_budget} ms"
 echo "Intel Gen9 CCS diagnostic disable: $intel_no_ccs"; echo "Cgroup memory.low protection: ${memory_low_mb} MiB"; echo "Cgroup memory.min protection: ${memory_min_mb} MiB"; echo "Descriptor allocator batch: $descriptor_batch"; echo "Descriptor allocator trace: $descriptor_trace"; echo "Mesa submit thread request: $submit_thread"
