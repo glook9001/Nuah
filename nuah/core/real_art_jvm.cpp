@@ -117,7 +117,6 @@ jclass find_class(JNIEnv* env, const char* name) {
 }
 std::string artifact_root() {
   if (const char* value = env_nonempty("NUAH_ART_HOME")) return value;
-  if (const char* value = env_nonempty("NUAH_ATL_HOME")) return value;
   return "/usr/local/lib64/java/dex/android_translation_layer";
 }
 std::string art_path() {
@@ -380,7 +379,7 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   std::string app_library_path = natives;
   if (const char* app_data = env_nonempty("ANDROID_APP_DATA_DIR")) {
     const std::filesystem::path app_lib = std::filesystem::path(app_data) / "lib";
-    const bool explicit_provider = env_nonempty("NUAH_ART_HOME") || env_nonempty("NUAH_ATL_HOME") || env_nonempty("NUAH_ATL_NATIVE_DIR");
+    const bool explicit_provider = env_nonempty("NUAH_ART_HOME") || env_nonempty("NUAH_ATL_NATIVE_DIR");
     app_library_path = explicit_provider ? natives + ":" + app_lib.string() : app_lib.string() + ":" + natives;
   }
   const std::string library_path = app_library_path;

@@ -1149,10 +1149,10 @@ void apply_native_host_environment() {
   for (const char* system : {"/usr/lib64/libpng16.so.16", "/usr/lib64/libjpeg.so.62"}) prepend_path_env("LD_PRELOAD", system);
   constexpr const char* kArtHome = "/usr/local/lib64/java/dex/android_translation_layer";
   static constexpr std::pair<const char*, const char*> kDefaults[] = {
-      {"NUAH_ART_HOME", kArtHome}, {"NUAH_ATL_HOME", kArtHome}, {"NUAH_GRAPHICS_BACKEND", "vulkan"}, {"NUAH_VULKAN_PRESENT_MODE", "fifo"},
+      {"NUAH_ART_HOME", kArtHome}, {"NUAH_GRAPHICS_BACKEND", "vulkan"}, {"NUAH_VULKAN_PRESENT_MODE", "fifo"},
       {"NUAH_CLIENT_SETTINGS_JSON", "{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true}}"},
   };
-  // Range loop keeps the five defaults from drifting apart (table needs runtime std::string construction).
+  // Range loop keeps the four defaults from drifting apart (table needs runtime std::string construction).
   for (const auto& [name, value] : kDefaults) set_hybris_path_if_unset(name, value);
 }
 }  // namespace nuah
