@@ -103,9 +103,6 @@ void* android_provider_handle = nullptr;
 // Optional pinned pthread wrapper: stores the host pointer in the Android object (low-bit tag).
 void* pthread_bridge_handle = nullptr;
 void* host_libc_handle = nullptr;
-using HybrisBuiltinHook = void* (*)(const char*, const char*);
-HybrisBuiltinHook hybris_builtin_hook = nullptr;
-std::uintptr_t host_stack_chk_guard = 0x9e3779b97f4a7c15ULL;
 // Keep the installed ATL/Bionic DSO and its TLS domain intact; only relocate the app-local property.
 extern "C" int nuah_api36_system_property_get(const char* key, char* value) {
   static constexpr std::pair<const char*, const char*> kProperties[] = {
@@ -381,11 +378,7 @@ bool patch_loaded_module_texture_flag_impl(const LoadedModule& module) {
   return true;
 #endif
 }
-// Production boundary is libhybris (owns linker ABI + libc/pthread/TLS); old bionic provider is opt-in diagnostic only.
-bool use_nuah_compat_runtime() {
-  auto* mode = getenv_value("NUAH_ANDROID_RUNTIME");
-  return mode && streq_any(mode, "nuah", "compat", "diagnostic");
-}
+// Production boundary is libhybris (owns linker ABI + libc/pthread/TLS).
 long android_sysconf(int name) {
   // Bionic sysconf names are ABI numbers; forwarding raw ints to glibc misinterprets them (e.g. 0x27).
   static const std::pair<int, int> kSysconfMap[] = {
@@ -397,39 +390,6 @@ long android_sysconf(int name) {
     if (name == abi) return ::sysconf(host);
   errno = EINVAL;
   return -1;
-}
-[[noreturn]] void android_fortify_fail(const char* check, std::size_t requested, std::size_t capacity) {
-  // Never convert a Bionic bounds failure into SIGABRT/continuation; each op needs an explicit fallback.
-  std::fprintf(stderr, "nuah bootstrap: Bionic fortify failure in %s (requested=%zu capacity=%zu; compatibility fallbacks: none)\n", check, requested, capacity);
-  std::abort();
-}
-// Fortify contracts below must stay exact: fail on overflow, never truncate.
-std::size_t android_strlen_chk(const char* text, std::size_t capacity) {
-  if (!text) android_fortify_fail("__strlen_chk(null)", 0, capacity);
-  const auto length = ::strnlen(text, capacity);
-  if (length == capacity) android_fortify_fail("__strlen_chk", length, capacity);
-  return length;
-}
-void* android_memcpy_chk(void* dst, const void* src, std::size_t count, std::size_t cap) { if (count > cap) android_fortify_fail("__memcpy_chk", count, cap); return std::memcpy(dst, src, count); }
-void* android_memmove_chk(void* dst, const void* src, std::size_t count, std::size_t cap) { if (count > cap) android_fortify_fail("__memmove_chk", count, cap); return std::memmove(dst, src, count); }
-void* android_memset_chk(void* dst, int val, std::size_t count, std::size_t cap) { if (count > cap) android_fortify_fail("__memset_chk", count, cap); return std::memset(dst, val, count); }
-char* android_strcpy_chk(char* dst, const char* src, std::size_t cap) {
-  if (!src) android_fortify_fail("__strcpy_chk(null)", 0, cap);
-  const auto length = ::strnlen(src, cap);
-  if (length >= cap) android_fortify_fail("__strcpy_chk", length + 1, cap);
-  return std::strcpy(dst, src);
-}
-char* android_strncpy_chk(char* dst, const char* src, std::size_t count, std::size_t cap) { if (count > cap) android_fortify_fail("__strncpy_chk", count, cap); return std::strncpy(dst, src, count); }
-char* android_strncpy_chk2(char* dst, const char* src, std::size_t count, std::size_t cap, std::size_t) { return android_strncpy_chk(dst, src, count, cap); }
-char* android_strcat_chk(char* dst, const char* src, std::size_t cap) {
-  const auto length = android_strlen_chk(dst, cap);
-  if (android_strlen_chk(src, cap - length) >= cap - length) android_fortify_fail("__strcat_chk", cap - length, cap);
-  return std::strcat(dst, src);
-}
-char* android_strncat_chk(char* dst, const char* src, std::size_t count, std::size_t cap) {
-  const auto length = android_strlen_chk(dst, cap);
-  if (count >= cap - length && ::strnlen(src, count) == count) android_fortify_fail("__strncat_chk", count, cap - length);
-  return std::strncat(dst, src, count);
 }
 void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (!symbol) return nullptr;
@@ -458,16 +418,12 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
     if (void* resolved = ::dlsym(android_provider_handle, bionic_name)) { return resolved; }
   }
   // Audited pre-hybris set: API-36 layout differs (pthread attrs, legacy FILE) or carries diagnostics.
-  const bool compat_pthread_provider = use_nuah_compat_runtime();
   const bool requires_bionic_sync =
       android_sync && (streq_any(symbol, "pthread_mutex_init", "pthread_mutex_destroy", "pthread_mutex_lock", "pthread_mutex_trylock", "pthread_mutex_unlock", "pthread_mutexattr_init",
                                  "pthread_mutexattr_destroy", "pthread_mutexattr_settype", "pthread_cond_init", "pthread_cond_destroy", "pthread_cond_signal", "pthread_cond_broadcast",
                                  "pthread_cond_wait", "pthread_cond_timedwait", "pthread_condattr_init", "pthread_condattr_destroy", "pthread_condattr_setclock") ||
                        (bridge_rwlock && streq_any(symbol, "pthread_rwlock_init", "pthread_rwlock_destroy", "pthread_rwlock_rdlock", "pthread_rwlock_unlock", "pthread_rwlock_wrlock")));
-  const bool requires_bionic_pthread =
-      requires_bionic_sync || (compat_pthread_provider && (streq_any(symbol, "pthread_attr_init", "pthread_attr_destroy", "pthread_attr_getstack", "pthread_attr_setdetachstate",
-                                                                     "pthread_attr_setschedparam", "pthread_attr_setstacksize", "pthread_create", "pthread_getattr_np") ||
-                                                           (std::strcmp(symbol, "pthread_once") == 0 && android_sync)));
+  const bool requires_bionic_pthread = requires_bionic_sync;
   if (requires_bionic_sync && pthread_bridge_handle) {
     // Bridge exports bionic_ names; mutex/cond are default, rwlock opt-in; TLS/attrs stay on the provider.
     const bool bridge_symbol = std::strncmp(symbol, "pthread_mutex", 13) == 0 || std::strncmp(symbol, "pthread_cond", 12) == 0 || std::strncmp(symbol, "pthread_condattr", 15) == 0 ||
@@ -490,25 +446,9 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
   if (bionic_provider_handle && requires_bionic_provider) {
     if (void* resolved = ::dlvsym(bionic_provider_handle, symbol, "LIBC")) { return resolved; }
   }
-  if (compat_pthread_provider) {
-    if (std::strcmp(symbol, "__stack_chk_guard") == 0) return &host_stack_chk_guard;
-    if (std::strcmp(symbol, "__stack_chk_fail") == 0) return ::dlsym(RTLD_DEFAULT, symbol);
-    static const std::pair<const char*, void*> kChkSymbols[] = {
-        {"__strlen_chk", reinterpret_cast<void*>(android_strlen_chk)},   {"__memcpy_chk", reinterpret_cast<void*>(android_memcpy_chk)},
-        {"__memmove_chk", reinterpret_cast<void*>(android_memmove_chk)}, {"__memset_chk", reinterpret_cast<void*>(android_memset_chk)},
-        {"__strcpy_chk", reinterpret_cast<void*>(android_strcpy_chk)},   {"__strncpy_chk", reinterpret_cast<void*>(android_strncpy_chk)},
-        {"__strncpy_chk2", reinterpret_cast<void*>(android_strncpy_chk2)}, {"__strcat_chk", reinterpret_cast<void*>(android_strcat_chk)}, {"__strncat_chk", reinterpret_cast<void*>(android_strncat_chk)},
-    };
-    for (const auto& [name, fn] : kChkSymbols)
-      if (std::strcmp(symbol, name) == 0) return fn;
-  }
   // Bionic sysconf numbers differ from glibc; narrow translation here, not another libc.
   if (std::strcmp(symbol, "sysconf") == 0) return reinterpret_cast<void*>(android_sysconf);
-  // Diagnostic compat provider only; production forwards API-36 pthread objects to the one glibc TLS domain.
-  if (compat_pthread_provider && bionic_provider_handle && is_pthread_symbol) {
-    if (void* resolved = ::dlvsym(bionic_provider_handle, symbol, "LIBC")) return traced_provider("nuah-bionic", resolved);
-  }
-  if (!compat_pthread_provider && is_pthread_symbol) {
+  if (is_pthread_symbol) {
     // Never RTLD_DEFAULT: the LOCAL helper's pthread trampolines would fork a second state machine and recurse in TLS init.
     if (host_libc_handle) {
       if (void* resolved = ::dlsym(host_libc_handle, symbol)) { return traced_provider("host-libc", resolved); }
@@ -524,14 +464,9 @@ void* resolve_host_provider_symbol(const char* symbol, const char* requester) {
       return traced_provider("host-provider", resolved);
     }
   }
-  if (hybris_builtin_hook) {
-    if (void* resolved = hybris_builtin_hook(symbol, requester)) { return traced_provider("libhybris-builtin", resolved); }
-  }
   // Ordinary libc/libm/pthread imports use the one host domain; keeps preflight aligned with the linker.
-  if (!compat_pthread_provider) {
-    if (void* resolved = ::dlsym(RTLD_DEFAULT, symbol)) return traced_provider("rtld-default", resolved);
-  }
-  // A hybris built-in hook may still satisfy this; callback miss alone is not a loader failure.
+  if (void* resolved = ::dlsym(RTLD_DEFAULT, symbol)) return traced_provider("rtld-default", resolved);
+  // Callback miss alone is not a loader failure.
   bootstrap_trace("nuah bootstrap: provider miss symbol=%s requester=%s\n", symbol, requester ? requester : "(unknown)");
   return nullptr;
 }
@@ -551,21 +486,17 @@ void configure_host_provider_hooks(void* hybris) {
   static bool configured = false;
   if (configured) return;
   const auto android = runtime_directory() / "android";
-  // Normal path keeps one TLS domain via libhybris host hooks; NUAH_ANDROID_RUNTIME=nuah selects the diagnostic provider.
-  static constexpr const char* kCompatProviders[] = {"libbionic.so", "libm.so", "liblog.so", "libandroid.so", "libvulkan.so"};
-  static constexpr const char* kProdProviders[] = {"liblog.so", "libandroid.so", "libvulkan.so"};
-  const bool compat = use_nuah_compat_runtime();
-  for (const auto* name : std::span(compat ? kCompatProviders : kProdProviders, compat ? 5 : 3)) load_host_provider(android / name);
-  if (!compat) {
-    // Legacy helper imports resolve via RTLD_DEFAULT; helper stays visible without replacing libc/TLS ownership.
-    void* helper_handle = ::dlopen((android / "libbionic-linker-helpers.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
-    if (!helper_handle) throw_dlerror("cannot load Android linker helper provider");
-    host_provider_handles.push_back(helper_handle);
-    bionic_provider_handle = ::dlopen((android / "libbionic.so").c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!bionic_provider_handle) throw_dlerror("cannot load Nuah Android helper provider");
-    const auto callbacks = nuah_bootstrap_diagnostics_callbacks();
-    if (auto setter = reinterpret_cast<void (*)(const NuahDiagnosticsCallbacks*)>(::dlsym(bionic_provider_handle, "nuah_bionic_set_diagnostics_callbacks"))) setter(&callbacks);
-  }
+  // One TLS domain via libhybris host hooks; Nuah providers resolve first, host libc last.
+  static constexpr const char* kProviders[] = {"liblog.so", "libandroid.so", "libvulkan.so"};
+  for (const auto* name : kProviders) load_host_provider(android / name);
+  // Legacy helper imports resolve via RTLD_DEFAULT; helper stays visible without replacing libc/TLS ownership.
+  void* helper_handle = ::dlopen((android / "libbionic-linker-helpers.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
+  if (!helper_handle) throw_dlerror("cannot load Android linker helper provider");
+  host_provider_handles.push_back(helper_handle);
+  bionic_provider_handle = ::dlopen((android / "libbionic.so").c_str(), RTLD_NOW | RTLD_LOCAL);
+  if (!bionic_provider_handle) throw_dlerror("cannot load Nuah Android helper provider");
+  const auto callbacks = nuah_bootstrap_diagnostics_callbacks();
+  if (auto setter = reinterpret_cast<void (*)(const NuahDiagnosticsCallbacks*)>(::dlsym(bionic_provider_handle, "nuah_bionic_set_diagnostics_callbacks"))) setter(&callbacks);
   // Prefer the pointer-tagged bridge when present; missing binary keeps the table adapter.
   if (auto* pthread_sync_mode = getenv_value("NUAH_PTHREAD_SYNC"); !pthread_sync_mode || std::strcmp(pthread_sync_mode, "bridge") == 0) {
     const auto try_bridge = [&](const std::filesystem::path& candidate) {
@@ -586,8 +517,6 @@ void configure_host_provider_hooks(void* hybris) {
   }
   const auto set_hook_callback = reinterpret_cast<void (*)(void* (*)(const char*, const char*))>(::dlsym(hybris, "hybris_set_hook_callback"));
   if (!set_hook_callback) fail("libhybris lacks hook callback support");
-  hybris_builtin_hook = reinterpret_cast<HybrisBuiltinHook>(::dlsym(hybris, "hybris_get_builtin_hook"));
-  if (!hybris_builtin_hook) fail("libhybris bundle lacks the Nuah built-in-first hook API");
   set_hook_callback(resolve_host_provider_symbol);
   configured = true;
 }

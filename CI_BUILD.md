@@ -51,6 +51,7 @@ JNI façade lives in `nuah/core/roblox_java_facade.c`. Sole vendored header:
 `nuah/vendor/libnativehelper-include_jni/jni.h` (modern AOSP declarations).
 
 libhybris is **not** a CI artifact. Use the local install
-(`~/.local/share/nuah/hybris`) built from `nuah/vendor/hybris.lock` and
-`nuah/vendor/libhybris_patches/0002-expose-builtin-hook-resolution.patch`.
+(`~/.local/share/nuah/hybris`) matching `nuah/vendor/hybris.lock`.
+Stock upstream works: Nuah resolves its own providers first and falls
+through to host libc, no private hybris patches required.
 Host ART is `/usr/local/lib64/art`.
