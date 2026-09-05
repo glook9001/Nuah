@@ -2,7 +2,7 @@
 # Stage a stripped, relocatable Nuah prefix (ART host-only; cookie never shipped).
 set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd); build_dir=${NUAH_BUILD_DIR:-$repo_root/build}; dest=${NUAH_PORTABLE_DIR:-$repo_root/dist/nuah-portable}
-apk_src=${NUAH_APK_PATH:-}; split_src=${NUAH_SPLIT_APK_PATH:-}; art_src=${NUAH_ART_LIBRARY_DIR:-$repo_root/nuah/vendor/host-art/lib}; [[ -r $art_src/libart.so ]] || art_src=/usr/local/lib64/art; atl_src=${NUAH_ART_HOME:-$repo_root/nuah/vendor/atl}; [[ -d $atl_src ]] || atl_src=/usr/local/lib64/java/dex/android_translation_layer
+apk_src=${NUAH_APK_PATH:-}; split_src=${NUAH_SPLIT_APK_PATH:-}; art_src=${NUAH_ART_LIBRARY_DIR:-$repo_root/nuah/vendor/host-art/lib}; [[ -r $art_src/libart.so ]] || fail "vendored host ART missing at $art_src" 1; atl_src=${NUAH_ART_HOME:-$repo_root/nuah/vendor/atl}; [[ -d $atl_src ]] || fail "vendored ATL missing at $atl_src" 1
 hybris_src=""; copy_apk=1; copy_art=0; copy_atl=1; make_tarball=0; rebuild=1
 usage() { echo "usage: build-portable.sh [--no-apk] [--no-atl] [--with-art] [--no-rebuild] [--tarball] [--dest DIR]" >&2; exit 2; }
 while (( $# > 0 )); do case "$1" in --no-apk) copy_apk=0 ;; --no-atl) copy_atl=0 ;; --no-art) copy_art=0 ;; --with-art) copy_art=1 ;; --no-rebuild) rebuild=0 ;; --tarball) make_tarball=1 ;;
@@ -10,13 +10,13 @@ while (( $# > 0 )); do case "$1" in --no-apk) copy_apk=0 ;; --no-atl) copy_atl=0
 fail() { echo "$1" >&2; exit "${2:-1}"; }
 if [[ -d $build_dir/hybris/lib ]]; then hybris_src=$build_dir/hybris; elif [[ -d $HOME/.local/share/nuah/hybris/lib ]]; then hybris_src=$HOME/.local/share/nuah/hybris; else fail "libhybris prefix not found (build/hybris or ~/.local/share/nuah/hybris)" 1; fi
 if (( rebuild )); then cmake -S "$repo_root" -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release; cmake --build "$build_dir" --target nuah; fi
-[[ -x $build_dir/nuah ]] || fail "build/nuah missing; build first or omit --no-rebuild" 1; [[ -r $build_dir/bionic/lib64/linker64 ]] || fail "API-36 bionic core missing at $build_dir/bionic/lib64/linker64" 1
-rm -rf "$dest"; mkdir -p "$dest"/{android/linker-deps,bionic/lib64,bionic-translation,hybris,apk}
+[[ -x $build_dir/nuah ]] || fail "build/nuah missing; build first or omit --no-rebuild" 1
+rm -rf "$dest"; mkdir -p "$dest"/{android/linker-deps,bionic-translation,hybris,apk}
 cp -a "$build_dir/nuah" "$build_dir/libnuah_host_bridge.so" "$dest/"; cp -a "$build_dir/bionic-translation/"libpthread_bio.so* "$dest/bionic-translation/"
-cp -a "$build_dir/android/"*.so "$dest/android/"; cp -a "$build_dir/android/linker-deps/"*.so "$dest/android/linker-deps/"; cp -a "$build_dir/bionic/lib64/"* "$dest/bionic/lib64/"
+cp -a "$build_dir/android/"*.so "$dest/android/"; cp -a "$build_dir/android/linker-deps/"*.so "$dest/android/linker-deps/"
 rsync -a --exclude='*.la' --exclude='*.a' --exclude='include/' "$hybris_src/" "$dest/hybris/"
 if (( copy_atl )); then [[ -r $atl_src/api-impl.jar ]] || fail "ATL home missing api-impl.jar at $atl_src" 1; mkdir -p "$dest/atl"; rsync -a "$atl_src/" "$dest/atl/"; fi
-if (( copy_art )); then [[ -r $art_src/libart.so && -r $art_src/libandroidfw.so ]] || fail "ART runtime missing at $art_src" 1; mkdir -p "$dest/art"; cp -a "$art_src/"*.so "$dest/art/"; fi
+if (( copy_art )); then [[ -r $art_src/libart.so && -r $art_src/libandroidfw.so ]] || fail "ART runtime missing at $art_src" 1; mkdir -p "$dest/art"; cp -a "$art_src/"*.so "$dest/art/"; [[ -d $art_src/../dex ]] && cp -a "$art_src/../dex" "$dest/art/dex"; fi
 if (( copy_apk )); then [[ -r $apk_src && -r $split_src ]] || fail "APK/split missing (set NUAH_APK_PATH / NUAH_SPLIT_APK_PATH)" 1; cp -a "$apk_src" "$dest/apk/base.apk"; cp -a "$split_src" "$dest/apk/split_config.x86_64.apk"; fi
 install -m 0755 "$repo_root/nuah/tools/portable-run.sh" "$dest/run"
 while IFS= read -r -d '' file; do rel=${file#"$dest"/}; case "$rel" in bionic/*|apk/*) continue ;; esac; if file -b "$file" | grep -q ELF; then strip --strip-unneeded "$file"; fi; done < <(find "$dest" -type f -print0)

@@ -28,6 +28,7 @@
 #include "nuah/launch_uri.hpp"
 #include "nuah/native_backend.hpp"
 #include "nuah/native_session.h"
+#include "nuah/vendoring_guard.h"
 #include "nuah/nuah_jvm.h"
 #include "nuah/window_session.h"
 #ifdef __linux__
@@ -734,7 +735,7 @@ int run_nuah_jni(const NativeLaunchOptions& options, const std::filesystem::path
   bionic_library_path += app_library_directory.string() + ":" + app_data_directory.string() + "**";
   std::vector<std::filesystem::path> host_android_dirs;
   if (const char* configured = nonempty_env("NUAH_ART_LIBRARY")) { host_android_dirs.emplace_back(std::filesystem::path(configured).parent_path()); }
-  host_android_dirs.emplace_back("/usr/local/lib64/art");
+  if (const char* configured = nonempty_env("NUAH_ART_LIBRARY_DIR")) { host_android_dirs.emplace_back(configured); }
   for (const auto& directory : host_android_dirs) {
     if (!std::filesystem::is_regular_file(directory / "libandroidfw.so")) continue;
     bionic_library_path += ":" + directory.string(); break;
@@ -750,6 +751,9 @@ int run_nuah_jni(const NativeLaunchOptions& options, const std::filesystem::path
   std::unique_ptr<NuahNativeSession, decltype(&nuah_native_session_destroy)> session(nullptr, nuah_native_session_destroy);
   session.reset(nuah_native_session_create());
   if (!session) throw std::runtime_error("cannot create Nuah native session");
+  report_bootstrap_stage("VENDORED_LINK_MAP");
+  nuah_require_vendored_link_map();
+  if (bootstrap_trace()) std::fprintf(stderr, "nuah vendoring: host link map clean\n");
   if (!std::getenv("NUAH_DISABLE_PROPERTY_PATCH")) (void)patch_loaded_module_property_import(image);
   NuahJvm* jvm = nuah_native_session_jvm(session.get());
 #define RBX_S(n, s) {"com/roblox/engine/jni/NativeSettingsInterface", n, s, "Java_com_roblox_engine_jni_NativeSettingsInterface_" n}

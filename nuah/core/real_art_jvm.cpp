@@ -117,12 +117,28 @@ jclass find_class(JNIEnv* env, const char* name) {
 }
 std::string artifact_root() {
   if (const char* value = env_nonempty("NUAH_ART_HOME")) return value;
-  return "/usr/local/lib64/java/dex/android_translation_layer";
+  /* No system fallback: launchers must provide the vendored ATL. An empty
+   * root fails loud downstream (missing api-impl.jar) instead of silently
+   * entering the wrong universe. */
+  return "";
 }
 std::string art_path() {
   if (const char* value = env_nonempty("NUAH_ART_LIBRARY")) return value;
   if (const char* directory = env_nonempty("NUAH_ART_LIBRARY_DIR")) return (std::filesystem::path(directory) / "libart.so").string();
-  return "/usr/local/lib64/art/libart.so";
+  /* Hermetic default: resolve via LD_LIBRARY_PATH (launchers put the vendored
+   * host-art/lib first). No /usr/local fallback. */
+  return "libart.so";
+}
+/* Hermetic host ART: locate the dex/oat tree next to the loaded libart
+ * (…/host-art/lib/libart.so -> …/host-art/dex) instead of /usr/local. */
+std::filesystem::path host_art_dex_dir() {
+  Dl_info info{};
+  const void* create = reinterpret_cast<const void*>(::dlsym(RTLD_DEFAULT, "JNI_CreateJavaVM"));
+  if (create && ::dladdr(create, &info) && info.dli_fname) {
+    const auto dex = std::filesystem::path(info.dli_fname).parent_path().parent_path() / "dex";
+    if (std::filesystem::is_directory(dex)) return dex;
+  }
+  return {};
 }
 std::vector<std::string> apk_class_paths() {
   std::vector<std::string> paths;
@@ -151,7 +167,7 @@ std::string android16_bootclasspath() {
     if (path.is_relative()) { if (const char* home = env_nonempty("NUAH_ATL_ANDROID16_HOME")) path = std::filesystem::path(home) / path; }
     entries.push_back(std::move(path));
   }
-  if (entries.empty()) { const std::filesystem::path root = "/usr/local/lib64/java/dex/art"; for (const char* basename : kOrder) entries.emplace_back(root / basename); }
+  if (entries.empty()) { const std::filesystem::path root = host_art_dex_dir(); for (const char* basename : kOrder) entries.emplace_back(root / basename); }
   std::vector<std::filesystem::path> ordered;
   std::vector<bool> used(entries.size(), false);
   ordered.reserve(entries.size());
@@ -404,7 +420,7 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   const bool prefer_ipv4 = !env_nonempty("NUAH_PREFER_IPV4") || env_flag("NUAH_PREFER_IPV4");
   const std::string sdk_option = "-DBuild.VERSION.SDK_INT=36";
   std::string boot_append;
-  const std::string dex_root = "/usr/local/lib64/java/dex/art";
+  const std::string dex_root = host_art_dex_dir().string();
   for (const char* jar : {"wolfssljni-hostdex.jar", "bouncycastle-hostdex.jar"}) {
     const std::string path = dex_root + "/" + jar;
     if (std::filesystem::is_regular_file(path)) { if (!boot_append.empty()) boot_append.push_back(':'); boot_append += path; }
@@ -412,7 +428,7 @@ extern "C" NuahJvm* nuah_jvm_create(void) {
   std::string boot_option;
   if (!boot_append.empty()) boot_option = "-Xbootclasspath/a:" + boot_append;
   const std::string bootclasspath = android16_bootclasspath();
-  const std::filesystem::path boot_image = "/usr/local/lib64/java/dex/art/oat/boot.art";
+  const std::filesystem::path boot_image = host_art_dex_dir() / "oat" / "boot.art";
   const bool use_boot_image = !env_nonempty("NUAH_ART_USE_BOOT_IMAGE") || env_flag("NUAH_ART_USE_BOOT_IMAGE");
   const bool have_boot_image = use_boot_image && !bootclasspath.empty() && std::filesystem::is_regular_file(boot_image) && std::filesystem::is_regular_file(boot_image.parent_path() / "boot.oat") && std::filesystem::is_regular_file(boot_image.parent_path() / "boot.vdex");
   std::string bootclasspath_option;

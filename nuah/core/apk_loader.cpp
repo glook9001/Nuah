@@ -1070,18 +1070,21 @@ void apply_native_host_environment() {
   if (const auto real = std::filesystem::canonical(hybris, real_error); !real_error && real != hybris) std::cerr << "nuah runtime: hybris=" << hybris << " -> " << real << '\n';
   else std::cerr << "nuah runtime: hybris=" << hybris << '\n';
   prepend_path_env("LD_LIBRARY_PATH", runtime_directory());
-  std::filesystem::path art_library = "/usr/local/lib64/art";
+  std::filesystem::path art_library;
   if (auto* configured = getenv_value("NUAH_ART_LIBRARY")) art_library = std::filesystem::path(configured).parent_path();
   else if (auto* configured = getenv_value("NUAH_ART_LIBRARY_DIR")) art_library = configured;
-  for (const auto& item : {art_library, art_library / "natives"}) prepend_path_env("LD_LIBRARY_PATH", item);
-  for (const char* soname : {"libandroidfw.so", "libicudata.so.77", "libicuuc.so.77", "libicui18n.so.77"}) prepend_path_env("LD_PRELOAD", art_library / soname);
+  if (!art_library.empty()) {
+    for (const auto& item : {art_library, art_library / "natives"}) prepend_path_env("LD_LIBRARY_PATH", item);
+    for (const char* soname : {"libandroidfw.so", "libicudata.so.77", "libicuuc.so.77", "libicui18n.so.77"}) prepend_path_env("LD_PRELOAD", art_library / soname);
+  }
   for (const char* system : {"/usr/lib64/libpng16.so.16", "/usr/lib64/libjpeg.so.62"}) prepend_path_env("LD_PRELOAD", system);
-  constexpr const char* kArtHome = "/usr/local/lib64/java/dex/android_translation_layer";
+  // NUAH_ART_HOME is owned by the launchers (vendored ATL, fail-fast when
+  // absent); no system default lives here.
   static constexpr std::pair<const char*, const char*> kDefaults[] = {
-      {"NUAH_ART_HOME", kArtHome}, {"NUAH_GRAPHICS_BACKEND", "vulkan"}, {"NUAH_VULKAN_PRESENT_MODE", "fifo"},
+      {"NUAH_GRAPHICS_BACKEND", "vulkan"}, {"NUAH_VULKAN_PRESENT_MODE", "fifo"},
       {"NUAH_CLIENT_SETTINGS_JSON", "{\"applicationSettings\":{\"DFFlagDebugDisableRbxTransportDummyClient\":true}}"},
   };
-  // Range loop keeps the four defaults from drifting apart (table needs runtime std::string construction).
+  // Range loop keeps the three defaults from drifting apart (table needs runtime std::string construction).
   for (const auto& [name, value] : kDefaults) set_hybris_path_if_unset(name, value);
 }
 }  // namespace nuah

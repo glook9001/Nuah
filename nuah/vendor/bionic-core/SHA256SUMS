@@ -1,0 +1,4 @@
+3cafb99b0a47ad0577cfea47cc62c306e8e60103c3a0a64bc38df1c10015ee87  bionic-core/lib64/libc.so
+781ba95a7bfb45a33147d2cb8b3f5d3ae541a955db431705d8ba0fb08c6c1052  bionic-core/lib64/linker64
+a11b6ecb90cd6060914ff2ef9a30b3ec894c3d4957b8f31f8a0d62a4d622f789  bionic-core/lib64/libm.so
+bfc1c007b9ec9ec95c21c1d1a80caa89b2056da4eefd46e1b836d7968f275e83  bionic-core/lib64/libdl.so

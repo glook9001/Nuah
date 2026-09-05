@@ -11,3 +11,9 @@
 # dex/oat/boot.oat sha256=16ff0b06aa530cc4c8eb072b61f4e1a39f91a437d3013e0b10a99c32c25f3cad
 # dex/oat/boot.vdex sha256=bacc31348807d6998fb1cc638c2c25efdcd461869c06aac0f0fa7900fee5b703
 # bin/dex2oat sha256=507e5543e9943e73ffd24eefb9932b43308e47469140e53da5f840d7f42620db BuildID=0a519784974d94b999a6e98a4e4e98fb6dccf9fe
+# bin/dex2oat INTENTIONALLY REMOVED (interpreter-only runtime; it aborts on
+# pthread_cond_init in our env). Never reinstall an executable dex2oat into
+# this tree or PATH: ART must fall back to the interpreter.
+# dex/natives/libwolfssl.so.44.0.0 (+ .44 symlink): vendored from the
+# /usr/local hand install (Jul 27) because libwolfssljni.so DT_NEEDEDs it.
+# RPATH $ORIGIN resolves it beside its consumer; needs only libc/libm.

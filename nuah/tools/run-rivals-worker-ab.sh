@@ -25,8 +25,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 nuah_binary=${NUAH_BINARY:-$repo_root/build/nuah}; nuah_data=${NUAH_DATA_DIR:-$HOME/.local/share/nuah}
 lock_file="$nuah_data/nuah-runtime.lock"
 art_library_dir=${NUAH_ART_LIBRARY_DIR:-}
-if [[ -z $art_library_dir ]]; then art_library_dir=$(first_hit libandroidfw.so "$repo_root/nuah/vendor/host-art/lib" /usr/local/lib64/art "$HOME/.local/share/nuah/art" "$repo_root/art" "$repo_root/build/art") || true; art_library_dir=${art_library_dir:-/usr/local/lib64/art}; fi
-atl_home=${NUAH_ART_HOME:-}; [[ -z $atl_home ]] && atl_home=$repo_root/nuah/vendor/atl; [[ -d $atl_home ]] || atl_home=/usr/local/lib64/java/dex/android_translation_layer
+if [[ -z $art_library_dir ]]; then art_library_dir=$(first_hit libandroidfw.so "$repo_root/nuah/vendor/host-art/lib" "$HOME/.local/share/nuah/art" "$repo_root/art" "$repo_root/build/art") || die 2 "vendored host ART missing: $repo_root/nuah/vendor/host-art/lib/libandroidfw.so"; fi
+atl_home=${NUAH_ART_HOME:-}; [[ -z $atl_home ]] && atl_home=$repo_root/nuah/vendor/atl; [[ -d $atl_home ]] || die 2 "vendored ATL missing: $repo_root/nuah/vendor/atl"
 hybris_library_dir=""; if [[ -n "${NUAH_HYBRIS_LIBRARY_DIR:-}" ]]; then hybris_library_dir="$NUAH_HYBRIS_LIBRARY_DIR"; else hybris_library_dir="$repo_root/build/hybris/lib"; fi
 hybris_library=${NUAH_HYBRIS_LIBRARY:-$hybris_library_dir/libhybris-common.so}; hybris_linker_dir=${HYBRIS_LINKER_DIR:-$hybris_library_dir/libhybris/linker}
 vulkan_library_dir=${NUAH_VULKAN_LIBRARY_DIR:-}
@@ -47,10 +47,9 @@ echo "Intel Gen9 CCS diagnostic disable: $intel_no_ccs"; echo "Cgroup memory.low
 echo "Vulkan minimum swapchain images: $min_image_count"; echo "Vulkan ICD override: ${vulkan_icd:-system default}"; echo "Vulkan image-copy trace: $copy_trace"; echo "Texture upload trace/hash/dedup: $texture_trace/$texture_hash_trace/$texture_dedup"; echo "Upload fingerprint: $upload_fingerprint"
 echo "Asset background scheduling: $asset_background"; echo "Texture minimum LOD: $texture_min_lod"; echo "Perf trace: $perf_trace"; echo "Frame log: $log"
 cd "$repo_root"
-# ART forks bare `dex2oat` via execv (no PATH search): without it in the
-# launch CWD every dex file falls back to the interpreter. Link it in.
-dex2oat_src=$repo_root/nuah/vendor/host-art/bin/dex2oat; [[ -x $dex2oat_src ]] || dex2oat_src=/usr/local/bin/dex2oat
-if [[ ! -x ./dex2oat && -x $dex2oat_src ]]; then ln -sf $dex2oat_src ./dex2oat; fi
+# Interpreter-only by design: dex2oat is dead weight here (it aborts in our
+# env and would only AOT-compile framework glue that idles during gameplay).
+# ART falls back to the interpreter when no dex2oat is found; keep it that way.
 launch_prefix=(setsid -f)
 if [[ ${NUAH_NO_SWAP:-0} != 0 || $memory_low_mb != 0 || $memory_min_mb != 0 ]]; then
   command -v systemd-run >/dev/null 2>&1 || die 1 "NUAH_NO_SWAP=1 requires systemd-run"
@@ -63,7 +62,7 @@ intel_debug=${INTEL_DEBUG:-}; vulkan_icd_env=(); [[ -n $vulkan_icd ]] && vulkan_
 icu_preload=""; for icu_lib in "$art_library_dir/libicudata.so.77" "$art_library_dir/libicuuc.so.77" "$art_library_dir/libicui18n.so.77"; do [[ -r "$icu_lib" ]] && icu_preload="${icu_preload:+$icu_preload:}$icu_lib"; done
 "${launch_prefix[@]}" env ROBLOX_COOKIE="$cookie" NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$cookie" NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$cookie" \
   ${NUAH_ROBLOX_USER_ID:+NUAH_ROBLOX_USER_ID="$NUAH_ROBLOX_USER_ID"} NUAH_FRM_QUALITY="$frm_quality" NUAH_ASSET_ROOTS="${NUAH_ASSET_ROOTS:-}" NUAH_CLIENT_SETTINGS_JSON="${NUAH_CLIENT_SETTINGS_JSON:-$client_settings_default}" \
-  NUAH_ART_HOME="$atl_home" NUAH_HYBRIS_LIBRARY="$hybris_library" HYBRIS_LINKER_DIR="$hybris_linker_dir" LD_LIBRARY_PATH="$repo_root/build:$repo_root/build/bionic-translation:$art_library_dir:$art_library_dir/natives:$hybris_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" LD_PRELOAD="${icu_preload:+$icu_preload:}${android_preload:+$android_preload:}/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:$art_library_dir/libandroidfw.so" \
+  NUAH_ART_HOME="$atl_home" NUAH_ART_LIBRARY_DIR="$art_library_dir" NUAH_HYBRIS_LIBRARY="$hybris_library" HYBRIS_LINKER_DIR="$hybris_linker_dir" LD_LIBRARY_PATH="$repo_root/build:$repo_root/build/bionic-translation:$art_library_dir:$art_library_dir/natives:$hybris_library_dir${vulkan_library_dir:+:$vulkan_library_dir}" LD_PRELOAD="${icu_preload:+$icu_preload:}${android_preload:+$android_preload:}/usr/lib64/libpng16.so.16:/usr/lib64/libjpeg.so.62:$art_library_dir/libandroidfw.so" \
   NUAH_DISABLE_MSAA="$disable_msaa" ${NUAH_DISABLE_TEXTURE_PACK_GENERATOR:+NUAH_DISABLE_TEXTURE_PACK_GENERATOR="$NUAH_DISABLE_TEXTURE_PACK_GENERATOR"} NUAH_GRAPHICS_BACKEND=vulkan INTEL_DEBUG="$intel_debug" NUAH_PERFORMANCE_MODE="$performance_mode" NUAH_VULKAN_PRESENT_MODE="${NUAH_VULKAN_PRESENT_MODE:-mailbox}" NUAH_VULKAN_SUBMIT_THREAD="$submit_thread" "${vulkan_icd_env[@]}" \
   NUAH_VULKAN_MIN_IMAGE_COUNT="$min_image_count" NUAH_RENDER_TEXTURE_BUDGET_MS="$texture_budget" MESA_VK_ENABLE_SUBMIT_THREAD="$submit_thread" NUAH_VULKAN_COPY_TRACE="$copy_trace" NUAH_TEXTURE_UPLOAD_TRACE="$texture_trace" NUAH_TEXTURE_UPLOAD_HASH_TRACE="$texture_hash_trace" NUAH_TEXTURE_UPLOAD_DEDUP="$texture_dedup" \
   NUAH_DYNAMIC_RENDER_KILOPIXELS="$dynamic_kpx" NUAH_UPLOAD_FINGERPRINT="$upload_fingerprint" NUAH_INPUT_COALESCE=1 NUAH_NONBLOCK_WAYLAND_EVENTS=0 NUAH_MOUSE_CAPTURE=1 NUAH_FAST_RENDER=1 \
