@@ -1,0 +1,223 @@
+#include <assert.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <memory.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <time.h>
+#include <unistd.h>
+struct pthread_bridge_metrics { uint64_t mapping_probes, mincore_calls, mincore_failures, mutex_tagged, mutex_probes, cond_tagged, cond_probes, sem_tagged, sem_probes, rwlock_tagged, rwlock_probes;
+  uint64_t mmap_calls, mmap_failures, munmap_calls, munmap_failures, cond_wait_calls, sem_wait_calls, rwlock_wait_calls, wait_time_ns, wait_over_1ms, wait_over_16ms, wait_time_max_ns, wait_timeouts; };
+static struct pthread_bridge_metrics pthread_bridge_metrics; static int pthread_bridge_metrics_enabled, pthread_bridge_slow_trace_enabled; static uint64_t pthread_bridge_slow_trace_count;
+static __thread const char* pthread_bridge_wait_kind; static __thread void* pthread_bridge_wait_caller;
+static inline void pthread_bridge_metric_inc(uint64_t* counter); static void pthread_bridge_metrics_report(void), pthread_bridge_metrics_signal(int signal_number);
+// when __GLIBC__ (or some glibc specific symbol) is not defined, we're assuming musl; can't check to be sure because 🤡
+#ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
+#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP { { PTHREAD_MUTEX_RECURSIVE } }
+#endif
+#ifndef PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP
+#define PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP { { PTHREAD_MUTEX_ERRORCHECK } }
+#endif
+typedef struct { union { struct { unsigned int count;
+#ifdef __LP64__
+      int __reserved[3];
+#endif
+    } bionic; sem_t* glibc; }; } bionic_sem_t;
+typedef struct { union { struct { uint32_t flags; void* stack_base; size_t stack_size; size_t guard_size; int32_t sched_policy; int32_t sched_priority;
+#ifdef __LP64__
+      char __reserved[16];
+#endif
+    } bionic; pthread_attr_t* glibc; }; } bionic_attr_t;
+typedef struct { union {
+#if defined(__LP64__)
+    int32_t __private[10];
+#else
+    int32_t __private[1];
+#endif
+    pthread_mutex_t* glibc; }; } bionic_mutex_t;
+static bool is_mapped(void* mem, const size_t sz);
+/* mmap() addrs are page-aligned: low bit tags init'd out-of-line host ptr. Only wrapper derefs it; tagged fast path avoids mincore() on hot lock/unlock. */
+#define BIONIC_SYNC_MAPPED_TAG ((uintptr_t)1)
+#define NUAH_SYNC_TAG(P, B, N, tc, pc) \
+  static inline N* P##_native(const B* o) { return (N*)((uintptr_t)o->glibc & ~BIONIC_SYNC_MAPPED_TAG); } \
+  static inline bool P##_is_mapped(const B* o) { if ((uintptr_t)o->glibc & BIONIC_SYNC_MAPPED_TAG) { pthread_bridge_metric_inc(&pthread_bridge_metrics.tc); return true; } pthread_bridge_metric_inc(&pthread_bridge_metrics.pc); return o->glibc && is_mapped(o->glibc, sizeof(*o)); } \
+  static inline void P##_set_native(B* o, N* n) { if (n == (N*)MAP_FAILED) { o->glibc = NULL; return; } assert(!((uintptr_t)n & BIONIC_SYNC_MAPPED_TAG)); o->glibc = (N*)((uintptr_t)n | BIONIC_SYNC_MAPPED_TAG); }
+NUAH_SYNC_TAG(mutex, bionic_mutex_t, pthread_mutex_t, mutex_tagged, mutex_probes)
+#define INIT_MUTEX_IF_NOT_MAPPED(x, init) do { if (!mutex_is_mapped(x)) init(x); } while (0)
+typedef struct { union { long __private; pthread_mutexattr_t* glibc; }; } bionic_mutexattr_t;
+typedef struct { union {
+#if defined(__LP64__)
+    int32_t __private[14];
+#else
+    int32_t __private[10];
+#endif
+    pthread_rwlock_t* glibc; }; } bionic_rwlock_t;
+static const struct { bionic_mutex_t bionic; pthread_mutex_t glibc; } bionic_mutex_init_map[] = {{.bionic = {{{((PTHREAD_MUTEX_NORMAL & 3) << 14)}}}, .glibc = PTHREAD_MUTEX_INITIALIZER},
+    {.bionic = {{{((PTHREAD_MUTEX_RECURSIVE & 3) << 14)}}}, .glibc = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP}, {.bionic = {{{((PTHREAD_MUTEX_ERRORCHECK & 3) << 14)}}}, .glibc = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP}};
+typedef struct { union {
+#if defined(__LP64__)
+    int32_t __private[12];
+#else
+    int32_t __private[1];
+#endif
+    pthread_cond_t* glibc; }; } bionic_cond_t;
+typedef struct { union { long __private; pthread_condattr_t* glibc; }; } bionic_condattr_t;
+typedef int bionic_key_t; _Static_assert(sizeof(bionic_key_t) == sizeof(pthread_key_t), "bionic_key_t and pthread_key_t size mismatch");
+typedef int bionic_once_t; _Static_assert(sizeof(bionic_once_t) == sizeof(pthread_once_t), "bionic_once_t and pthread_once_t size mismatch");
+typedef long bionic_pthread_t;  // seems to be 32bit on 32bit musl, 64bit everywhere else, which is why long happens to work
+_Static_assert(sizeof(bionic_pthread_t) == sizeof(pthread_t), "bionic_pthread_t and pthread_t size mismatch");
+typedef uint64_t bionic_rwlockattr_t; _Static_assert(sizeof(bionic_rwlockattr_t) == sizeof(pthread_rwlockattr_t), "bionic_rwlockattr_t and pthread_rwlockattr_t size mismatch");
+struct bionic_pthread_cleanup_t { union { struct bionic_pthread_cleanup_t* prev;
+#ifdef __GLIBC__
+    __pthread_unwind_buf_t* glibc;
+#else
+    struct __ptcb* musl;
+#endif
+  }; void (*routine)(void*); void* arg; };
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
+/* Silent bridge. NUAH_PTHREAD_TRACE=1 prints counter summary at exit; timing uses clock_gettime() only in trace mode. */
+static inline void pthread_bridge_metric_inc(uint64_t* counter) { if (__builtin_expect(pthread_bridge_metrics_enabled, 0)) __atomic_fetch_add(counter, 1, __ATOMIC_RELAXED); }
+static inline void pthread_bridge_metric_add(uint64_t* counter, uint64_t value) { if (__builtin_expect(pthread_bridge_metrics_enabled, 0)) __atomic_fetch_add(counter, value, __ATOMIC_RELAXED); }
+static inline void pthread_bridge_metric_max(uint64_t* counter, uint64_t value) { if (__builtin_expect(!pthread_bridge_metrics_enabled, 1)) return; uint64_t current = __atomic_load_n(counter, __ATOMIC_RELAXED);
+  while (current < value && !__atomic_compare_exchange_n(counter, &current, value, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) { /* current is refreshed by compare_exchange_n. */ } }
+static uint64_t pthread_bridge_clock_ns(void) { struct timespec ts; if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0; return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec; }
+static uint64_t pthread_bridge_wait_begin(uint64_t* counter, const char* kind, void* caller) { if (__builtin_expect(!pthread_bridge_metrics_enabled, 1)) return 0;
+  pthread_bridge_wait_kind = kind; pthread_bridge_wait_caller = caller; pthread_bridge_metric_inc(counter); return pthread_bridge_clock_ns(); }
+static void pthread_bridge_wait_end(uint64_t started, int result) { if (__builtin_expect(!pthread_bridge_metrics_enabled || !started, 1)) return;
+  const uint64_t elapsed = pthread_bridge_clock_ns() - started; pthread_bridge_metric_add(&pthread_bridge_metrics.wait_time_ns, elapsed); pthread_bridge_metric_max(&pthread_bridge_metrics.wait_time_max_ns, elapsed);
+  if (elapsed >= UINT64_C(1000000)) pthread_bridge_metric_inc(&pthread_bridge_metrics.wait_over_1ms); if (elapsed >= UINT64_C(16000000)) pthread_bridge_metric_inc(&pthread_bridge_metrics.wait_over_16ms);
+  if (result == ETIMEDOUT) pthread_bridge_metric_inc(&pthread_bridge_metrics.wait_timeouts);
+  if (pthread_bridge_slow_trace_enabled && elapsed >= UINT64_C(16000000)) { const uint64_t sequence = __atomic_fetch_add(&pthread_bridge_slow_trace_count, 1, __ATOMIC_RELAXED);
+    /* Bounded diagnostic: identifies Roblox call sites behind long waits, never a production log path. */
+    if (sequence < 256) { Dl_info info = {0}; const bool resolved = pthread_bridge_wait_caller && dladdr(pthread_bridge_wait_caller, &info) != 0;
+      const uintptr_t module_offset = resolved && info.dli_fbase ? (uintptr_t)pthread_bridge_wait_caller - (uintptr_t)info.dli_fbase : 0;
+      fprintf(stderr, "bionic pthread slow-wait kind=%s elapsed_ms=%.3f caller=%p module=%s offset=0x%llx result=%d\n",
+          pthread_bridge_wait_kind ? pthread_bridge_wait_kind : "unknown", (double)elapsed / 1000000.0, pthread_bridge_wait_caller, resolved && info.dli_fname ? info.dli_fname : "unknown", (unsigned long long)module_offset, result); } } }
+#define PTHREAD_SLOT_SIZE 64
+#define PTHREAD_CHUNK_SIZE (64 * 1024)
+#define PTHREAD_HEADER_SIZE 64
+#define PTHREAD_SLOTS_PER_CHUNK ((PTHREAD_CHUNK_SIZE - PTHREAD_HEADER_SIZE) / PTHREAD_SLOT_SIZE)
+struct pthread_slot_node { struct pthread_slot_node* next; };
+struct pthread_chunk_header { struct pthread_chunk_header* next; uint32_t allocated_slots; char padding[PTHREAD_HEADER_SIZE - sizeof(void*) - sizeof(uint32_t)]; };
+static pthread_mutex_t pthread_pool_lock = PTHREAD_MUTEX_INITIALIZER; static struct pthread_chunk_header* pthread_pool_chunks = NULL; static struct pthread_slot_node* pthread_pool_freelist = NULL;
+static void* pthread_bridge_mmap(size_t size) {
+  if (__builtin_expect(size > PTHREAD_SLOT_SIZE, 0)) { void* memory = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_calls); if (memory == MAP_FAILED) pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_failures); return memory; }
+  pthread_mutex_lock(&pthread_pool_lock);
+  if (pthread_pool_freelist != NULL) { struct pthread_slot_node* slot = pthread_pool_freelist; pthread_pool_freelist = slot->next; pthread_mutex_unlock(&pthread_pool_lock); memset(slot, 0, size); return slot; }
+  if (pthread_pool_chunks == NULL || pthread_pool_chunks->allocated_slots >= PTHREAD_SLOTS_PER_CHUNK) {
+    void* chunk_mem = mmap(NULL, PTHREAD_CHUNK_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (chunk_mem == MAP_FAILED) { pthread_mutex_unlock(&pthread_pool_lock); pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_failures); return MAP_FAILED; }
+    pthread_bridge_metric_inc(&pthread_bridge_metrics.mmap_calls); struct pthread_chunk_header* new_chunk = (struct pthread_chunk_header*)chunk_mem;
+    new_chunk->allocated_slots = 0; new_chunk->next = pthread_pool_chunks; pthread_pool_chunks = new_chunk; }
+  void* slot = (char*)pthread_pool_chunks + PTHREAD_HEADER_SIZE + (pthread_pool_chunks->allocated_slots * PTHREAD_SLOT_SIZE);
+  pthread_pool_chunks->allocated_slots++; pthread_mutex_unlock(&pthread_pool_lock); memset(slot, 0, size); return slot; }
+static int pthread_bridge_munmap(void* memory, size_t size) { if (memory == NULL || memory == MAP_FAILED) return 0;
+  if (__builtin_expect(size > PTHREAD_SLOT_SIZE, 0)) { const int result = munmap(memory, size); pthread_bridge_metric_inc(&pthread_bridge_metrics.munmap_calls);
+    if (result != 0) pthread_bridge_metric_inc(&pthread_bridge_metrics.munmap_failures); return result; }
+  pthread_mutex_lock(&pthread_pool_lock); struct pthread_slot_node* slot = (struct pthread_slot_node*)memory;
+  slot->next = pthread_pool_freelist; pthread_pool_freelist = slot; pthread_mutex_unlock(&pthread_pool_lock); return 0; }
+static void pthread_bridge_metrics_report(void) { if (!pthread_bridge_metrics_enabled) return;
+#define NUAH_M64(f) (unsigned long long)pthread_bridge_metrics.f
+  fprintf(stderr, "bionic pthread metrics: probes=%llu mincore=%llu failed=%llu tagged{mutex=%llu cond=%llu sem=%llu rwlock=%llu} fallback{mutex=%llu cond=%llu sem=%llu rwlock=%llu} maps=%llu map_failed=%llu unmaps=%llu unmap_failed=%llu waits{cond=%llu sem=%llu rwlock=%llu >1ms=%llu >16ms=%llu timeouts=%llu total_ms=%.3f max_ms=%.3f}\n",
+      NUAH_M64(mapping_probes), NUAH_M64(mincore_calls), NUAH_M64(mincore_failures), NUAH_M64(mutex_tagged), NUAH_M64(cond_tagged), NUAH_M64(sem_tagged), NUAH_M64(rwlock_tagged), NUAH_M64(mutex_probes), NUAH_M64(cond_probes), NUAH_M64(sem_probes), NUAH_M64(rwlock_probes),
+      NUAH_M64(mmap_calls), NUAH_M64(mmap_failures), NUAH_M64(munmap_calls), NUAH_M64(munmap_failures), NUAH_M64(cond_wait_calls), NUAH_M64(sem_wait_calls), NUAH_M64(rwlock_wait_calls), NUAH_M64(wait_over_1ms), NUAH_M64(wait_over_16ms), NUAH_M64(wait_timeouts), (double)pthread_bridge_metrics.wait_time_ns / 1000000.0, (double)pthread_bridge_metrics.wait_time_max_ns / 1000000.0); }
+static void pthread_bridge_metrics_signal(int signal_number) { if (signal_number == SIGUSR1) pthread_bridge_metrics_report(); } static bool flag_on(const char* v) { return v && *v && !(v[0] == '0' && v[1] == '\0'); }
+__attribute__((constructor)) static void pthread_bridge_metrics_init(void) { const char* trace = getenv("NUAH_PTHREAD_TRACE"); const char* slow = getenv("NUAH_PTHREAD_SLOW_TRACE");
+  const bool trace_enabled = flag_on(trace); pthread_bridge_slow_trace_enabled = flag_on(slow);
+  if (!trace_enabled && !pthread_bridge_slow_trace_enabled) return; pthread_bridge_metrics_enabled = 1; atexit(pthread_bridge_metrics_report);
+  /* Nuah's native child exits with _exit(), so atexit is not guaranteed. */ signal(SIGUSR1, pthread_bridge_metrics_signal); }
+// Glibc mapping check for sanity/static init.
+#define IS_MAPPED(x) is_mapped(x->glibc, sizeof(*x))
+#define INIT_IF_NOT_MAPPED(x, init) do { if (!IS_MAPPED(x)) init(x); } while (0)
+static inline size_t get_cached_page_size(void) { static size_t ps = 0; if (__builtin_expect(!ps, 0)) { ps = sysconf(_SC_PAGESIZE); if (ps == 0) ps = 4096; } return ps; }
+static bool is_mapped(void* mem, const size_t sz) { if (!mem || mem == MAP_FAILED) return false; pthread_bridge_metric_inc(&pthread_bridge_metrics.mapping_probes);
+  const size_t ps = get_cached_page_size(); assert(ps > 0); const uintptr_t addr = (uintptr_t)mem; const uintptr_t page_aligned = addr & ~(ps - 1);
+  const size_t offset = addr - page_aligned; const size_t total_sz = sz + offset; const size_t pages = (total_sz + ps - 1) / ps;
+  unsigned char vec[pages > 0 ? pages : 1]; pthread_bridge_metric_inc(&pthread_bridge_metrics.mincore_calls);
+  const bool mapped = (mincore((void*)page_aligned, total_sz, vec) == 0); if (!mapped) pthread_bridge_metric_inc(&pthread_bridge_metrics.mincore_failures); return mapped; }
+NUAH_SYNC_TAG(sem, bionic_sem_t, sem_t, sem_tagged, sem_probes) NUAH_SYNC_TAG(rwlock, bionic_rwlock_t, pthread_rwlock_t, rwlock_tagged, rwlock_probes) NUAH_SYNC_TAG(cond, bionic_cond_t, pthread_cond_t, cond_tagged, cond_probes)
+void bionic___pthread_cleanup_push(struct bionic_pthread_cleanup_t* c, void (*routine)(void*), void* arg) { assert(c && routine);
+#ifdef __GLIBC__
+  c->glibc = pthread_bridge_mmap(sizeof(*c->glibc)); c->routine = routine; c->arg = arg; int not_first_call;
+  if ((not_first_call = sigsetjmp((struct __jmp_buf_tag*)(void*)c->glibc->__cancel_jmp_buf, 0))) { routine(arg); __pthread_unwind_next(c->glibc); } __pthread_register_cancel(c->glibc);
+#else
+  c->musl = pthread_bridge_mmap(sizeof(struct __ptcb)); c->routine = routine; c->arg = arg; _pthread_cleanup_push(c->musl, routine, arg);
+#endif
+}
+void bionic___pthread_cleanup_pop(struct bionic_pthread_cleanup_t* c, int execute) {
+#ifdef __GLIBC__
+  assert(c && IS_MAPPED(c));  // TODO - analogically for musl?
+  __pthread_unregister_cancel(c->glibc); if (execute) c->routine(c->arg); pthread_bridge_munmap(c->glibc, sizeof(*c->glibc));
+#else
+  _pthread_cleanup_pop(c->musl, execute); pthread_bridge_munmap(c->musl, sizeof(struct __ptcb));
+#endif
+}
+/* sem: tagged fast path + lazy default init; waits share wait_begin/end gate. */
+int bionic_sem_destroy(bionic_sem_t* sem) { assert(sem); int ret = 0; if (sem_is_mapped(sem)) { sem_t* native = sem_native(sem); ret = sem_destroy(native); sem->glibc = NULL; pthread_bridge_munmap(native, sizeof(*native)); } return ret; }
+static void default_sem_init(bionic_sem_t* sem) { assert(sem); sem_t* native = pthread_bridge_mmap(sizeof(*native)); sem_set_native(sem, native); if (sem->glibc) memset(sem_native(sem), 0, sizeof(*native)); }
+int bionic_sem_init(bionic_sem_t* sem, int pshared, unsigned int value) { assert(sem); *sem = (bionic_sem_t){0}; sem_t* native = pthread_bridge_mmap(sizeof(*native)); sem_set_native(sem, native); return sem->glibc ? sem_init(sem_native(sem), pshared, value) : ENOMEM; }
+int bionic_sem_post(bionic_sem_t* sem) { assert(sem); if (!sem_is_mapped(sem)) default_sem_init(sem); return sem->glibc ? sem_post(sem_native(sem)) : ENOMEM; } int bionic_sem_trywait(bionic_sem_t* sem) { assert(sem); if (!sem_is_mapped(sem)) default_sem_init(sem); return sem->glibc ? sem_trywait(sem_native(sem)) : ENOMEM; }
+int bionic_sem_wait(bionic_sem_t* sem) { assert(sem); if (!sem_is_mapped(sem)) default_sem_init(sem); const uint64_t started = pthread_bridge_wait_begin(&pthread_bridge_metrics.sem_wait_calls, "sem", __builtin_return_address(0)); const int result = sem->glibc ? sem_wait(sem_native(sem)) : ENOMEM; pthread_bridge_wait_end(started, result); return result; }
+int bionic_sem_timedwait(bionic_sem_t* sem, const struct timespec* abs_timeout) { assert(sem && abs_timeout); if (!sem_is_mapped(sem)) default_sem_init(sem); const uint64_t started = pthread_bridge_wait_begin(&pthread_bridge_metrics.sem_wait_calls, "sem", __builtin_return_address(0)); const int result = sem->glibc ? sem_timedwait(sem_native(sem), abs_timeout) : ENOMEM; pthread_bridge_wait_end(started, result); return result; }
+/* rwlock */
+static bool pthread_bridge_rwlock_writer_policy(void) { const char* value = getenv("NUAH_PTHREAD_RWLOCK_POLICY"); return !value || !*value || strcmp(value, "writer") == 0; }
+static int pthread_bridge_rwlock_init_native(pthread_rwlock_t* native, const bionic_rwlockattr_t* attr) {
+  /* Explicit Android attr untouched; default prefers writers like Android (glibc defaults to reader, starving writers). */
+  if (attr || !pthread_bridge_rwlock_writer_policy()) return pthread_rwlock_init(native, (pthread_rwlockattr_t*)attr);
+  pthread_rwlockattr_t host_attr; if (pthread_rwlockattr_init(&host_attr) != 0) return pthread_rwlock_init(native, NULL);
+  int result = pthread_rwlockattr_setkind_np(&host_attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+  if (result == 0) result = pthread_rwlock_init(native, &host_attr); else result = pthread_rwlock_init(native, NULL); pthread_rwlockattr_destroy(&host_attr); return result; }
+int bionic_pthread_rwlock_destroy(bionic_rwlock_t* rwlock) { assert(rwlock); int ret = 0; if (rwlock_is_mapped(rwlock)) { pthread_rwlock_t* native = rwlock_native(rwlock); ret = pthread_rwlock_destroy(native); rwlock->glibc = NULL; pthread_bridge_munmap(native, sizeof(*native)); } return ret; }
+static void default_rwlock_init(bionic_rwlock_t* rwlock) { assert(rwlock); pthread_rwlock_t* native = pthread_bridge_mmap(sizeof(*native)); rwlock_set_native(rwlock, native); if (rwlock->glibc) (void)pthread_bridge_rwlock_init_native(rwlock_native(rwlock), NULL); } int bionic_pthread_rwlock_init(bionic_rwlock_t* restrict rwlock, const bionic_rwlockattr_t* restrict attr) { assert(rwlock); *rwlock = (bionic_rwlock_t){0}; pthread_rwlock_t* native = pthread_bridge_mmap(sizeof(*native)); rwlock_set_native(rwlock, native); return rwlock->glibc ? pthread_bridge_rwlock_init_native(rwlock_native(rwlock), attr) : ENOMEM; }
+int bionic_pthread_rwlock_rdlock(bionic_rwlock_t* rwlock) { assert(rwlock); if (!rwlock_is_mapped(rwlock)) default_rwlock_init(rwlock); const uint64_t started = pthread_bridge_wait_begin(&pthread_bridge_metrics.rwlock_wait_calls, "rwlock", __builtin_return_address(0)); const int result = rwlock->glibc ? pthread_rwlock_rdlock(rwlock_native(rwlock)) : ENOMEM; pthread_bridge_wait_end(started, result); return result; } int bionic_pthread_rwlock_unlock(bionic_rwlock_t* rwlock) { assert(rwlock); if (!rwlock_is_mapped(rwlock)) default_rwlock_init(rwlock); return rwlock->glibc ? pthread_rwlock_unlock(rwlock_native(rwlock)) : ENOMEM; } int bionic_pthread_rwlock_wrlock(bionic_rwlock_t* rwlock) { assert(rwlock); if (!rwlock_is_mapped(rwlock)) default_rwlock_init(rwlock); const uint64_t started = pthread_bridge_wait_begin(&pthread_bridge_metrics.rwlock_wait_calls, "rwlock", __builtin_return_address(0)); const int result = rwlock->glibc ? pthread_rwlock_wrlock(rwlock_native(rwlock)) : ENOMEM; pthread_bridge_wait_end(started, result); return result; }
+/* attr: mapped check selects host attr vs lazy init. */
+int bionic_pthread_attr_destroy(bionic_attr_t* attr) { assert(attr); int ret = 0; if (IS_MAPPED(attr)) { ret = pthread_attr_destroy(attr->glibc); pthread_bridge_munmap(attr->glibc, sizeof(*attr->glibc)); } return ret; } int bionic_pthread_attr_init(bionic_attr_t* attr) { assert(attr); *attr = (bionic_attr_t){0}; attr->glibc = pthread_bridge_mmap(sizeof(*attr->glibc)); return pthread_attr_init(attr->glibc); }
+int bionic_pthread_getattr_np(bionic_pthread_t thread, bionic_attr_t* attr) { assert(thread && attr); *attr = (bionic_attr_t){0}; attr->glibc = pthread_bridge_mmap(sizeof(*attr->glibc)); return pthread_getattr_np((pthread_t)thread, attr->glibc); } int bionic_pthread_attr_settstack(bionic_attr_t* attr, void* stackaddr, size_t stacksize) { assert(attr && IS_MAPPED(attr)); return pthread_attr_setstack(attr->glibc, stackaddr, stacksize); }
+int bionic_pthread_attr_getstack(const bionic_attr_t* attr, void* stackaddr, size_t* stacksize) { assert(attr && IS_MAPPED(attr)); return pthread_attr_getstack(attr->glibc, stackaddr, stacksize); } int bionic_pthread_attr_setstacksize(bionic_attr_t* attr, size_t stacksize) { assert(attr && IS_MAPPED(attr)); return pthread_attr_setstacksize(attr->glibc, stacksize); } int bionic_pthread_attr_getstacksize(const bionic_attr_t* attr, size_t* stacksize) { assert(attr && IS_MAPPED(attr)); return pthread_attr_getstacksize(attr->glibc, stacksize); } int bionic_pthread_attr_setschedpolicy(bionic_attr_t* attr, int policy) { assert(attr && IS_MAPPED(attr)); return pthread_attr_setschedpolicy(attr->glibc, policy); }
+int bionic_pthread_attr_getschedpolicy(bionic_attr_t* attr, int* policy) { assert(attr && IS_MAPPED(attr)); return pthread_attr_getschedpolicy(attr->glibc, policy); } int bionic_pthread_attr_setschedparam(bionic_attr_t* attr, const struct sched_param* param) { assert(attr && IS_MAPPED(attr)); return pthread_attr_setschedparam(attr->glibc, param); } int bionic_pthread_attr_getschedparam(bionic_attr_t* attr, struct sched_param* param) { assert(attr && IS_MAPPED(attr)); return pthread_attr_getschedparam(attr->glibc, param); } int bionic_pthread_attr_setdetachstate(bionic_attr_t* attr, int detachstate) { assert(attr && IS_MAPPED(attr)); return pthread_attr_setdetachstate(attr->glibc, detachstate); }
+int bionic_pthread_attr_getdetachstate(bionic_attr_t* attr, int* detachstate) { assert(attr && IS_MAPPED(attr)); return pthread_attr_getdetachstate(attr->glibc, detachstate); } int bionic_pthread_create(bionic_pthread_t* thread, const bionic_attr_t* attr, void* (*start)(void*), void* arg) { assert(thread && (!attr || IS_MAPPED(attr))); return pthread_create((pthread_t*)thread, (attr ? attr->glibc : NULL), start, arg); }
+int bionic_pthread_mutexattr_settype(bionic_mutexattr_t* attr, int type) { assert(attr && IS_MAPPED(attr)); return pthread_mutexattr_settype(attr->glibc, type); } int bionic_pthread_mutexattr_destroy(bionic_mutexattr_t* attr) { assert(attr); int ret = 0; if (IS_MAPPED(attr)) { ret = pthread_mutexattr_destroy(attr->glibc); pthread_bridge_munmap(attr->glibc, sizeof(*attr->glibc)); } return ret; }
+int bionic_pthread_mutexattr_init(bionic_mutexattr_t* attr) { assert(attr); *attr = (bionic_mutexattr_t){0}; attr->glibc = pthread_bridge_mmap(sizeof(*attr->glibc)); return pthread_mutexattr_init(attr->glibc); }
+/* mutex: tagged fast path; static init matched on stable type word only. */
+static void default_pthread_mutex_init(bionic_mutex_t* mutex) { assert(mutex);
+  /* Match stable type word only; rest is per-APK padding. Unknown -> normal mutex; explicit init() honors attrs. */
+  const uint32_t type_word = (uint32_t)mutex->__private[0];
+  for (size_t i = 0; i < ARRAY_SIZE(bionic_mutex_init_map); i++) { if (memcmp(&bionic_mutex_init_map[i].bionic.__private[0], &type_word, sizeof(type_word))) continue;
+    pthread_mutex_t* native = pthread_bridge_mmap(sizeof(*native)); mutex_set_native(mutex, native);
+    if (mutex->glibc) memcpy(mutex_native(mutex), &bionic_mutex_init_map[i].glibc, sizeof(bionic_mutex_init_map[i].glibc)); return; }
+  pthread_mutex_t* native = pthread_bridge_mmap(sizeof(*native)); mutex_set_native(mutex, native); if (mutex->glibc) memset(mutex_native(mutex), 0, sizeof(*native));
+  fprintf(stderr, "bionic pthread: unknown static mutex initializer 0x%08x; using normal mutex\n", type_word); }
+int bionic_pthread_mutex_destroy(bionic_mutex_t* mutex) { assert(mutex); int ret = 0; if (mutex_is_mapped(mutex)) { pthread_mutex_t* native = mutex_native(mutex); ret = pthread_mutex_destroy(native); pthread_bridge_munmap(native, sizeof(*native)); mutex->glibc = NULL; } return ret; }
+static inline const pthread_mutexattr_t* resolve_mutexattr(const bionic_mutexattr_t* attr, pthread_mutexattr_t* fallback_storage) { if (!attr) return NULL; if (IS_MAPPED(attr)) return attr->glibc;
+  pthread_mutexattr_init(fallback_storage); int type = (int)(attr->__private & 3);
+  if (type == 1) pthread_mutexattr_settype(fallback_storage, PTHREAD_MUTEX_RECURSIVE); else if (type == 2) pthread_mutexattr_settype(fallback_storage, PTHREAD_MUTEX_ERRORCHECK); else pthread_mutexattr_settype(fallback_storage, PTHREAD_MUTEX_NORMAL); return fallback_storage; }
+int bionic_pthread_mutex_init(bionic_mutex_t* mutex, const bionic_mutexattr_t* attr) { if (!mutex) return EINVAL; *mutex = (bionic_mutex_t){0}; pthread_mutex_t* native = pthread_bridge_mmap(sizeof(*native)); if (!native) return ENOMEM;
+  mutex_set_native(mutex, native); pthread_mutexattr_t stack_attr; const pthread_mutexattr_t* host_attr = resolve_mutexattr(attr, &stack_attr);
+  int ret = pthread_mutex_init(mutex_native(mutex), host_attr); if (host_attr == &stack_attr) pthread_mutexattr_destroy(&stack_attr); return ret; }
+int bionic_pthread_mutex_lock(bionic_mutex_t* mutex) { assert(mutex); INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init); return mutex->glibc ? pthread_mutex_lock(mutex_native(mutex)) : ENOMEM; } int bionic_pthread_mutex_trylock(bionic_mutex_t* mutex) { assert(mutex); INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init); return mutex->glibc ? pthread_mutex_trylock(mutex_native(mutex)) : ENOMEM; } int bionic_pthread_mutex_unlock(bionic_mutex_t* mutex) { assert(mutex); INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init); return mutex->glibc ? pthread_mutex_unlock(mutex_native(mutex)) : ENOMEM; }
+int bionic_pthread_condattr_destroy(bionic_condattr_t* attr) { assert(attr); int ret = 0; if (IS_MAPPED(attr)) { ret = pthread_condattr_destroy(attr->glibc); pthread_bridge_munmap(attr->glibc, sizeof(*attr->glibc)); } return ret; } int bionic_pthread_condattr_init(bionic_condattr_t* attr) { *attr = (bionic_condattr_t){0}; attr->glibc = pthread_bridge_mmap(sizeof(*attr->glibc)); return pthread_condattr_init(attr->glibc); } int bionic_pthread_condattr_setclock(bionic_condattr_t* attr, clockid_t clock_id) { assert(attr && IS_MAPPED(attr)); return pthread_condattr_setclock(attr->glibc, clock_id); }
+static void default_pthread_cond_init(bionic_cond_t* cond) { assert(cond); pthread_cond_t* native = pthread_bridge_mmap(sizeof(*native)); cond_set_native(cond, native); if (cond->glibc) memset(cond_native(cond), 0, sizeof(*native)); }
+int bionic_pthread_cond_destroy(bionic_cond_t* cond) { assert(cond); int ret = 0; if (cond_is_mapped(cond)) { pthread_cond_t* native = cond_native(cond); ret = pthread_cond_destroy(native); pthread_bridge_munmap(native, sizeof(*native)); cond->glibc = NULL; } return ret; }
+static inline const pthread_condattr_t* resolve_condattr(const bionic_condattr_t* attr, pthread_condattr_t* fallback_storage) { if (!attr) return NULL; if (IS_MAPPED(attr)) return attr->glibc;
+  pthread_condattr_init(fallback_storage); clockid_t clock = (clockid_t)(attr->__private & 0xFF);
+  if (clock == CLOCK_MONOTONIC || (attr->__private & 1)) { pthread_condattr_setclock(fallback_storage, CLOCK_MONOTONIC); } return fallback_storage; }
+int bionic_pthread_cond_init(bionic_cond_t* cond, const bionic_condattr_t* attr) { if (!cond) return EINVAL; *cond = (bionic_cond_t){0}; pthread_cond_t* native = pthread_bridge_mmap(sizeof(*native)); if (!native) return ENOMEM;
+  cond_set_native(cond, native); pthread_condattr_t stack_attr; const pthread_condattr_t* host_attr = resolve_condattr(attr, &stack_attr);
+  int ret = pthread_cond_init(cond_native(cond), host_attr); if (host_attr == &stack_attr) pthread_condattr_destroy(&stack_attr); return ret; }
+int bionic_pthread_cond_broadcast(bionic_cond_t* cond) { assert(cond); if (!cond_is_mapped(cond)) default_pthread_cond_init(cond); return cond->glibc ? pthread_cond_broadcast(cond_native(cond)) : ENOMEM; } int bionic_pthread_cond_signal(bionic_cond_t* cond) { assert(cond); if (!cond_is_mapped(cond)) default_pthread_cond_init(cond); return cond->glibc ? pthread_cond_signal(cond_native(cond)) : ENOMEM; }
+int bionic_pthread_cond_wait(bionic_cond_t* cond, bionic_mutex_t* mutex) { assert(cond && mutex); if (!cond_is_mapped(cond)) default_pthread_cond_init(cond); INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
+  const uint64_t started = pthread_bridge_wait_begin(&pthread_bridge_metrics.cond_wait_calls, "cond", __builtin_return_address(0)); const int result = (cond->glibc && mutex->glibc) ? pthread_cond_wait(cond_native(cond), mutex_native(mutex)) : ENOMEM; pthread_bridge_wait_end(started, result); return result; }
+int bionic_pthread_cond_timedwait(bionic_cond_t* cond, bionic_mutex_t* mutex, const struct timespec* abs_timeout) { assert(cond && mutex); if (!cond_is_mapped(cond)) default_pthread_cond_init(cond); INIT_MUTEX_IF_NOT_MAPPED(mutex, default_pthread_mutex_init);
+  const uint64_t started = pthread_bridge_wait_begin(&pthread_bridge_metrics.cond_wait_calls, "cond", __builtin_return_address(0)); const int result = (cond->glibc && mutex->glibc) ? pthread_cond_timedwait(cond_native(cond), mutex_native(mutex), abs_timeout) : ENOMEM; pthread_bridge_wait_end(started, result); return result; }
+static inline int cond_clock_timedwait(bionic_cond_t* cond, bionic_mutex_t* mutex, clockid_t clk, const struct timespec* t) { assert(cond && mutex && t); struct timespec tv; clock_gettime(clk, &tv); tv.tv_sec += t->tv_sec; tv.tv_nsec += t->tv_nsec;
+  if (tv.tv_nsec >= 1000000000) { ++tv.tv_sec; tv.tv_nsec -= 1000000000; } return bionic_pthread_cond_timedwait(cond, mutex, &tv); }
+int bionic_pthread_cond_timedwait_relative_np(bionic_cond_t* cond, bionic_mutex_t* mutex, const struct timespec* reltime) { return cond_clock_timedwait(cond, mutex, CLOCK_REALTIME, reltime); } int bionic_pthread_cond_timedwait_monotonic_np(bionic_cond_t* cond, bionic_mutex_t* mutex, const struct timespec* abstime) { return cond_clock_timedwait(cond, mutex, CLOCK_MONOTONIC, abstime); } int bionic_pthread_cond_timedwait_monotonic(bionic_cond_t* cond, bionic_mutex_t* mutex, const struct timespec* abstime) { return bionic_pthread_cond_timedwait_monotonic_np(cond, mutex, abstime); }
+int bionic_pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void)) { return pthread_atfork(prepare, parent, child); }

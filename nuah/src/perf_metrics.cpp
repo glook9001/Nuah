@@ -1,5 +1,4 @@
 #include "nuah/perf_metrics.h"
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -7,129 +6,39 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
-
 namespace {
-using Clock = std::chrono::steady_clock;
-
-struct Aggregate {
-  uint64_t calls = 0;
-  uint64_t samples = 0;
-  uint64_t total_ns = 0;
-  uint64_t max_ns = 0;
-  uint64_t slow = 0;
-};
-
-struct State {
-  std::mutex mutex;
-  Aggregate input;
-  std::array<Aggregate, 3> jni{};
-  uint64_t next_report_ns = 0;
-};
-
-struct Report {
-  bool ready = false;
-  Aggregate input;
-  std::array<Aggregate, 3> jni{};
-};
-
-State& state() {
-  static State value;
-  return value;
+struct Aggregate { uint64_t calls = 0, samples = 0, total_ns = 0, max_ns = 0, slow = 0; };
+struct State { std::mutex mutex; Aggregate input; std::array<Aggregate, 3> jni{}; uint64_t next_report_ns = 0; };
+struct Report { bool ready = false; Aggregate input; std::array<Aggregate, 3> jni{}; };
+State& state() { static State value; return value; }
+uint64_t now_ns() { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); }
+bool enabled() { static const bool v = [] { const char* r = std::getenv("NUAH_PERF_TRACE"); return r && *r && std::strcmp(r, "0") != 0; }(); return v; }
+const char* jni_name(std::size_t i) { static constexpr const char* kNames[] = {"key", "pointer", "other"}; return i < 3 ? kNames[i] : "other"; }
+std::size_t jni_index(const char* kind) {
+  for (std::size_t i = 0; i < 2; ++i) if (kind && std::strcmp(kind, jni_name(i)) == 0) return i;
+  return 2;
 }
-
-uint64_t now_ns() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count());
+void add(Aggregate& a, uint64_t ns, uint64_t samples) { ++a.calls; a.samples += samples; a.total_ns += ns; a.max_ns = std::max(a.max_ns, ns); if (ns > 16666667ULL) ++a.slow; }
+void print_aggregate(const char* name, const Aggregate& a) {
+  if (!a.calls) return;
+  std::fprintf(stderr, "nuah perf: %s calls=%llu samples=%llu avg_us=%llu max_us=%llu over16ms=%llu\n", name, (unsigned long long)a.calls, (unsigned long long)a.samples, (unsigned long long)(a.total_ns / a.calls / 1000ULL), (unsigned long long)(a.max_ns / 1000ULL), (unsigned long long)a.slow);
 }
-
-bool enabled() {
-  static const bool value = [] {
-    const char* raw = std::getenv("NUAH_PERF_TRACE");
-    return raw && *raw && std::strcmp(raw, "0") != 0;
-  }();
-  return value;
+void take_report_if_due(State& v, uint64_t now, Report& r) {
+  if (v.next_report_ns == 0) v.next_report_ns = now + 1000000000ULL;
+  if (now < v.next_report_ns) return;
+  v.next_report_ns = now + 1000000000ULL; r.ready = true; r.input = v.input; r.jni = v.jni; v.input = {}; v.jni = {};
 }
-
-Aggregate& jni_aggregate(const char* kind, State& value) {
-  if (kind && std::strcmp(kind, "key") == 0) return value.jni[0];
-  if (kind && std::strcmp(kind, "pointer") == 0) return value.jni[1];
-  return value.jni[2];
+void print_report(const Report& r) {
+  if (!r.ready) return;
+  print_aggregate("input", r.input);
+  for (std::size_t i = 0; i < r.jni.size(); ++i) print_aggregate(jni_name(i), r.jni[i]);
 }
-
-const char* jni_name(std::size_t index) {
-  switch (index) {
-    case 0: return "key";
-    case 1: return "pointer";
-    default: return "other";
-  }
-}
-
-void add(Aggregate& aggregate, uint64_t duration_ns, uint64_t samples) {
-  ++aggregate.calls;
-  aggregate.samples += samples;
-  aggregate.total_ns += duration_ns;
-  aggregate.max_ns = std::max(aggregate.max_ns, duration_ns);
-  /* A 16.67 ms frame budget is a useful, renderer-independent warning line. */
-  if (duration_ns > 16666667ULL) ++aggregate.slow;
-}
-
-void print_aggregate(const char* name, const Aggregate& aggregate) {
-  if (!aggregate.calls) return;
-  const uint64_t average_ns = aggregate.total_ns / aggregate.calls;
-  std::fprintf(stderr,
-               "nuah perf: %s calls=%llu samples=%llu avg_us=%llu max_us=%llu over16ms=%llu\n",
-               name, static_cast<unsigned long long>(aggregate.calls),
-               static_cast<unsigned long long>(aggregate.samples),
-               static_cast<unsigned long long>(average_ns / 1000ULL),
-               static_cast<unsigned long long>(aggregate.max_ns / 1000ULL),
-               static_cast<unsigned long long>(aggregate.slow));
-}
-
-void take_report_if_due(State& value, uint64_t now, Report& report) {
-  if (value.next_report_ns == 0) value.next_report_ns = now + 1000000000ULL;
-  if (now < value.next_report_ns) return;
-  value.next_report_ns = now + 1000000000ULL;
-  report.ready = true;
-  report.input = value.input;
-  report.jni = value.jni;
-  value.input = {};
-  value.jni = {};
-}
-
-void print_report(const Report& report) {
-  if (!report.ready) return;
-  print_aggregate("input", report.input);
-  for (std::size_t index = 0; index < report.jni.size(); ++index)
-    print_aggregate(jni_name(index), report.jni[index]);
+void record(State& v, std::size_t idx, uint64_t ns, uint64_t samples, bool is_input) {
+  Report r;
+  { std::scoped_lock lock(v.mutex); add(is_input ? v.input : v.jni[idx], ns, samples); take_report_if_due(v, now_ns(), r); }
+  print_report(r);
 }
 }  // namespace
-
 extern "C" int nuah_perf_trace_enabled(void) { return enabled() ? 1 : 0; }
-
-extern "C" void nuah_perf_record_input(uint64_t duration_ns,
-                                         unsigned int event_count) {
-  if (!enabled()) return;
-  State& value = state();
-  Report report;
-  {
-    std::scoped_lock lock(value.mutex);
-    add(value.input, duration_ns, event_count);
-    take_report_if_due(value, now_ns(), report);
-  }
-  print_report(report);
-}
-
-extern "C" void nuah_perf_record_jni(const char* kind, uint64_t duration_ns,
-                                      int /*result*/) {
-  if (!enabled()) return;
-  State& value = state();
-  Report report;
-  {
-    std::scoped_lock lock(value.mutex);
-    add(jni_aggregate(kind, value), duration_ns, 1);
-    take_report_if_due(value, now_ns(), report);
-  }
-  print_report(report);
-}
+extern "C" void nuah_perf_record_input(uint64_t ns, unsigned int n) { if (enabled()) record(state(), 0, ns, n, true); }
+extern "C" void nuah_perf_record_jni(const char* kind, uint64_t ns, int /*result*/) { if (enabled()) record(state(), jni_index(kind), ns, 1, false); }

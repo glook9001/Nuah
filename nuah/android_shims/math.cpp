@@ -1,172 +1,22 @@
 #include <cmath>
-
 #include "nuah/android_abi_registry.h"
-
-#define NUAH_UNARY_DOUBLE(name) \
-  extern "C" double name(double value) { \
-    return __builtin_##name(value); \
-  }
-#define NUAH_UNARY_FLOAT(name) \
-  extern "C" float name(float value) { \
-    return __builtin_##name(value); \
-  }
-#define NUAH_BINARY_DOUBLE(name) \
-  extern "C" double name(double left, double right) { \
-    return __builtin_##name(left, right); \
-  }
-#define NUAH_BINARY_FLOAT(name) \
-  extern "C" float name(float left, float right) { \
-    return __builtin_##name(left, right); \
-  }
-
-NUAH_UNARY_DOUBLE(acos)
-NUAH_UNARY_DOUBLE(asin)
-NUAH_UNARY_DOUBLE(atan)
-NUAH_UNARY_DOUBLE(cbrt)
-NUAH_UNARY_DOUBLE(ceil)
-NUAH_UNARY_DOUBLE(cos)
-NUAH_UNARY_DOUBLE(cosh)
-NUAH_UNARY_DOUBLE(exp)
-NUAH_UNARY_DOUBLE(exp2)
-NUAH_UNARY_DOUBLE(expm1)
-NUAH_UNARY_DOUBLE(fabs)
-NUAH_UNARY_DOUBLE(floor)
-NUAH_UNARY_DOUBLE(log)
-NUAH_UNARY_DOUBLE(log10)
-NUAH_UNARY_DOUBLE(log2)
-NUAH_UNARY_DOUBLE(round)
-NUAH_UNARY_DOUBLE(sin)
-NUAH_UNARY_DOUBLE(sinh)
-NUAH_UNARY_DOUBLE(sqrt)
-NUAH_UNARY_DOUBLE(tan)
-NUAH_UNARY_DOUBLE(tanh)
-NUAH_UNARY_DOUBLE(trunc)
-NUAH_UNARY_FLOAT(acosf)
-NUAH_UNARY_FLOAT(asinf)
-NUAH_UNARY_FLOAT(atanf)
-NUAH_UNARY_FLOAT(cbrtf)
-NUAH_UNARY_FLOAT(ceilf)
-NUAH_UNARY_FLOAT(cosf)
-NUAH_UNARY_FLOAT(coshf)
-NUAH_UNARY_FLOAT(expf)
-NUAH_UNARY_FLOAT(exp2f)
-NUAH_UNARY_FLOAT(erfcf)
-NUAH_UNARY_FLOAT(erff)
-NUAH_UNARY_FLOAT(fabsf)
-NUAH_UNARY_FLOAT(floorf)
-NUAH_UNARY_FLOAT(logf)
-NUAH_UNARY_FLOAT(log10f)
-NUAH_UNARY_FLOAT(log2f)
-NUAH_UNARY_FLOAT(roundf)
-NUAH_UNARY_FLOAT(sinf)
-NUAH_UNARY_FLOAT(sinhf)
-NUAH_UNARY_FLOAT(sqrtf)
-NUAH_UNARY_FLOAT(tanf)
-NUAH_UNARY_FLOAT(tanhf)
-NUAH_UNARY_FLOAT(truncf)
-NUAH_BINARY_DOUBLE(atan2)
-NUAH_BINARY_DOUBLE(copysign)
-NUAH_BINARY_DOUBLE(fdim)
-NUAH_BINARY_DOUBLE(fmax)
-NUAH_BINARY_DOUBLE(fmin)
-NUAH_BINARY_DOUBLE(fmod)
-NUAH_BINARY_DOUBLE(hypot)
-NUAH_BINARY_DOUBLE(nextafter)
-NUAH_BINARY_DOUBLE(pow)
-NUAH_BINARY_DOUBLE(remainder)
-NUAH_BINARY_FLOAT(atan2f)
-NUAH_BINARY_FLOAT(copysignf)
-NUAH_BINARY_FLOAT(fdimf)
-NUAH_BINARY_FLOAT(fmaxf)
-NUAH_BINARY_FLOAT(fminf)
-NUAH_BINARY_FLOAT(fmodf)
-NUAH_BINARY_FLOAT(hypotf)
-NUAH_BINARY_FLOAT(nextafterf)
-NUAH_BINARY_FLOAT(powf)
-NUAH_BINARY_FLOAT(remainderf)
-
-extern "C" double fma(double left, double right, double addend) {
-  return __builtin_fma(left, right, addend);
-}
-extern "C" float fmaf(float left, float right, float addend) {
-  return __builtin_fmaf(left, right, addend);
-}
-extern "C" int finitef(float value) {
-  return std::isfinite(value) ? 1 : 0;
-}
-extern "C" long double fmal(long double left, long double right,
-                             long double addend) {
-  return __builtin_fmal(left, right, addend);
-}
-extern "C" int ilogb(double value) {
-  return __builtin_ilogb(value);
-}
-extern "C" long long llround(double value) {
-  return __builtin_llround(value);
-}
-extern "C" long long llroundf(float value) {
-  return __builtin_llroundf(value);
-}
-extern "C" long lround(double value) {
-  return __builtin_lround(value);
-}
-extern "C" long lroundf(float value) {
-  return __builtin_lroundf(value);
-}
-extern "C" double nan(const char* tag) {
-  return __builtin_nan(tag);
-}
-extern "C" long double powl(long double left, long double right) {
-  return __builtin_powl(left, right);
-}
-extern "C" float remquof(float left, float right, int* quotient) {
-  return __builtin_remquof(left, right, quotient);
-}
-
-extern "C" double frexp(double value, int* exponent) {
-  return __builtin_frexp(value, exponent);
-}
-extern "C" float frexpf(float value, int* exponent) {
-  return __builtin_frexpf(value, exponent);
-}
-extern "C" double ldexp(double value, int exponent) {
-  return __builtin_ldexp(value, exponent);
-}
-extern "C" float ldexpf(float value, int exponent) {
-  return __builtin_ldexpf(value, exponent);
-}
-extern "C" double modf(double value, double* integral) {
-  return __builtin_modf(value, integral);
-}
-extern "C" float modff(float value, float* integral) {
-  return __builtin_modff(value, integral);
-}
-extern "C" void sincos(double value, double* sine, double* cosine) {
-  __builtin_sincos(value, sine, cosine);
-}
-extern "C" void sincosf(float value, float* sine, float* cosine) {
-  __builtin_sincosf(value, sine, cosine);
-}
-
+#define NUAH_UNARY_DOUBLE(name) extern "C" double name(double v) { return __builtin_##name(v); }
+#define NUAH_UNARY_FLOAT(name) extern "C" float name(float v) { return __builtin_##name(v); }
+#define NUAH_BINARY_DOUBLE(name) extern "C" double name(double l, double r) { return __builtin_##name(l, r); }
+#define NUAH_BINARY_FLOAT(name) extern "C" float name(float l, float r) { return __builtin_##name(l, r); }
+#define NUAH_DBL1(X) X(acos) X(asin) X(atan) X(cbrt) X(ceil) X(cos) X(cosh) X(exp) X(exp2) X(expm1) X(fabs) X(floor) X(log) X(log10) X(log2) X(round) X(sin) X(sinh) X(sqrt) X(tan) X(tanh) X(trunc)
+#define NUAH_FLT1(X) X(acosf) X(asinf) X(atanf) X(cbrtf) X(ceilf) X(cosf) X(coshf) X(expf) X(exp2f) X(erfcf) X(erff) X(fabsf) X(floorf) X(logf) X(log10f) X(log2f) X(roundf) X(sinf) X(sinhf) X(sqrtf) X(tanf) X(tanhf) X(truncf)
+#define NUAH_DBL2(X) X(atan2) X(copysign) X(fdim) X(fmax) X(fmin) X(fmod) X(hypot) X(nextafter) X(pow) X(remainder)
+#define NUAH_FLT2(X) X(atan2f) X(copysignf) X(fdimf) X(fmaxf) X(fminf) X(fmodf) X(hypotf) X(nextafterf) X(powf) X(remainderf)
+NUAH_DBL1(NUAH_UNARY_DOUBLE) NUAH_FLT1(NUAH_UNARY_FLOAT) NUAH_DBL2(NUAH_BINARY_DOUBLE) NUAH_FLT2(NUAH_BINARY_FLOAT)
+#define NUAH_WRAP(ret, name, params, call) extern "C" ret name params { return call; }
+NUAH_WRAP(double, fma, (double a, double b, double c), __builtin_fma(a, b, c)) NUAH_WRAP(float, fmaf, (float a, float b, float c), __builtin_fmaf(a, b, c)) NUAH_WRAP(long double, fmal, (long double a, long double b, long double c), __builtin_fmal(a, b, c)) NUAH_WRAP(double, frexp, (double v, int* e), __builtin_frexp(v, e)) NUAH_WRAP(float, frexpf, (float v, int* e), __builtin_frexpf(v, e))
+NUAH_WRAP(double, ldexp, (double v, int e), __builtin_ldexp(v, e)) NUAH_WRAP(float, ldexpf, (float v, int e), __builtin_ldexpf(v, e)) NUAH_WRAP(double, modf, (double v, double* i), __builtin_modf(v, i)) NUAH_WRAP(float, modff, (float v, float* i), __builtin_modff(v, i))
+NUAH_WRAP(int, ilogb, (double v), __builtin_ilogb(v)) NUAH_WRAP(long long, llround, (double v), __builtin_llround(v)) NUAH_WRAP(long long, llroundf, (float v), __builtin_llroundf(v))
+NUAH_WRAP(long, lround, (double v), __builtin_lround(v)) NUAH_WRAP(long, lroundf, (float v), __builtin_lroundf(v)) NUAH_WRAP(double, nan, (const char* t), __builtin_nan(t)) NUAH_WRAP(long double, powl, (long double a, long double b), __builtin_powl(a, b)) NUAH_WRAP(float, remquof, (float a, float b, int* q), __builtin_remquof(a, b, q)) NUAH_WRAP(int, finitef, (float v), std::isfinite(v) ? 1 : 0)
+extern "C" void sincos(double v, double* s, double* c) { __builtin_sincos(v, s, c); } extern "C" void sincosf(float v, float* s, float* c) { __builtin_sincosf(v, s, c); }
 __attribute__((constructor)) static void register_math_abi() {
-  static constexpr const char* symbols[] = {
-      "acos",   "acosf",  "asin",   "asinf",  "atan",   "atanf",
-      "atan2",  "atan2f", "cbrt",   "cbrtf",  "ceil",   "ceilf",
-      "copysign", "copysignf", "cos", "cosf", "cosh",   "coshf",
-      "exp",    "exp2",   "exp2f",  "expf",   "expm1",  "erfcf",
-      "erff",   "fabs",   "fabsf",  "fdim",   "fdimf",  "finitef",
-      "floor",  "floorf", "fma",    "fmaf",   "fmal",   "fmax",
-      "fmaxf",  "fmin",   "fminf",  "fmod",   "fmodf",  "frexp",
-      "frexpf", "hypot",  "hypotf", "ilogb",  "ldexp",  "ldexpf",
-      "log",    "log10",  "log10f", "log2",   "log2f",  "logf",
-      "llround", "llroundf", "lround", "lroundf", "modf", "modff",
-      "nan",    "nextafter", "nextafterf", "pow", "powf", "powl",
-      "remainder", "remainderf", "remquof", "round", "roundf",
-      "sin",    "sincos", "sincosf", "sinf",  "sinh",   "sinhf",
-      "sqrt",   "sqrtf",  "tan",    "tanf",   "tanh",   "tanhf",
-      "trunc",  "truncf"};
-  for (const char* symbol : symbols) {
-    nuah_android_api_register("libm.so", symbol,
-                              NUAH_ANDROID_API_TRANSLATED);
-  }
-}
+#define NUAH_SYM(n) nuah_android_api_register("libm.so", #n, NUAH_ANDROID_API_TRANSLATED);
+  NUAH_DBL1(NUAH_SYM) NUAH_FLT1(NUAH_SYM) NUAH_DBL2(NUAH_SYM) NUAH_FLT2(NUAH_SYM)
+  static constexpr const char* kExtra[] = {"fma", "fmaf", "fmal", "finitef", "frexp", "frexpf", "ilogb", "ldexp", "ldexpf", "llround", "llroundf", "lround", "lroundf", "modf", "modff", "nan", "powl", "remquof", "sincos", "sincosf"};
+  for (const char* s : kExtra) nuah_android_api_register("libm.so", s, NUAH_ANDROID_API_TRANSLATED); }

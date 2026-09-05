@@ -33,12 +33,12 @@ the system image.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target nuah nuah-services
+cmake --build build --target nuah
 ```
 
 | Output | Source |
 |---|---|
-| `nuah`, `nuah-services` | `nuah/src/` |
+| `nuah` | `nuah/src/` |
 | `android/libvulkan.so` | `nuah/android_shims/vulkan.cpp` |
 | `android/libbionic.so` | `bionic.cpp` + asm |
 | `android/libandroid.so` | `platform.cpp`, `egl.cpp`, … |

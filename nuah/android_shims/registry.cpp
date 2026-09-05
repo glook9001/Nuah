@@ -1,50 +1,9 @@
-#include "nuah/android_abi_registry.h"
-
 #include <cstdio>
 #include <mutex>
 #include <string>
 #include <unordered_map>
-
-namespace {
-std::mutex registry_mutex;
-std::unordered_map<std::string, int> registry;
-std::unordered_map<std::string, bool> reported;
-
-std::string key(const char* soname, const char* symbol) {
-  return std::string(soname ? soname : "<unknown>") + ":" +
-         (symbol ? symbol : "<unknown>");
-}
-}
-
-extern "C" void nuah_android_api_register(const char* soname,
-                                            const char* symbol,
-                                            int disposition) {
-  if (!soname || !symbol || disposition < NUAH_ANDROID_API_IMPLEMENTED ||
-      disposition > NUAH_ANDROID_API_UNSUPPORTED) {
-    return;
-  }
-  std::scoped_lock lock(registry_mutex);
-  registry[key(soname, symbol)] = disposition;
-}
-
-extern "C" int nuah_android_api_disposition(const char* soname,
-                                              const char* symbol) {
-  std::scoped_lock lock(registry_mutex);
-  const auto found = registry.find(key(soname, symbol));
-  return found == registry.end() ? 0 : found->second;
-}
-
-extern "C" void nuah_android_api_unsupported(const char* soname,
-                                               const char* symbol) {
-  if (!soname || !symbol) return;
-  const auto name = key(soname, symbol);
-  bool first = false;
-  {
-    std::scoped_lock lock(registry_mutex);
-    registry[name] = NUAH_ANDROID_API_UNSUPPORTED;
-    first = reported.emplace(name, true).second;
-  }
-  if (first) {
-    std::fprintf(stderr, "Nuah Android API unsupported: %s\n", name.c_str());
-  }
-}
+#include "nuah/android_abi_registry.h"
+namespace { std::mutex m; std::unordered_map<std::string, int> r; std::unordered_map<std::string, bool> d;
+std::string k(const char* a, const char* b) { return (a ? a : "<unknown>") + std::string(":") + (b ? b : "<unknown>"); } }
+extern "C" void nuah_android_api_register(const char* a, const char* b, int v) { if (!a || !b || v < NUAH_ANDROID_API_IMPLEMENTED || v > NUAH_ANDROID_API_UNSUPPORTED) return; std::scoped_lock l(m); r[k(a, b)] = v; } extern "C" int nuah_android_api_disposition(const char* a, const char* b) { std::scoped_lock l(m); auto f = r.find(k(a, b)); return f == r.end() ? 0 : f->second; }
+extern "C" void nuah_android_api_unsupported(const char* a, const char* b) { if (!a || !b) return; auto n = k(a, b); bool f = false; { std::scoped_lock l(m); r[n] = NUAH_ANDROID_API_UNSUPPORTED; f = d.emplace(n, true).second; } if (f) std::fprintf(stderr, "Nuah Android API unsupported: %s\n", n.c_str()); }
