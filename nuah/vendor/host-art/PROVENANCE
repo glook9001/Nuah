@@ -1,0 +1,13 @@
+# Pinned host ART runtime (stripped binaries). Believed Apache-2.0 (AOSP upstream).
+# Origin: unknown hand install under /usr/local (Aug 2026). No package owner,
+# no build recipe. art image v074 / vdex v021; ATL jars built with Adoptium
+# JDK 17.0.20 + dx 1.14; ATL sources lived at <upstream>/third_party/
+# android_translation_layer (debug-path leak in libtranslation_layer_main.so).
+# Stripped with strip --strip-unneeded (~480MB -> 135MB); loader behavior
+# identical, debug_info dropped.
+# lib/libart.so sha256=56551c2cbebb5768071710999276a2af85f76df2506bf79e6c60ea9617d6324b BuildID=d2a6b469eabd14cfdc0a94dcaf67a4a161c1fb36
+# lib/libandroidfw.so sha256=7deca48e87917629bc15965c27aa983a6368461084f5eb3742665ca5d81f6955
+# lib/libart-compiler.so sha256=1512269ba4fb8ef055a1175e3a2a31d4f6de6e408273064fd8a2143e9b602b77
+# dex/oat/boot.oat sha256=16ff0b06aa530cc4c8eb072b61f4e1a39f91a437d3013e0b10a99c32c25f3cad
+# dex/oat/boot.vdex sha256=bacc31348807d6998fb1cc638c2c25efdcd461869c06aac0f0fa7900fee5b703
+# bin/dex2oat sha256=507e5543e9943e73ffd24eefb9932b43308e47469140e53da5f840d7f42620db BuildID=0a519784974d94b999a6e98a4e4e98fb6dccf9fe

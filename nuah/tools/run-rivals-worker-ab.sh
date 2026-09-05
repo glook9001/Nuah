@@ -25,7 +25,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 nuah_binary=${NUAH_BINARY:-$repo_root/build/nuah}; nuah_data=${NUAH_DATA_DIR:-$HOME/.local/share/nuah}
 lock_file="$nuah_data/nuah-runtime.lock"
 art_library_dir=${NUAH_ART_LIBRARY_DIR:-}
-if [[ -z $art_library_dir ]]; then art_library_dir=$(first_hit libandroidfw.so /usr/local/lib64/art "$HOME/.local/share/nuah/art" "$repo_root/art" "$repo_root/build/art") || true; art_library_dir=${art_library_dir:-/usr/local/lib64/art}; fi
+if [[ -z $art_library_dir ]]; then art_library_dir=$(first_hit libandroidfw.so "$repo_root/nuah/vendor/host-art/lib" /usr/local/lib64/art "$HOME/.local/share/nuah/art" "$repo_root/art" "$repo_root/build/art") || true; art_library_dir=${art_library_dir:-/usr/local/lib64/art}; fi
 atl_home=${NUAH_ART_HOME:-}; [[ -z $atl_home ]] && atl_home=$repo_root/nuah/vendor/atl; [[ -d $atl_home ]] || atl_home=/usr/local/lib64/java/dex/android_translation_layer
 hybris_library_dir=""; if [[ -n "${NUAH_HYBRIS_LIBRARY_DIR:-}" ]]; then hybris_library_dir="$NUAH_HYBRIS_LIBRARY_DIR"; else hybris_library_dir="$repo_root/build/hybris/lib"; fi
 hybris_library=${NUAH_HYBRIS_LIBRARY:-$hybris_library_dir/libhybris-common.so}; hybris_linker_dir=${HYBRIS_LINKER_DIR:-$hybris_library_dir/libhybris/linker}
@@ -48,7 +48,8 @@ echo "Asset background scheduling: $asset_background"; echo "Texture minimum LOD
 cd "$repo_root"
 # ART forks bare `dex2oat` via execv (no PATH search): without it in the
 # launch CWD every dex file falls back to the interpreter. Link it in.
-if [[ ! -x ./dex2oat && -x /usr/local/bin/dex2oat ]]; then ln -sf /usr/local/bin/dex2oat ./dex2oat; fi
+dex2oat_src=$repo_root/nuah/vendor/host-art/bin/dex2oat; [[ -x $dex2oat_src ]] || dex2oat_src=/usr/local/bin/dex2oat
+if [[ ! -x ./dex2oat && -x $dex2oat_src ]]; then ln -sf $dex2oat_src ./dex2oat; fi
 launch_prefix=(setsid -f)
 if [[ ${NUAH_NO_SWAP:-0} != 0 || $memory_low_mb != 0 || $memory_min_mb != 0 ]]; then
   command -v systemd-run >/dev/null 2>&1 || die 1 "NUAH_NO_SWAP=1 requires systemd-run"
