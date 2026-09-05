@@ -552,10 +552,10 @@ void configure_host_provider_hooks(void* hybris) {
   if (configured) return;
   const auto android = runtime_directory() / "android";
   // Normal path keeps one TLS domain via libhybris host hooks; NUAH_ANDROID_RUNTIME=nuah selects the diagnostic provider.
-  static constexpr const char* kCompatProviders[] = {"libbionic.so", "libm.so", "liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so", "libOpenSLES.so", "libOpenMAXAL.so"};
-  static constexpr const char* kProdProviders[] = {"liblog.so", "libandroid.so", "libvulkan.so", "libmediandk.so", "libOpenSLES.so", "libOpenMAXAL.so"};
+  static constexpr const char* kCompatProviders[] = {"libbionic.so", "libm.so", "liblog.so", "libandroid.so", "libvulkan.so"};
+  static constexpr const char* kProdProviders[] = {"liblog.so", "libandroid.so", "libvulkan.so"};
   const bool compat = use_nuah_compat_runtime();
-  for (const auto* name : std::span(compat ? kCompatProviders : kProdProviders, compat ? 8 : 6)) load_host_provider(android / name);
+  for (const auto* name : std::span(compat ? kCompatProviders : kProdProviders, compat ? 5 : 3)) load_host_provider(android / name);
   if (!compat) {
     // Legacy helper imports resolve via RTLD_DEFAULT; helper stays visible without replacing libc/TLS ownership.
     void* helper_handle = ::dlopen((android / "libbionic-linker-helpers.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
