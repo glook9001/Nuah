@@ -46,6 +46,9 @@ echo "Intel Gen9 CCS diagnostic disable: $intel_no_ccs"; echo "Cgroup memory.low
 echo "Vulkan minimum swapchain images: $min_image_count"; echo "Vulkan ICD override: ${vulkan_icd:-system default}"; echo "Vulkan image-copy trace: $copy_trace"; echo "Texture upload trace/hash/dedup: $texture_trace/$texture_hash_trace/$texture_dedup"; echo "Upload fingerprint: $upload_fingerprint"
 echo "Asset background scheduling: $asset_background"; echo "Texture minimum LOD: $texture_min_lod"; echo "Perf trace: $perf_trace"; echo "Frame log: $log"
 cd "$repo_root"
+# ART forks bare `dex2oat` via execv (no PATH search): without it in the
+# launch CWD every dex file falls back to the interpreter. Link it in.
+if [[ ! -x ./dex2oat && -x /usr/local/bin/dex2oat ]]; then ln -sf /usr/local/bin/dex2oat ./dex2oat; fi
 launch_prefix=(setsid -f)
 if [[ ${NUAH_NO_SWAP:-0} != 0 || $memory_low_mb != 0 || $memory_min_mb != 0 ]]; then
   command -v systemd-run >/dev/null 2>&1 || die 1 "NUAH_NO_SWAP=1 requires systemd-run"

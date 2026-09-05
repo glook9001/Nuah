@@ -4,6 +4,7 @@
 /.ci/
 /dist/
 *.tar.gz
+# Bare-`dex2oat` symlink the launch scripts drop in CWD (ART execv has no PATH search).
 
 # Local reverse-engineering payloads and generated runtime state; these are
 # not inputs to the Android 16 CI build.

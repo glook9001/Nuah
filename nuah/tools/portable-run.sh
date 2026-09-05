@@ -19,6 +19,9 @@ dex=${NUAH_ATL_ANDROID16_HOME:-/usr/local/lib64/java/dex/art}; if [[ -d $dex/nat
 ld_path="$ld_path:$ROOT:$HYBRIS_LIB"; [[ -n ${LD_LIBRARY_PATH:-} ]] && ld_path="$ld_path:$LD_LIBRARY_PATH"
 preload="$png:$jpeg:$ART/libandroidfw.so"; [[ -n ${LD_PRELOAD:-} ]] && preload="$preload:$LD_PRELOAD"
 mkdir -p "$DATA"; extra=()
+# ART forks bare `dex2oat` via execv (no PATH search): without it in the
+# launch CWD every dex file falls back to the interpreter. Link it in.
+if [[ ! -x ./dex2oat && -x /usr/local/bin/dex2oat ]]; then ln -sf /usr/local/bin/dex2oat ./dex2oat; fi
 if (( $# > 0 )); then extra=("$@"); else extra=(native-run --width "$width" --height "$height" --apk "$APK" --split "$SPLIT" --data "$DATA" --uri "$uri"); fi
 export ROBLOX_COOKIE="$cookie" NUAH_ROBLOX_COOKIES=".ROBLOSECURITY=$cookie" NUAH_ROBLOX_COOKIE_HEADER=".ROBLOSECURITY=$cookie" NUAH_ART_HOME="$ATL" NUAH_ART_LIBRARY_DIR="$ART" NUAH_ART_LIBRARY="$ART/libart.so"
 export NUAH_HYBRIS_LIBRARY="$HYBRIS" NUAH_HYBRIS_LIBRARY_DIR="$HYBRIS_LIB" HYBRIS_LINKER_DIR="$HYBRIS_LINKER" LD_LIBRARY_PATH="$ld_path" LD_PRELOAD="$preload" NUAH_GRAPHICS_BACKEND="${NUAH_GRAPHICS_BACKEND:-vulkan}" NUAH_PERFORMANCE_MODE="$performance_mode"
